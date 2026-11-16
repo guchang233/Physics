@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>物理运动模拟器 · 力学与电磁场</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+</head>
+<body>
+  <div id="app">
+    <div id="toolbar">
+      <div class="brand">⚛ 物理<span>模拟器</span></div>
+      <div class="tgroup">
+        <button data-tool="select" class="active" title="选择/移动 (V)"><span class="ic">↖</span>选择</button>
+        <button data-tool="pan" title="平移视图 (H)"><span class="ic">✋</span></button>
+      </div>
+      <div class="tgroup">
+        <span class="tlabel">添加</span>
+        <button data-tool="ball" title="小球/质点：点击画布放置"><span class="ic">●</span>小球</button>
+        <button data-tool="particle" title="带电粒子：点击画布放置"><span class="ic">⊕</span>带电粒子</button>
+        <button data-tool="box" title="方块/滑块：点击画布放置"><span class="ic">■</span>滑块</button>
+        <button data-tool="ground" title="地面：点击确定高度"><span class="ic">▁</span>地面</button>
+        <button data-tool="wall" title="挡板/墙/极板：拖拽画线段"><span class="ic">╱</span>挡板</button>
+        <button data-tool="incline" title="斜面：点击放置（底角处）"><span class="ic">◢</span>斜面</button>
+        <button data-tool="efield" title="匀强电场区域：拖拽画矩形，单击为全空间"><span class="ic">E</span>电场</button>
+        <button data-tool="bfield_in" title="匀强磁场 ⊗ 垂直纸面向里：拖拽画矩形"><span class="ic">⊗</span>磁场</button>
+        <button data-tool="bfield_out" title="匀强磁场 ⊙ 垂直纸面向外：拖拽画矩形"><span class="ic">⊙</span>磁场</button>
+        <button data-tool="spring" title="弹簧/轻绳：先点物体A，再点物体B或空白处(固定点)"><span class="ic">〰</span>弹簧/绳</button>
+      </div>
+      <div class="tgroup">
+        <button id="bPlay" class="primary" title="播放/暂停 (空格)"><span class="ic">▶</span>播放</button>
+        <button id="bStep" title="单步 (.)"><span class="ic">⏭</span></button>
+        <button id="bReset" title="重置到 t=0 (R)"><span class="ic">↺</span>重置</button>
+        <select id="selSpeed" title="速度倍率">
+          <option value="0.05">0.05×</option><option value="0.1">0.1×</option><option value="0.25">0.25×</option>
+          <option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option>
+          <option value="5">5×</option><option value="10">10×</option>
+        </select>
+      </div>
+      <div class="tgroup">
+        <label class="chk" title="重力开关"><input type="checkbox" id="chkG" checked>重力</label>
+        <span class="tlabel">g=</span><input type="number" id="numG" value="9.8" step="0.1" style="width:56px">
+      </div>
+      <div class="tgroup">
+        <label class="chk"><input type="checkbox" id="chkGrid" checked>网格</label>
+        <label class="chk"><input type="checkbox" id="chkTrail" checked>轨迹</label>
+        <label class="chk"><input type="checkbox" id="chkVel" checked>速度</label>
+        <label class="chk"><input type="checkbox" id="chkForce">受力</label>
+        <label class="chk" title="在画布上叠加解析参数方程轨迹"><input type="checkbox" id="chkAnalytic" checked>解析轨迹</label>
+      </div>
+      <div class="tgroup">
+        <select id="selPreset" title="预设场景"><option value="">📚 预设场景…</option></select>
+      </div>
+      <div class="tgroup">
+        <button id="bUndo" title="撤销 (Ctrl+Z)">↶</button>
+        <button id="bSave" title="导出场景 JSON">💾 导出</button>
+        <button id="bLoad" title="导入场景 JSON">📂 导入</button>
+        <button id="bClear" class="danger" title="清空场景">🗑</button>
+        <button id="bTheme" title="切换明/暗主题">🌓</button>
+        <button id="bLeft" title="显示/隐藏对象列表">☰</button>
+        <button id="bHelp" title="帮助">?</button>
+        <input type="file" id="fileIn" accept=".json,application/json" style="display:none">
+      </div>
+    </div>
+    <div id="main">
+      <div id="left">
+        <div class="ptitle">场景对象</div>
+        <div id="objlist"></div>
+      </div>
+      <div id="stage">
+        <canvas id="cv"></canvas>
+        <div id="toast"></div>
+        <div id="toolhint"></div>
+        <div id="tbadge"></div>
+      </div>
+      <div id="right"><div id="props"></div></div>
+    </div>
+    <div id="status"></div>
+  </div>
+  <div id="help"><div class="box">
+    <h3>使用说明</h3>
+    <ul>
+      <li><b>添加物体</b>：点顶部「小球 / 带电粒子 / 滑块」，再在画布上点击放置。放好后自动选中。</li>
+      <li><b>设置初速度（重点）</b>：选中物体后，拖动物体旁的<b>绿色箭头端点</b>即可设定 v₀；也可在右侧「初始条件」里输入。</li>
+      <li><b>运动分析</b>：选中物体后，右侧「运动分析 · 参数方程」会根据当前场/力环境自动识别运动类型（圆周、摆线、平抛等），给出轨迹参数方程；可切换「初始条件 / 当前状态」作为参考点，并开启「解析轨迹」在画布上叠加虚线预览。</li>
+      <li><b>场</b>：「电场」「磁场⊗/⊙」拖出矩形；单击 = 全空间。</li>
+      <li><b>快捷键</b>：空格播放/暂停，. 单步，R 重置，Delete 删除，Ctrl+Z 撤销。</li>
+      <li>坐标单位：m、kg、C、V/m、T。y 轴向上为正。</li>
+    </ul>
+    <div style="text-align:right"><button class="primary" onclick="document.getElementById('help').classList.remove('show')">知道了</button></div>
+  </div></div>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
