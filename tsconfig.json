@@ -23,7 +23,9 @@
   "include": [
     "src/main.ts",
     "src/analysis/motionAnalysis.ts",
-    "src/engine/**/*.ts"
+    "src/engine/**/*.ts",
+    "src/ui/**/*.ts",
+    "src/types/**/*.d.ts"
   ],
   "exclude": ["src/**/*.selftest.ts"]
 }

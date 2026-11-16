@@ -12,6 +12,7 @@
     "test": "npm run test:analysis && npm run test:fields"
   },
   "devDependencies": {
+    "@types/jquery": "^4.0.1",
     "@types/three": "^0.170.0",
     "playwright": "^1.49.1",
     "typescript": "~5.9.0",
@@ -19,6 +20,8 @@
   },
   "dependencies": {
     "@dimforge/rapier2d-compat": "^0.21.0",
+    "@pie-framework/mathquill": "^1.1.4",
+    "jquery": "^4.0.0",
     "three": "^0.170.0"
   }
 }

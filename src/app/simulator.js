@@ -1,4 +1,5 @@
 import { analyzeMotion, sampleAnalyticPath } from '../analysis/motionAnalysis.ts';
+import { mountMathQuill } from '../ui/mathquill.ts';
 import {
   FieldSystem2,
   sourcesFromSceneObjects,
@@ -1571,48 +1572,81 @@ function escapeHtml(s) {
   })[c]);
 }
 
+function attrLatex(s) {
+  return escapeHtml(String(s ?? '')).replace(/\n/g, ' ');
+}
+
+function eqBlocksHtml(blocks, editableNumeric = false) {
+  const numMode = editableNumeric ? 'edit' : 'static';
+  return blocks.map(eq => `
+    <div class="eqblock">
+      ${eq.note ? `<div class="eq-note">${escapeHtml(eq.note)}</div>` : ''}
+      <div class="eq-row eq-sym-row">
+        <span class="eq-tag">符号</span>
+        <div class="eq-sym" data-mq="static" data-latex="${attrLatex(eq.symbolic)}"></div>
+      </div>
+      <div class="eq-row eq-num-row">
+        <span class="eq-tag">数值</span>
+        <div class="eq-num" data-mq="${numMode}" data-latex="${attrLatex(eq.numeric)}" title="${editableNumeric ? '可编辑 · 复制为 LaTeX' : '暂停后可编辑数值式'}"></div>
+      </div>
+    </div>`).join('');
+}
+
 let lastAnalysisTs = 0;
+let analysisScratchLatex = '';
 function renderMotionAnalysis(b, force = false) {
   const host = document.getElementById('r_theory');
   if (!host || !b || !b.st) return;
   const now = performance.now();
   if (!force && sim.running && now - lastAnalysisTs < 250) return;
   lastAnalysisTs = now;
+  // Preserve scratch pad edits across live refreshes
+  const prevScratch = host.querySelector('.an-scratch [data-mq="edit"]');
+  if (prevScratch && prevScratch.mq && typeof prevScratch.mq.latex === 'function') {
+    try { analysisScratchLatex = prevScratch.mq.latex(); } catch { /* keep */ }
+  }
   const report = analyzeMotion(buildAnalysisContext(b));
-  const eqHtml = (blocks) => blocks.map(eq => `
-    <div class="eqblock">
-      <div class="eq-sym">${escapeHtml(eq.symbolic)}</div>
-      <div class="eq-num">${escapeHtml(eq.numeric)}</div>
+  const editableNumeric = !sim.running;
+  const derHtml = report.derived.map(d => `
+    <div class="der-row">
+      <span class="k">${escapeHtml(d.name)}</span>
+      <span class="der-math">
+        <span class="der-formula" data-mq="static" data-latex="${attrLatex(d.formula)}"></span>
+        <span class="der-eq">=</span>
+        <span class="der-value" data-mq="static" data-latex="${attrLatex(d.value)}"></span>
+      </span>
     </div>`).join('');
-  const derHtml = report.derived.map(d =>
-    `<div class="der-row"><span class="k">${escapeHtml(d.name)}</span><span title="${escapeHtml(d.formula)}">${escapeHtml(d.value)}</span></div>`
-  ).join('');
   host.innerHTML = `
     <div class="an-head">
       <div class="an-title">${escapeHtml(report.title)}</div>
       <div class="an-summary">${escapeHtml(report.summary)}</div>
-      <div class="an-regime">识别：${escapeHtml(report.regimeId)}</div>
+      <div class="an-regime">识别：${escapeHtml(report.regimeId)} · MathQuill</div>
     </div>
     <div class="an-ref btnrow">
       <span class="lab" style="width:auto;margin-right:4px">方程参考点</span>
       <button type="button" class="${analysisRefMode === 'initial' ? 'active' : ''}" data-ref="initial">初始条件</button>
       <button type="button" class="${analysisRefMode === 'current' ? 'active' : ''}" data-ref="current">当前状态</button>
-      <button type="button" id="btnCopyEq" title="复制参数方程">复制方程</button>
+      <button type="button" id="btnCopyEq" title="复制 LaTeX">复制 LaTeX</button>
     </div>
     <div class="an-sec-label">轨迹参数方程</div>
-    ${eqHtml(report.parametric)}
-    ${report.extras.length ? `<div class="an-sec-label">补充关系</div>${eqHtml(report.extras)}` : ''}
+    ${eqBlocksHtml(report.parametric, editableNumeric)}
+    ${report.extras.length ? `<div class="an-sec-label">补充关系</div>${eqBlocksHtml(report.extras, editableNumeric)}` : ''}
     <div class="an-sec-label">特征量（随选中物体与场状态更新）</div>
     <div class="der-grid">${derHtml || '<span class="k">—</span>'}</div>
+    <div class="an-sec-label">演算草稿（MathQuill 可编辑）</div>
+    <div class="an-scratch eqblock">
+      <div data-mq="edit" data-latex="${attrLatex(analysisScratchLatex || 'E=')}" title="在此用键盘 / 快捷键书写 LaTeX"></div>
+    </div>
     <div class="an-meta">
       <div><b>计入的力：</b>${report.forcesInModel.map(escapeHtml).join('、') || '无'}</div>
       <div><b>假定：</b>${report.assumptions.map(escapeHtml).join('； ')}</div>
       <div class="hint">${escapeHtml(report.validity)}</div>
     </div>`;
+  mountMathQuill(host);
   host.querySelectorAll('[data-ref]').forEach(btn => {
     btn.addEventListener('click', () => {
       analysisRefMode = btn.getAttribute('data-ref');
-      renderMotionAnalysis(b);
+      renderMotionAnalysis(b, true);
       draw();
     });
   });
@@ -1620,18 +1654,18 @@ function renderMotionAnalysis(b, force = false) {
   if (copyBtn) {
     copyBtn.addEventListener('click', async () => {
       const text = [
-        report.title,
-        report.summary,
+        `% ${report.title}`,
+        `% ${report.summary}`,
         '',
-        '参数方程：',
+        '% parametric',
         ...report.parametric.flatMap(e => [e.symbolic, e.numeric, '']),
-        ...report.extras.flatMap(e => [e.symbolic, e.numeric, '']),
-        '特征量：',
-        ...report.derived.map(d => `${d.name} (${d.formula}) = ${d.value}`),
+        ...(report.extras.length ? ['% extras', ...report.extras.flatMap(e => [e.symbolic, e.numeric, ''])] : []),
+        '% derived',
+        ...report.derived.map(d => `${d.formula} = ${d.value}  % ${d.name}`),
       ].join('\n');
       try {
         await navigator.clipboard.writeText(text);
-        toast('已复制运动方程');
+        toast('已复制 LaTeX');
       } catch {
         toast('复制失败');
       }

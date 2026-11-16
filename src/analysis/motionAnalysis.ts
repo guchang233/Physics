@@ -71,15 +71,23 @@ export type AnalysisContext = {
 };
 
 export type EquationBlock = {
-  /** 符号形式 */
+  /**
+   * 符号形式（MathQuill / LaTeX）。
+   * 纯中文说明请放 note，勿塞进 latex。
+   */
   symbolic: string;
-  /** 代入数值后 */
+  /** 代入数值后的 LaTeX */
   numeric: string;
+  /** 可选中文旁注（渲染在公式外） */
+  note?: string;
 };
 
 export type DerivedQty = {
+  /** 中文名称 */
   name: string;
+  /** 公式 LaTeX */
   formula: string;
+  /** 数值 LaTeX（可含单位 \\text{ m}） */
   value: string;
 };
 
@@ -108,6 +116,24 @@ export function fmt(v: number, d = 4): string {
   if (a < 1e-14) return '0';
   if (a !== 0 && (a < 1e-3 || a >= 1e5)) return v.toExponential(3);
   return (+v.toFixed(d)).toString();
+}
+
+/** Format a number as MathQuill-friendly LaTeX (scientific → a\\times10^{b}). */
+export function fmtTex(v: number, d = 4): string {
+  if (!isFinite(v)) return '\\text{—}';
+  const a = Math.abs(v);
+  if (a < 1e-14) return '0';
+  if (a !== 0 && (a < 1e-3 || a >= 1e5)) {
+    const exp = Number(v).toExponential(3);
+    const [mant, e] = exp.split('e');
+    const expNum = Number(e);
+    return `${mant}\\times10^{${expNum}}`;
+  }
+  return String(+v.toFixed(d));
+}
+
+export function unitTex(u: string) {
+  return `\\text{ ${u}}`;
 }
 
 function hypot(x: number, y: number) {
@@ -290,8 +316,8 @@ export function analyzeMotion(ctx: AnalysisContext): MotionAnalysis {
       summary: '物体被固定，不参与动力学积分。',
       assumptions: ['fixed = true'],
       parametric: [
-        { symbolic: 'x(τ) = x₀', numeric: `x(τ) = ${fmt(b.x)}` },
-        { symbolic: 'y(τ) = y₀', numeric: `y(τ) = ${fmt(b.y)}` },
+        { symbolic: 'x(\\tau)=x_0', numeric: `x(\\tau)=${fmtTex(b.x)}` },
+        { symbolic: 'y(\\tau)=y_0', numeric: `y(\\tau)=${fmtTex(b.y)}` },
       ],
       extras: [],
       derived: [],
@@ -325,7 +351,6 @@ export function analyzeMotion(ctx: AnalysisContext): MotionAnalysis {
     !hasFext &&
     (!gOn || Math.abs(g) < 1e-15)
   ) {
-    // 若同时有匀强 E，仍走交叉/匀强分支；纯点电荷 → 中心力分析
     if (!hasUniformE) {
       return analyzeCentralCoulomb(ctxF, forcesInModel, pointCharges);
     }
@@ -359,7 +384,7 @@ export function analyzeMotion(ctx: AnalysisContext): MotionAnalysis {
     return withModelNote(analyzeCrossedEB(ctxF, forcesInModel));
   }
 
-  // —— 匀强 E、无 B、g 关：类平抛（仅当真有匀强 E，或无点电荷时的局部近似）——
+  // —— 匀强 E、无 B、g 关：类平抛 ——
   if (
     b.q &&
     E > 1e-15 &&
@@ -401,7 +426,7 @@ export function analyzeMotion(ctx: AnalysisContext): MotionAnalysis {
 function analyzeCyclotron(ctx: AnalysisContext, forcesInModel: string[]): MotionAnalysis {
   const b = ctx.body;
   const Bz = ctx.field.Bz;
-  const ω = (b.q * Bz) / b.m; // signed
+  const ω = (b.q * Bz) / b.m;
   const v = hypot(b.vx, b.vy);
   const R = Math.abs(ω) > 1e-15 ? v / Math.abs(ω) : Infinity;
   const xc = b.x + b.vy / ω;
@@ -425,34 +450,35 @@ function analyzeCyclotron(ctx: AnalysisContext, forcesInModel: string[]): Motion
     ],
     parametric: [
       {
-        symbolic: 'x(τ) = x_c + δx₀ cos(ωτ) + δy₀ sin(ωτ)',
-        numeric: `x(τ) = ${fmt(xc)} + (${fmt(δx0)}) cos(ωτ) + (${fmt(δy0)}) sin(ωτ)`,
+        symbolic: 'x(\\tau)=x_c+\\delta x_0\\cos(\\omega\\tau)+\\delta y_0\\sin(\\omega\\tau)',
+        numeric: `x(\\tau)=${fmtTex(xc)}+(${fmtTex(δx0)})\\cos(\\omega\\tau)+(${fmtTex(δy0)})\\sin(\\omega\\tau)`,
       },
       {
-        symbolic: 'y(τ) = y_c + δy₀ cos(ωτ) − δx₀ sin(ωτ)',
-        numeric: `y(τ) = ${fmt(yc)} + (${fmt(δy0)}) cos(ωτ) − (${fmt(δx0)}) sin(ωτ)`,
+        symbolic: 'y(\\tau)=y_c+\\delta y_0\\cos(\\omega\\tau)-\\delta x_0\\sin(\\omega\\tau)',
+        numeric: `y(\\tau)=${fmtTex(yc)}+(${fmtTex(δy0)})\\cos(\\omega\\tau)-(${fmtTex(δx0)})\\sin(\\omega\\tau)`,
       },
       {
-        symbolic: '亦作：x(τ)=x_c + R cos(ωτ+φ), y(τ)=y_c + R sin(ωτ+φ)（相位依初速）',
-        numeric: `R=${fmt(R)} m，φ≈${fmt(phi / DEG, 2)}°，ω=${fmt(ω)} rad/s`,
+        symbolic: 'x(\\tau)=x_c+R\\cos(\\omega\\tau+\\phi),\\quad y(\\tau)=y_c+R\\sin(\\omega\\tau+\\phi)',
+        numeric: `R=${fmtTex(R)}${unitTex('m')},\\ \\phi\\approx${fmtTex(phi / DEG, 2)}^\\circ,\\ \\omega=${fmtTex(ω)}${unitTex('rad/s')}`,
+        note: '相位依初速',
       },
     ],
     extras: [
       {
-        symbolic: 'ω = q B_z / m，  R = m|v| / |q B_z|，  T = 2π / |ω|',
-        numeric: `ω = ${fmt(ω)} rad/s，R = ${fmt(R)} m，T = ${fmt(T)} s`,
+        symbolic: '\\omega=\\frac{qB_z}{m},\\quad R=\\frac{m|v|}{|qB_z|},\\quad T=\\frac{2\\pi}{|\\omega|}',
+        numeric: `\\omega=${fmtTex(ω)}${unitTex('rad/s')},\\ R=${fmtTex(R)}${unitTex('m')},\\ T=${fmtTex(T)}${unitTex('s')}`,
       },
       {
-        symbolic: '圆心 (x_c, y_c) = (x + v_y/ω, y − v_x/ω)',
-        numeric: `(x_c, y_c) = (${fmt(xc)}, ${fmt(yc)}) m`,
+        symbolic: '(x_c,y_c)=\\left(x+\\frac{v_y}{\\omega},\\ y-\\frac{v_x}{\\omega}\\right)',
+        numeric: `(x_c,y_c)=(${fmtTex(xc)},\\ ${fmtTex(yc)})${unitTex('m')}`,
       },
     ],
     derived: [
-      { name: '回旋半径 R', formula: 'mv/|qB|', value: `${fmt(R)} m` },
-      { name: '周期 T', formula: '2πm/|qB|', value: `${fmt(T)} s` },
-      { name: '角频率 |ω|', formula: '|qB|/m', value: `${fmt(Math.abs(ω))} rad/s` },
-      { name: '动能 Ek', formula: '½mv²', value: `${fmt(0.5 * b.m * v * v)} J（磁场不做功）` },
-      { name: '比荷 q/m', formula: 'q/m', value: `${fmt(b.q / b.m)} C/kg` },
+      { name: '回旋半径 R', formula: 'R=\\frac{mv}{|qB|}', value: `${fmtTex(R)}${unitTex('m')}` },
+      { name: '周期 T', formula: 'T=\\frac{2\\pi m}{|qB|}', value: `${fmtTex(T)}${unitTex('s')}` },
+      { name: '角频率 |ω|', formula: '|\\omega|=\\frac{|qB|}{m}', value: `${fmtTex(Math.abs(ω))}${unitTex('rad/s')}` },
+      { name: '动能 Ek', formula: 'E_k=\\frac{1}{2}mv^2', value: `${fmtTex(0.5 * b.m * v * v)}${unitTex('J')}`, },
+      { name: '比荷 q/m', formula: '\\frac{q}{m}', value: `${fmtTex(b.q / b.m)}${unitTex('C/kg')}` },
     ],
     validity: '粒子离开有界磁场区域后公式失效；若存在电场或重力，请看「正交电磁场」或一般数值解。',
     forcesInModel,
@@ -463,24 +489,16 @@ function analyzeCrossedEB(ctx: AnalysisContext, forcesInModel: string[]): Motion
   const b = ctx.body;
   const { Ex, Ey, Bz } = ctx.field;
   const ω = (b.q * Bz) / b.m;
-  // E×B drift: v_d = E×B / B²  with B=(0,0,Bz): E×B = (Ey Bz, -Ex Bz, 0)? 
-  // E×B = |i     j     k|
-  //       |Ex   Ey    0|
-  //       |0     0   Bz| = i(Ey Bz) - j(Ex Bz) = (Ey Bz, -Ex Bz, 0)
-  // v_d = E×B / B²
   const B2 = Bz * Bz;
   const vdx = (Ey * Bz) / B2;
   const vdy = (-Ex * Bz) / B2;
   const vd = hypot(vdx, vdy);
-  // velocity in drift frame
   const ux = b.vx - vdx;
   const uy = b.vy - vdy;
   const u = hypot(ux, uy);
   const R = Math.abs(ω) > 1e-15 ? u / Math.abs(ω) : Infinity;
-  // guiding center at ref time in lab: same cyclotron formula on (u)
   const xc = b.x + uy / ω;
   const yc = b.y - ux / ω;
-  // In lab frame, guiding center drifts: x_c(τ)=xc0+vd τ
   const T = Math.abs(ω) > 1e-15 ? (2 * Math.PI) / Math.abs(ω) : Infinity;
   const E = hypot(Ex, Ey);
 
@@ -490,9 +508,7 @@ function analyzeCrossedEB(ctx: AnalysisContext, forcesInModel: string[]): Motion
     summary:
       u < 1e-9
         ? '相对漂移系静止 → 实验室系匀速直线运动（v = E×B/B²）。'
-        : Math.abs(u - vd) < 1e-6 && Math.abs(b.vx * vdx + b.vy * vdy) >= 0
-          ? '一般情形：回旋叠加 E×B 漂移，轨迹为摆线/长短辐圆滚线。'
-          : '回旋叠加 E×B 漂移；若由静止释放且 E⊥B，轨迹为摆线。',
+        : '回旋叠加 E×B 漂移；若由静止释放且 E⊥B，轨迹为摆线。',
     assumptions: [
       'E 在纸面内、B 垂直纸面（自动 E⊥B）',
       '场在粒子处均匀、忽略重力',
@@ -500,36 +516,39 @@ function analyzeCrossedEB(ctx: AnalysisContext, forcesInModel: string[]): Motion
     ],
     parametric: [
       {
-        symbolic: 'v_d = E×B / B²  （漂移速度）',
-        numeric: `v_d = (${fmt(vdx)}, ${fmt(vdy)}) m/s，|v_d|=${fmt(vd)}（=E/|B|=${fmt(E / Math.abs(Bz))}）`,
+        symbolic: '\\vec{v}_d=\\frac{\\vec{E}\\times\\vec{B}}{B^2}',
+        numeric: `\\vec{v}_d=(${fmtTex(vdx)},\\ ${fmtTex(vdy)})${unitTex('m/s')},\\ |\\vec{v}_d|=${fmtTex(vd)}=\\frac{E}{|B|}=${fmtTex(E / Math.abs(Bz))}`,
+        note: '漂移速度',
       },
       {
-        symbolic: 'x(τ) = x_{c0} + v_{dx} τ + δx₀ cos(ωτ) + δy₀ sin(ωτ)',
-        numeric: `x(τ) = ${fmt(xc)} + (${fmt(vdx)})τ + (${fmt(b.x - xc)}) cos(ωτ) + (${fmt(b.y - yc)}) sin(ωτ)`,
+        symbolic: 'x(\\tau)=x_{c0}+v_{dx}\\tau+\\delta x_0\\cos(\\omega\\tau)+\\delta y_0\\sin(\\omega\\tau)',
+        numeric: `x(\\tau)=${fmtTex(xc)}+(${fmtTex(vdx)})\\tau+(${fmtTex(b.x - xc)})\\cos(\\omega\\tau)+(${fmtTex(b.y - yc)})\\sin(\\omega\\tau)`,
       },
       {
-        symbolic: 'y(τ) = y_{c0} + v_{dy} τ + δy₀ cos(ωτ) − δx₀ sin(ωτ)',
-        numeric: `y(τ) = ${fmt(yc)} + (${fmt(vdy)})τ + (${fmt(b.y - yc)}) cos(ωτ) − (${fmt(b.x - xc)}) sin(ωτ)`,
+        symbolic: 'y(\\tau)=y_{c0}+v_{dy}\\tau+\\delta y_0\\cos(\\omega\\tau)-\\delta x_0\\sin(\\omega\\tau)',
+        numeric: `y(\\tau)=${fmtTex(yc)}+(${fmtTex(vdy)})\\tau+(${fmtTex(b.y - yc)})\\cos(\\omega\\tau)-(${fmtTex(b.x - xc)})\\sin(\\omega\\tau)`,
       },
       {
-        symbolic: '漂移系：匀速圆周，R = m|v−v_d|/|qB|，ω = qB/m',
-        numeric: `R = ${fmt(R)} m，ω = ${fmt(ω)} rad/s`,
+        symbolic: 'R=\\frac{m|\\vec{v}-\\vec{v}_d|}{|qB|},\\quad\\omega=\\frac{qB}{m}',
+        numeric: `R=${fmtTex(R)}${unitTex('m')},\\ \\omega=${fmtTex(ω)}${unitTex('rad/s')}`,
+        note: '漂移系匀速圆周',
       },
     ],
     extras: [
       {
-        symbolic: '由静止释放：普通摆线，滚轮半径 R=mE/(qB²)，尖点间距 2πR',
+        symbolic: 'R_{\\mathrm{cyc}}=\\frac{mE}{|q|B^2},\\quad\\Delta=2\\pi R_{\\mathrm{cyc}}',
         numeric:
           hypot(b.vx, b.vy) < 1e-9
-            ? `R_摆 = ${fmt((b.m * E) / (Math.abs(b.q) * B2))} m，尖点距 ${fmt((2 * Math.PI * b.m * E) / (Math.abs(b.q) * B2))} m`
-            : '（当前并非静止释放；上式仅作对照）',
+            ? `R_{\\mathrm{cyc}}=${fmtTex((b.m * E) / (Math.abs(b.q) * B2))}${unitTex('m')},\\ \\Delta=${fmtTex((2 * Math.PI * b.m * E) / (Math.abs(b.q) * B2))}${unitTex('m')}`
+            : '\\text{(not released from rest)}',
+        note: '由静止释放时的普通摆线',
       },
     ],
     derived: [
-      { name: '漂移速度 |E×B|/B²', formula: 'E/|B|', value: `${fmt(vd)} m/s` },
-      { name: '回旋半径（漂移系）', formula: 'm|v−vd|/|qB|', value: `${fmt(R)} m` },
-      { name: '回旋周期', formula: '2πm/|qB|', value: `${fmt(T)} s` },
-      { name: '速度选择器平衡', formula: 'v=E/B', value: `${fmt(E / Math.abs(Bz))} m/s（当 v∥且 F电+F洛=0）` },
+      { name: '漂移速度 |E×B|/B²', formula: '|\\vec{v}_d|=\\frac{E}{|B|}', value: `${fmtTex(vd)}${unitTex('m/s')}` },
+      { name: '回旋半径（漂移系）', formula: 'R=\\frac{m|\\vec{v}-\\vec{v}_d|}{|qB|}', value: `${fmtTex(R)}${unitTex('m')}` },
+      { name: '回旋周期', formula: 'T=\\frac{2\\pi m}{|qB|}', value: `${fmtTex(T)}${unitTex('s')}` },
+      { name: '速度选择器平衡', formula: 'v=\\frac{E}{B}', value: `${fmtTex(E / Math.abs(Bz))}${unitTex('m/s')}` },
     ],
     validity: '场区有界或存在重力时，解析式仅在均匀区内近似成立。',
     forcesInModel,
@@ -549,7 +568,6 @@ function analyzeCentralCoulomb(
     ? forcesInModel
     : [...forcesInModel, '库仑力（非匀强）'];
 
-  // 单固定心：Kepler / Rutherford
   const fixed = charges.filter(c => c.fixed);
   const center = fixed.length === 1
     ? fixed[0]
@@ -557,7 +575,7 @@ function analyzeCentralCoulomb(
 
   if (center && (fixed.length === 1 || charges.length === 1)) {
     const Q = center.q;
-    const α = k * b.q * Q; // F = α r̂ / r² (3d) or (2α/r) wait — 3d: F=kqq/r²
+    const α = k * b.q * Q;
     const rx = b.x - center.x;
     const ry = b.y - center.y;
     const r = hypot(rx, ry);
@@ -572,7 +590,6 @@ function analyzeCentralCoulomb(
     const Etot = Ek + U;
     const attract = α < 0;
 
-    // 圆轨道判据：径向速度≈0 且向心加速度匹配库仑力
     let circular = false;
     let ωCirc = 0;
     let rCirc = r;
@@ -587,7 +604,6 @@ function analyzeCentralCoulomb(
       }
     }
 
-    // 偏心率（仅 1/r²）：e = sqrt(1 + 2 E L² /(m α²))
     let ecc = NaN;
     let orbitKind = '一般有心力轨道';
     if (law === 'coulomb3d' && Math.abs(α) > 1e-30 && L > 1e-30) {
@@ -619,34 +635,36 @@ function analyzeCentralCoulomb(
         ],
         parametric: [
           {
-            symbolic: 'x(τ) = x_c + r cos(ωτ+φ)，  y(τ) = y_c + r sin(ωτ+φ)',
-            numeric: `(x_c,y_c)=(${fmt(center.x)}, ${fmt(center.y)})，r=${fmt(rCirc)}，ω=${fmt(ωCirc)} rad/s`,
+            symbolic: 'x(\\tau)=x_c+r\\cos(\\omega\\tau+\\phi),\\quad y(\\tau)=y_c+r\\sin(\\omega\\tau+\\phi)',
+            numeric: `(x_c,y_c)=(${fmtTex(center.x)},\\ ${fmtTex(center.y)}),\\ r=${fmtTex(rCirc)},\\ \\omega=${fmtTex(ωCirc)}${unitTex('rad/s')}`,
           },
           {
-            symbolic: 'ω² = |k q Q| / (m r³)（引力类比 / 向心力）',
-            numeric: `|ω|=${fmt(Math.abs(ωCirc))}，T=${fmt(T)} s`,
+            symbolic: '\\omega^2=\\frac{|kqQ|}{mr^3}',
+            numeric: `|\\omega|=${fmtTex(Math.abs(ωCirc))},\\ T=${fmtTex(T)}${unitTex('s')}`,
+            note: '向心力 = 库仑力',
           },
         ],
         extras: [
           {
-            symbolic: 'v = √(|k q Q|/(m r))，  L = m v r',
-            numeric: `|v|=${fmt(Math.sqrt(v2))} m/s，L_z=${fmt(Lz)} kg·m²/s`,
+            symbolic: 'v=\\sqrt{\\frac{|kqQ|}{mr}},\\quad L=mvr',
+            numeric: `|v|=${fmtTex(Math.sqrt(v2))}${unitTex('m/s')},\\ L_z=${fmtTex(Lz)}${unitTex('kg·m²/s')}`,
           },
         ],
         derived: [
-          { name: '轨道半径 r', formula: 'r', value: `${fmt(rCirc)} m` },
-          { name: '周期 T', formula: '2π/|ω|', value: `${fmt(T)} s` },
-          { name: '机械能 E', formula: '½mv² + kqQ/r', value: `${fmt(Etot)} J` },
-          { name: '角动量 L_z', formula: 'm(x v_y − y v_x)', value: `${fmt(Lz)} kg·m²/s` },
+          { name: '轨道半径 r', formula: 'r', value: `${fmtTex(rCirc)}${unitTex('m')}` },
+          { name: '周期 T', formula: 'T=\\frac{2\\pi}{|\\omega|}', value: `${fmtTex(T)}${unitTex('s')}` },
+          { name: '机械能 E', formula: 'E=\\frac{1}{2}mv^2+\\frac{kqQ}{r}', value: `${fmtTex(Etot)}${unitTex('J')}` },
+          { name: '角动量 L_z', formula: 'L_z=m(xv_y-yv_x)', value: `${fmtTex(Lz)}${unitTex('kg·m²/s')}` },
         ],
         validity: '中心若可动或存在其它电荷，圆轨道条件被破坏；软核半径内力被截断。',
         forcesInModel: forces,
       };
     }
 
+    const Fr = law === 'coulomb3d' ? '\\frac{kqQ}{r^2}' : '\\frac{2kqQ}{r}';
     const phiLaw = law === 'coulomb3d'
-      ? 'φ = k Q / r，  U = q φ = k q Q / r'
-      : 'φ = −2 k Q ln r，  U = q φ';
+      ? '\\varphi=\\frac{kQ}{r},\\quad U=q\\varphi=\\frac{kqQ}{r}'
+      : '\\varphi=-2kQ\\ln r,\\quad U=q\\varphi';
     return {
       regimeId: 'coulomb_central',
       title: '库仑中心力（固定点电荷）',
@@ -659,41 +677,43 @@ function analyzeCentralCoulomb(
       ],
       parametric: [
         {
-          symbolic: 'm r̈ = L²/(m r³) + F_r(r)，  F_r = ' + (law === 'coulomb3d' ? 'k q Q / r²' : '2 k q Q / r'),
-          numeric: `相对心 ((${fmt(center.x)}, ${fmt(center.y)}))：r=${fmt(r)} m，v_r=${fmt(vr)}，L_z=${fmt(Lz)}`,
+          symbolic: `m\\ddot{r}=\\frac{L^2}{mr^3}+F_r(r),\\quad F_r=${Fr}`,
+          numeric: `r=${fmtTex(r)}${unitTex('m')},\\ v_r=${fmtTex(vr)},\\ L_z=${fmtTex(Lz)}`,
+          note: `相对心 (${fmt(center.x)}, ${fmt(center.y)})`,
         },
         {
-          symbolic: 'θ̇ = L_z / (m r²)',
-          numeric: `θ̇ = ${fmt(Lz / (b.m * Math.max(r * r, 1e-18)))} rad/s`,
+          symbolic: '\\dot{\\theta}=\\frac{L_z}{mr^2}',
+          numeric: `\\dot{\\theta}=${fmtTex(Lz / (b.m * Math.max(r * r, 1e-18)))}${unitTex('rad/s')}`,
         },
         {
           symbolic: law === 'coulomb3d'
-            ? '圆锥曲线：r = (L²/(m|α|)) / (1 + e cos θ)（吸引 α=kqQ<0 时）'
-            : '对数势无统一圆锥曲线公式',
-          numeric: Number.isFinite(ecc) ? `e ≈ ${fmt(ecc, 4)}，α=kqQ=${fmt(α)}` : `α=${fmt(α)}`,
+            ? 'r=\\frac{L^2/(m|\\alpha|)}{1+e\\cos\\theta}'
+            : '\\text{no elementary conic for log potential}',
+          numeric: Number.isFinite(ecc) ? `e\\approx${fmtTex(ecc, 4)},\\ \\alpha=kqQ=${fmtTex(α)}` : `\\alpha=${fmtTex(α)}`,
+          note: law === 'coulomb3d' ? '吸引时 α=kqQ<0' : undefined,
         },
       ],
       extras: [
-        { symbolic: phiLaw, numeric: `U=${fmt(U)} J，E_k=${fmt(Ek)} J，E=${fmt(Etot)} J` },
+        { symbolic: phiLaw, numeric: `U=${fmtTex(U)}${unitTex('J')},\\ E_k=${fmtTex(Ek)}${unitTex('J')},\\ E=${fmtTex(Etot)}${unitTex('J')}` },
         {
-          symbolic: '守恒：E = ½mṙ² + L²/(2m r²) + U(r)，  L_z = const',
-          numeric: '右侧轨迹为数值积分；解析叠加仅在近圆时给出圆轨道',
+          symbolic: 'E=\\frac{1}{2}m\\dot{r}^2+\\frac{L^2}{2mr^2}+U(r),\\quad L_z=\\mathrm{const}',
+          numeric: '\\text{numeric trajectory; analytic overlay when near-circular}',
+          note: '守恒量',
         },
       ],
       derived: [
-        { name: '势能 U', formula: law === 'coulomb3d' ? 'kqQ/r' : '−2kqQ ln r', value: `${fmt(U)} J` },
-        { name: '机械能 E', formula: 'Ek+U', value: `${fmt(Etot)} J` },
-        { name: '角动量 |L|', formula: '|r×p|', value: `${fmt(L)} kg·m²/s` },
-        { name: '偏心率 e', formula: '√(1+2EL²/(mα²))', value: Number.isFinite(ecc) ? fmt(ecc, 4) : '—' },
-        { name: '轨道类型', formula: 'e 与符号(α)', value: orbitKind },
-        { name: '比荷 q/m', formula: 'q/m', value: `${fmt(b.q / b.m)} C/kg` },
+        { name: '势能 U', formula: law === 'coulomb3d' ? 'U=\\frac{kqQ}{r}' : 'U=-2kqQ\\ln r', value: `${fmtTex(U)}${unitTex('J')}` },
+        { name: '机械能 E', formula: 'E=E_k+U', value: `${fmtTex(Etot)}${unitTex('J')}` },
+        { name: '角动量 |L|', formula: '|\\vec{r}\\times\\vec{p}|', value: `${fmtTex(L)}${unitTex('kg·m²/s')}` },
+        { name: '偏心率 e', formula: 'e=\\sqrt{1+\\frac{2EL^2}{m\\alpha^2}}', value: Number.isFinite(ecc) ? fmtTex(ecc, 4) : '\\text{—}' },
+        { name: `轨道类型 · ${orbitKind}`, formula: 'e,\\ \\mathrm{sign}(\\alpha)', value: Number.isFinite(ecc) ? fmtTex(ecc, 4) : '\\text{—}' },
+        { name: '比荷 q/m', formula: '\\frac{q}{m}', value: `${fmtTex(b.q / b.m)}${unitTex('C/kg')}` },
       ],
       validity: '多电荷、可动源或软核截断时，上式仅为以最近固定源为心的近似。',
       forcesInModel: forces,
     };
   }
 
-  // 多点电荷 / 无单一固定心
   return {
     regimeId: 'coulomb_field',
     title: '非匀强静电场（多点电荷）',
@@ -705,24 +725,26 @@ function analyzeCentralCoulomb(
     ],
     parametric: [
       {
-        symbolic: 'm a = q Σ_i E_i(r)，  E_i = k Q_i (r−r_i)/|r−r_i|³',
-        numeric: `当前位置 (${fmt(b.x)}, ${fmt(b.y)})，抽样 E=(${fmt(ctx.field.Ex)}, ${fmt(ctx.field.Ey)})`,
+        symbolic: 'm\\vec{a}=q\\sum_i\\vec{E}_i(\\vec{r}),\\quad\\vec{E}_i=kQ_i\\frac{\\vec{r}-\\vec{r}_i}{|\\vec{r}-\\vec{r}_i|^3}',
+        numeric: `\\vec{r}=(${fmtTex(b.x)},\\ ${fmtTex(b.y)}),\\ \\vec{E}=(${fmtTex(ctx.field.Ex)},\\ ${fmtTex(ctx.field.Ey)})`,
       },
       {
-        symbolic: 'φ = Σ_i k Q_i / |r−r_i|，  U = q φ（保守场，无 B 时机械能守恒）',
-        numeric: `k=${fmt(k)}，源数=${charges.length}`,
+        symbolic: '\\varphi=\\sum_i\\frac{kQ_i}{|\\vec{r}-\\vec{r}_i|},\\quad U=q\\varphi',
+        numeric: `k=${fmtTex(k)},\\ N=${charges.length}`,
+        note: '无 B 时机械能守恒',
       },
     ],
     extras: [
       {
-        symbolic: '可尝试：只留一个固定源 → 落入「库仑中心力」圆锥曲线分析',
-        numeric: charges.map(c => `Q@(${fmt(c.x)},${fmt(c.y)})=${fmt(c.q)}C${c.fixed ? '·固定' : ''}`).join('； '),
+        symbolic: '\\text{reduce to one fixed source for conic analysis}',
+        numeric: charges.map(c => `Q(${fmtTex(c.x)},${fmtTex(c.y)})=${fmtTex(c.q)}`).join(',\\ '),
+        note: '场景源',
       },
     ],
     derived: [
-      { name: '|E|', formula: '|Σ E_i|', value: `${fmt(hypot(ctx.field.Ex, ctx.field.Ey))} N/C` },
-      { name: '|a|', formula: '|qE|/m', value: `${fmt((Math.abs(b.q) * hypot(ctx.field.Ex, ctx.field.Ey)) / b.m)} m/s²` },
-      { name: '动能', formula: '½mv²', value: `${fmt(0.5 * b.m * (b.vx * b.vx + b.vy * b.vy))} J` },
+      { name: '|E|', formula: '|\\sum_i\\vec{E}_i|', value: `${fmtTex(hypot(ctx.field.Ex, ctx.field.Ey))}${unitTex('N/C')}` },
+      { name: '|a|', formula: '|\\vec{a}|=\\frac{|qE|}{m}', value: `${fmtTex((Math.abs(b.q) * hypot(ctx.field.Ex, ctx.field.Ey)) / b.m)}${unitTex('m/s²')}` },
+      { name: '动能', formula: 'E_k=\\frac{1}{2}mv^2', value: `${fmtTex(0.5 * b.m * (b.vx * b.vx + b.vy * b.vy))}${unitTex('J')}` },
     ],
     validity: '电场线为可视化；解析轨迹需对称性（单固定心、匀强区等）。',
     forcesInModel: forces,
@@ -743,32 +765,29 @@ function analyzeUniformE(ctx: AnalysisContext, forcesInModel: string[]): MotionA
     assumptions: ['E 均匀', '无磁场、无重力（或已关闭）', '无阻力'],
     parametric: [
       {
-        symbolic: 'x(τ) = x₀ + v_{x0} τ + ½ a_x τ²',
-        numeric: `x(τ) = ${fmt(b.x)} + (${fmt(b.vx)})τ + ½(${fmt(ax)})τ²`,
+        symbolic: 'x(\\tau)=x_0+v_{x0}\\tau+\\frac{1}{2}a_x\\tau^2',
+        numeric: `x(\\tau)=${fmtTex(b.x)}+(${fmtTex(b.vx)})\\tau+\\frac{1}{2}(${fmtTex(ax)})\\tau^2`,
       },
       {
-        symbolic: 'y(τ) = y₀ + v_{y0} τ + ½ a_y τ²',
-        numeric: `y(τ) = ${fmt(b.y)} + (${fmt(b.vy)})τ + ½(${fmt(ay)})τ²`,
+        symbolic: 'y(\\tau)=y_0+v_{y0}\\tau+\\frac{1}{2}a_y\\tau^2',
+        numeric: `y(\\tau)=${fmtTex(b.y)}+(${fmtTex(b.vy)})\\tau+\\frac{1}{2}(${fmtTex(ay)})\\tau^2`,
       },
       {
-        symbolic: 'a = qE / m',
-        numeric: `a = (${fmt(ax)}, ${fmt(ay)}) m/s²，|a|=${fmt(a)}`,
+        symbolic: '\\vec{a}=\\frac{q\\vec{E}}{m}',
+        numeric: `\\vec{a}=(${fmtTex(ax)},\\ ${fmtTex(ay)})${unitTex('m/s²')},\\ |\\vec{a}|=${fmtTex(a)}`,
       },
     ],
     extras: [
       {
-        symbolic: '若 v₀ ⊥ a，等价于重力场中的平抛（g_eff = |a|）',
-        numeric: `平抛类比 g_eff = ${fmt(a)} m/s²`,
+        symbolic: '\\vec{v}_0\\perp\\vec{a}\\ \\Rightarrow\\ g_{\\mathrm{eff}}=|\\vec{a}|',
+        numeric: `g_{\\mathrm{eff}}=${fmtTex(a)}${unitTex('m/s²')}`,
+        note: '类平抛',
       },
     ],
     derived: [
-      { name: '加速度 |a|', formula: '|q|E/m', value: `${fmt(a)} m/s²` },
-      { name: '比荷 q/m', formula: 'q/m', value: `${fmt(b.q / b.m)} C/kg` },
-      {
-        name: '动能变化',
-        formula: 'ΔEk = qE·Δr',
-        value: '电场力做功，动能不守恒',
-      },
+      { name: '加速度 |a|', formula: '|\\vec{a}|=\\frac{|q|E}{m}', value: `${fmtTex(a)}${unitTex('m/s²')}` },
+      { name: '比荷 q/m', formula: '\\frac{q}{m}', value: `${fmtTex(b.q / b.m)}${unitTex('C/kg')}` },
+      { name: '动能变化', formula: '\\Delta E_k=q\\vec{E}\\cdot\\Delta\\vec{r}', value: '\\text{not conserved}' },
     ],
     validity: '离开电场区域后 a→0，改为匀速直线运动。',
     forcesInModel,
@@ -790,28 +809,29 @@ function analyzeProjectile(ctx: AnalysisContext, forcesInModel: string[]): Motio
     assumptions: ['重力场均匀', '无电磁场有效作用', '无空气阻力', '着陆/碰撞前'],
     parametric: [
       {
-        symbolic: 'x(τ) = x₀ + v_{x0} τ',
-        numeric: `x(τ) = ${fmt(b.x)} + (${fmt(b.vx)})τ`,
+        symbolic: 'x(\\tau)=x_0+v_{x0}\\tau',
+        numeric: `x(\\tau)=${fmtTex(b.x)}+(${fmtTex(b.vx)})\\tau`,
       },
       {
-        symbolic: 'y(τ) = y₀ + v_{y0} τ − ½ g τ²',
-        numeric: `y(τ) = ${fmt(b.y)} + (${fmt(b.vy)})τ − ½(${fmt(g)})τ²`,
+        symbolic: 'y(\\tau)=y_0+v_{y0}\\tau-\\frac{1}{2}g\\tau^2',
+        numeric: `y(\\tau)=${fmtTex(b.y)}+(${fmtTex(b.vy)})\\tau-\\frac{1}{2}(${fmtTex(g)})\\tau^2`,
       },
     ],
     extras: [
       {
-        symbolic: '消去 τ：y − y₀ = (v_{y0}/v_{x0})(x−x₀) − g(x−x₀)²/(2 v_{x0}²)  （v_x≠0）',
+        symbolic: 'y-y_0=\\frac{v_{y0}}{v_{x0}}(x-x_0)-\\frac{g(x-x_0)^2}{2v_{x0}^2}',
         numeric:
           Math.abs(b.vx) > 1e-12
-            ? `y = ${fmt(b.y)} + (${fmt(b.vy / b.vx)})(x−${fmt(b.x)}) − (${fmt(g / (2 * b.vx * b.vx))})(x−${fmt(b.x)})²`
-            : 'v_x=0：竖直抛体，x 恒定',
+            ? `y=${fmtTex(b.y)}+(${fmtTex(b.vy / b.vx)})(x-${fmtTex(b.x)})-(${fmtTex(g / (2 * b.vx * b.vx))})(x-${fmtTex(b.x)})^2`
+            : 'v_x=0\\Rightarrow\\text{vertical throw}',
+        note: 'v_x≠0 时消去 τ',
       },
     ],
     derived: [
-      { name: '速率 |v|', formula: '|v|', value: `${fmt(v)} m/s` },
-      { name: '方向角', formula: 'atan2(vy,vx)', value: `${fmt(ang, 2)}°` },
-      { name: '相对上升高度', formula: 'v_y²/2g', value: b.vy > 0 ? `${fmt(H)} m` : '—' },
-      { name: '到最高点时间', formula: 'v_y/g', value: b.vy > 0 ? `${fmt(T_up)} s` : '—' },
+      { name: '速率 |v|', formula: '|\\vec{v}|', value: `${fmtTex(v)}${unitTex('m/s')}` },
+      { name: '方向角', formula: '\\theta=\\mathrm{atan2}(v_y,v_x)', value: `${fmtTex(ang, 2)}^\\circ` },
+      { name: '相对上升高度', formula: 'H=\\frac{v_y^2}{2g}', value: b.vy > 0 ? `${fmtTex(H)}${unitTex('m')}` : '\\text{—}' },
+      { name: '到最高点时间', formula: 't_{\\uparrow}=\\frac{v_y}{g}', value: b.vy > 0 ? `${fmtTex(T_up)}${unitTex('s')}` : '\\text{—}' },
     ],
     validity: '触地、碰挡板或开启阻力后不再适用上述闭式解。',
     forcesInModel,
@@ -839,19 +859,21 @@ function analyzeSpring(ctx: AnalysisContext, forcesInModel: string[]): MotionAna
     assumptions: ['理想弹簧 F=−k(L−L₀) r̂', '本模拟为二维自由质点+弹簧，未强制单轴约束'],
     parametric: [
       {
-        symbolic: '一维水平简谐（若限制在 x 轴）：x(τ)=A cos(ω₀τ+φ)，ω₀=√(k/m)',
-        numeric: `ω₀ = ${fmt(ω0)} rad/s，T = ${fmt(T)} s，当前 L=${fmt(L)} m，L₀=${fmt(s.L0)} m`,
+        symbolic: 'x(\\tau)=A\\cos(\\omega_0\\tau+\\phi),\\quad\\omega_0=\\sqrt{k/m}',
+        numeric: `\\omega_0=${fmtTex(ω0)}${unitTex('rad/s')},\\ T=${fmtTex(T)}${unitTex('s')},\\ L=${fmtTex(L)}${unitTex('m')},\\ L_0=${fmtTex(s.L0)}${unitTex('m')}`,
+        note: '一维水平简谐（若限制在 x 轴）',
       },
       {
-        symbolic: '二维自由端：需解 ẍ = −(k/m)(1−L₀/L)(x−x_a) 等耦合 ODE',
-        numeric: '右侧图像为数值积分结果；解析参数方程仅在一维约束下严格成立',
+        symbolic: '\\ddot{x}=-\\frac{k}{m}\\left(1-\\frac{L_0}{L}\\right)(x-x_a)',
+        numeric: '\\text{2D free end: numeric ODE}',
+        note: '二维自由端耦合',
       },
     ],
     extras: [],
     derived: [
-      { name: '固有角频 ω₀', formula: '√(k/m)', value: `${fmt(ω0)} rad/s` },
-      { name: '周期 T', formula: '2π√(m/k)', value: `${fmt(T)} s` },
-      { name: '伸长量', formula: 'L−L₀', value: `${fmt(L - s.L0)} m` },
+      { name: '固有角频 ω₀', formula: '\\omega_0=\\sqrt{k/m}', value: `${fmtTex(ω0)}${unitTex('rad/s')}` },
+      { name: '周期 T', formula: 'T=2\\pi\\sqrt{m/k}', value: `${fmtTex(T)}${unitTex('s')}` },
+      { name: '伸长量', formula: '\\Delta L=L-L_0', value: `${fmtTex(L - s.L0)}${unitTex('m')}` },
     ],
     validity: '二维无轨道约束时轨迹不一定是直线简谐；请结合数值轨迹理解。',
     forcesInModel,
@@ -864,7 +886,7 @@ function analyzePendulum(ctx: AnalysisContext, forcesInModel: string[]): MotionA
   const dx = b.x - s.anchor.x;
   const dy = b.y - s.anchor.y;
   const L = hypot(dx, dy);
-  const theta = Math.atan2(dx, -dy); // 相对竖直向下的偏角
+  const theta = Math.atan2(dx, -dy);
   const ω0 = Math.sqrt(ctx.g / Math.max(s.L0, 1e-9));
   const T_small = (2 * Math.PI) / ω0;
 
@@ -875,22 +897,23 @@ function analyzePendulum(ctx: AnalysisContext, forcesInModel: string[]): MotionA
     assumptions: ['绳不可伸长（本引擎用硬弹簧近似）', '固定悬点', '平面摆'],
     parametric: [
       {
-        symbolic: 'θ̈ + (g/L) sinθ = 0',
-        numeric: `当前 θ ≈ ${fmt(theta / DEG, 2)}°，L₀=${fmt(s.L0)} m`,
+        symbolic: '\\ddot{\\theta}+\\frac{g}{L}\\sin\\theta=0',
+        numeric: `\\theta\\approx${fmtTex(theta / DEG, 2)}^\\circ,\\ L_0=${fmtTex(s.L0)}${unitTex('m')}`,
       },
       {
-        symbolic: '小角度：θ(τ) ≈ Θ cos(ω₀τ+φ)，ω₀=√(g/L)',
-        numeric: `ω₀ ≈ ${fmt(ω0)} rad/s，T≈${fmt(T_small)} s`,
+        symbolic: '\\theta(\\tau)\\approx\\Theta\\cos(\\omega_0\\tau+\\phi),\\quad\\omega_0=\\sqrt{g/L}',
+        numeric: `\\omega_0\\approx${fmtTex(ω0)}${unitTex('rad/s')},\\ T\\approx${fmtTex(T_small)}${unitTex('s')}`,
+        note: '小角度',
       },
       {
-        symbolic: 'x = x_a + L sinθ，  y = y_a − L cosθ',
-        numeric: `(x_a,y_a)=(${fmt(s.anchor.x)}, ${fmt(s.anchor.y)})，当前 L=${fmt(L)} m`,
+        symbolic: 'x=x_a+L\\sin\\theta,\\quad y=y_a-L\\cos\\theta',
+        numeric: `(x_a,y_a)=(${fmtTex(s.anchor.x)},\\ ${fmtTex(s.anchor.y)}),\\ L=${fmtTex(L)}${unitTex('m')}`,
       },
     ],
     extras: [],
     derived: [
-      { name: '小角度周期', formula: '2π√(L/g)', value: `${fmt(T_small)} s` },
-      { name: '摆角 θ', formula: 'atan2(x−xa, ya−y)', value: `${fmt(theta / DEG, 2)}°` },
+      { name: '小角度周期', formula: 'T=2\\pi\\sqrt{L/g}', value: `${fmtTex(T_small)}${unitTex('s')}` },
+      { name: '摆角 θ', formula: '\\theta=\\mathrm{atan2}(x-x_a,y_a-y)', value: `${fmtTex(theta / DEG, 2)}^\\circ` },
     ],
     validity: '绳松弛（T=0）后变为抛体；刚度不足时会有弹性拉伸误差。',
     forcesInModel,
@@ -901,11 +924,11 @@ function analyzeGeneral(ctx: AnalysisContext, forcesInModel: string[], v: number
   const b = ctx.body;
   const F = ctx.field;
   const parts: string[] = [];
-  if (ctx.gOn) parts.push('m(0, −g)');
-  if (b.q) parts.push('qE + qv×B');
-  if (ctx.Fext.x || ctx.Fext.y) parts.push('F_ext');
-  if (ctx.springs.length) parts.push('Σ F_spring');
-  if (ctx.drag) parts.push('−b v');
+  if (ctx.gOn) parts.push('m(0,-g)');
+  if (b.q) parts.push('q\\vec{E}+q\\vec{v}\\times\\vec{B}');
+  if (ctx.Fext.x || ctx.Fext.y) parts.push('\\vec{F}_{\\mathrm{ext}}');
+  if (ctx.springs.length) parts.push('\\sum\\vec{F}_{\\mathrm{spring}}');
+  if (ctx.drag) parts.push('-b\\vec{v}');
 
   return {
     regimeId: 'general',
@@ -914,24 +937,24 @@ function analyzeGeneral(ctx: AnalysisContext, forcesInModel: string[], v: number
     assumptions: ['下面写出的是微分方程，不是闭式轨迹'],
     parametric: [
       {
-        symbolic: 'm a = Σ F',
-        numeric: `m=${fmt(b.m)}，当前位置 (${fmt(b.x)}, ${fmt(b.y)})，v=(${fmt(b.vx)}, ${fmt(b.vy)})`,
+        symbolic: 'm\\vec{a}=\\sum\\vec{F}',
+        numeric: `m=${fmtTex(b.m)},\\ \\vec{r}=(${fmtTex(b.x)},\\ ${fmtTex(b.y)}),\\ \\vec{v}=(${fmtTex(b.vx)},\\ ${fmtTex(b.vy)})`,
       },
       {
-        symbolic: parts.length ? `m(ẍ, ÿ) = ${parts.join(' + ')}` : 'm a = 0',
-        numeric: `场抽样 E=(${fmt(F.Ex)}, ${fmt(F.Ey)})，B_z=${fmt(F.Bz)}，|v|=${fmt(v)}`,
+        symbolic: parts.length ? `m(\\ddot{x},\\ddot{y})=${parts.join('+')}` : 'm\\vec{a}=0',
+        numeric: `\\vec{E}=(${fmtTex(F.Ex)},\\ ${fmtTex(F.Ey)}),\\ B_z=${fmtTex(F.Bz)},\\ |\\vec{v}|=${fmtTex(v)}`,
       },
     ],
     extras: [
       {
-        symbolic: '可尝试：关闭部分力 / 使场均匀全域，以落入圆周、平抛、摆线等可析情形',
-        numeric: '例如仅保留匀强 B → 圆周参数方程；仅重力 → 抛体参数方程',
+        symbolic: '\\text{reduce forces / make fields uniform for closed form}',
+        numeric: '\\text{e.g. uniform }B\\to\\text{cyclotron};\\ \\text{gravity only}\\to\\text{projectile}',
       },
     ],
     derived: [
-      { name: '速率', formula: '|v|', value: `${fmt(v)} m/s` },
-      { name: '动量', formula: 'm|v|', value: `${fmt(b.m * v)} kg·m/s` },
-      { name: '动能', formula: '½mv²', value: `${fmt(0.5 * b.m * v * v)} J` },
+      { name: '速率', formula: '|\\vec{v}|', value: `${fmtTex(v)}${unitTex('m/s')}` },
+      { name: '动量', formula: 'p=m|\\vec{v}|', value: `${fmtTex(b.m * v)}${unitTex('kg·m/s')}` },
+      { name: '动能', formula: 'E_k=\\frac{1}{2}mv^2', value: `${fmtTex(0.5 * b.m * v * v)}${unitTex('J')}` },
     ],
     validity: '请用轨迹与 v–t / x–t 图像观察；解析式需满足更强对称性。',
     forcesInModel,

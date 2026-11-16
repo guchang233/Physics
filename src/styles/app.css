@@ -276,7 +276,7 @@ label.chk input { accent-color: var(--accent); }
   border: 1px solid var(--border); border-radius: var(--radius);
 }
 
-/* Analysis */
+/* Analysis + MathQuill */
 .analysis-panel { font-size: 12px; line-height: 1.45; padding: 0 12px 12px; }
 .analysis-panel .an-head { margin: 10px 0 8px; }
 .analysis-panel .an-title { font-weight: 600; font-size: 13px; color: var(--text); }
@@ -292,10 +292,49 @@ label.chk input { accent-color: var(--accent); }
   background: var(--panel2); border: 1px solid var(--border);
   border-radius: var(--radius); padding: 8px 9px; margin: 5px 0;
 }
-.analysis-panel .eq-sym { font-family: var(--mono); font-size: 11.5px; color: var(--text); word-break: break-word; }
-.analysis-panel .eq-num { font-family: var(--mono); font-size: 11px; color: var(--accent); margin-top: 4px; word-break: break-word; }
-.analysis-panel .der-grid { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; }
-.analysis-panel .der-row { display: contents; }
+.analysis-panel .eq-note {
+  font-size: 11px; color: var(--muted); margin-bottom: 4px;
+}
+.analysis-panel .eq-row {
+  display: grid; grid-template-columns: 36px 1fr; gap: 6px; align-items: start;
+}
+.analysis-panel .eq-num-row { margin-top: 6px; }
+.analysis-panel .eq-tag {
+  font-size: 10px; color: var(--muted); padding-top: 4px; letter-spacing: 0.02em;
+}
+.analysis-panel .eq-sym,
+.analysis-panel .eq-num {
+  color: var(--text);
+  overflow-x: auto;
+  max-width: 100%;
+  min-width: 0;
+}
+.analysis-panel .eq-num { color: var(--accent); }
+.analysis-panel .eq-num .mq-editable-field,
+.analysis-panel .an-scratch .mq-editable-field {
+  border-color: var(--border);
+  border-radius: 3px;
+  padding: 2px 4px;
+  min-width: 100%;
+  box-sizing: border-box;
+  background: var(--panel);
+}
+.analysis-panel .eq-num .mq-editable-field.mq-focused,
+.analysis-panel .an-scratch .mq-editable-field.mq-focused {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-weak);
+}
+.analysis-panel .mq-host { font-size: 13px; line-height: 1.55; }
+.analysis-panel .mq-math-mode { font-family: Symbola, "Times New Roman", serif; }
+.analysis-panel .der-grid { display: flex; flex-direction: column; gap: 6px; }
+.analysis-panel .der-row {
+  display: grid; grid-template-columns: minmax(72px, 30%) 1fr; gap: 6px 10px; align-items: baseline;
+}
+.analysis-panel .der-row .k { color: var(--muted); font-size: 11px; }
+.analysis-panel .der-math { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 6px; min-width: 0; }
+.analysis-panel .der-eq { color: var(--muted); }
+.analysis-panel .der-value { color: var(--accent); }
+.analysis-panel .an-scratch { min-height: 40px; }
 .analysis-panel .an-meta {
   margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border);
   color: var(--muted); font-size: 11.5px;
