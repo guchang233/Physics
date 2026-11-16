@@ -80,7 +80,8 @@ export class PointChargeSource2 implements FieldSource2 {
 
   lineSeeds(linesPerUnitCharge: number) {
     if (this.q <= 0) return [];
-    const n = Math.max(4, Math.round(Math.abs(this.q) * linesPerUnitCharge));
+    // Scale by |q|/1μC so microcoulomb teaching charges still get readable line counts
+    const n = Math.max(8, Math.min(64, Math.round(linesPerUnitCharge * Math.max(Math.abs(this.q) / 1e-6, 0.5))));
     const r0 = Math.max(this.softRadius * 1.5, 0.02);
     const out: { x: number; y: number; dirx: number; diry: number }[] = [];
     for (let i = 0; i < n; i++) {
