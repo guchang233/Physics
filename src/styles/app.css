@@ -517,7 +517,8 @@ body.dark .tabs button.active {
   box-shadow: 0 0 0 2px var(--accent-soft);
   border-radius: 10px;
 }
-.math-kb-host { margin: 0 0 8px; }
+/* legacy inline math keyboard styles kept for safety; Desmos dock uses desmosKeypad.css */
+.math-kb-host { display: none; }
 .math-kb {
   background: var(--select);
   border-radius: 18px;

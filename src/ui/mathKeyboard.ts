@@ -1,6 +1,6 @@
 /**
- * Desmos-style math keyboard for MathQuill MathFields.
- * Tracks the last-focused editable field and injects cmds / latex / keystrokes.
+ * Desmos Graphing Calculator on-screen keypad — fixed dock, 1:1 layout.
+ * Reference: https://www.desmos.com/calculator (screenshots in /opt/cursor/artifacts/desmos_*)
  */
 
 export type MathFieldLike = {
@@ -12,145 +12,219 @@ export type MathFieldLike = {
   typedText?: (text: string) => void;
 };
 
-type KeyDef =
-  | { label: string; title?: string; kind: 'write'; latex: string; wide?: boolean }
-  | { label: string; title?: string; kind: 'cmd'; latex: string; wide?: boolean }
-  | { label: string; title?: string; kind: 'key'; key: string; wide?: boolean }
-  | { label: string; title?: string; kind: 'text'; text: string; wide?: boolean }
-  | { label: string; title?: string; kind: 'clear'; wide?: boolean };
+type KeyAction =
+  | { kind: 'text'; text: string; alt?: string }
+  | { kind: 'cmd'; latex: string }
+  | { kind: 'write'; latex: string }
+  | { kind: 'key'; key: string }
+  | { kind: 'tab'; tab: 'main' | 'abc' }
+  | { kind: 'functions' }
+  | { kind: 'shift' }
+  | { kind: 'enter' }
+  | { kind: 'noop' };
 
-type PageDef = { id: string; name: string; keys: KeyDef[] };
+type KeySpec = {
+  label: string;
+  title?: string;
+  action: KeyAction;
+  tone?: 'white' | 'gray' | 'blue';
+  /** column units in a 20-column grid (default 2 = one “standard” key) */
+  units?: number;
+  html?: string;
+  italic?: boolean;
+  icon?: 'backspace' | 'enter' | 'left' | 'right' | 'shift' | 'audio' | 'hide';
+};
 
-const PAGES: PageDef[] = [
+type FuncItem = { label: string; latex: string; mode: 'cmd' | 'write' };
+
+const FUNC_GROUPS: { title: string; items: FuncItem[] }[] = [
   {
-    id: 'main',
-    name: '主键盘',
-    keys: [
-      { label: '7', kind: 'text', text: '7' },
-      { label: '8', kind: 'text', text: '8' },
-      { label: '9', kind: 'text', text: '9' },
-      { label: '÷', kind: 'cmd', latex: '\\div', title: '除' },
-      { label: '←', kind: 'key', key: 'Left', title: '左移' },
-      { label: '→', kind: 'key', key: 'Right', title: '右移' },
-
-      { label: '4', kind: 'text', text: '4' },
-      { label: '5', kind: 'text', text: '5' },
-      { label: '6', kind: 'text', text: '6' },
-      { label: '×', kind: 'cmd', latex: '\\times', title: '乘' },
-      { label: '(', kind: 'cmd', latex: '(' },
-      { label: ')', kind: 'cmd', latex: ')' },
-
-      { label: '1', kind: 'text', text: '1' },
-      { label: '2', kind: 'text', text: '2' },
-      { label: '3', kind: 'text', text: '3' },
-      { label: '−', kind: 'text', text: '-' },
-      { label: 'a/b', kind: 'cmd', latex: '\\frac', title: '分数' },
-      { label: '√', kind: 'cmd', latex: '\\sqrt', title: '平方根' },
-
-      { label: '0', kind: 'text', text: '0' },
-      { label: '.', kind: 'text', text: '.' },
-      { label: '=', kind: 'text', text: '=' },
-      { label: '+', kind: 'text', text: '+' },
-      { label: 'xⁿ', kind: 'cmd', latex: '^', title: '指数' },
-      { label: 'xₙ', kind: 'cmd', latex: '_', title: '下标' },
-
-      { label: 'x', kind: 'text', text: 'x' },
-      { label: 'y', kind: 'text', text: 'y' },
-      { label: 't', kind: 'text', text: 't' },
-      { label: 'τ', kind: 'cmd', latex: '\\tau' },
-      { label: 'π', kind: 'cmd', latex: '\\pi' },
-      { label: '⌫', kind: 'key', key: 'Backspace', title: '退格' },
+    title: 'TRIG',
+    items: [
+      { label: 'sin', latex: '\\sin', mode: 'cmd' },
+      { label: 'cos', latex: '\\cos', mode: 'cmd' },
+      { label: 'tan', latex: '\\tan', mode: 'cmd' },
+      { label: 'csc', latex: '\\csc', mode: 'write' },
+      { label: 'sec', latex: '\\sec', mode: 'write' },
+      { label: 'cot', latex: '\\cot', mode: 'write' },
     ],
   },
   {
-    id: 'func',
-    name: '函数',
-    keys: [
-      { label: 'sin', kind: 'cmd', latex: '\\sin' },
-      { label: 'cos', kind: 'cmd', latex: '\\cos' },
-      { label: 'tan', kind: 'cmd', latex: '\\tan' },
-      { label: 'ln', kind: 'cmd', latex: '\\ln' },
-      { label: 'log', kind: 'cmd', latex: '\\log' },
-      { label: '|x|', kind: 'cmd', latex: '|', title: '绝对值' },
-
-      { label: 'arcsin', kind: 'write', latex: '\\arcsin' },
-      { label: 'arccos', kind: 'write', latex: '\\arccos' },
-      { label: 'arctan', kind: 'write', latex: '\\arctan' },
-      { label: 'exp', kind: 'write', latex: '\\exp' },
-      { label: 'e^{}', kind: 'write', latex: 'e^{}', title: '自然指数' },
-      { label: '10^{}', kind: 'write', latex: '10^{}' },
-
-      { label: 'sinh', kind: 'write', latex: '\\sinh' },
-      { label: 'cosh', kind: 'write', latex: '\\cosh' },
-      { label: 'tanh', kind: 'write', latex: '\\tanh' },
-      { label: 'floor', kind: 'write', latex: '\\lfloor\\rfloor' },
-      { label: 'ceil', kind: 'write', latex: '\\lceil\\rceil' },
-      { label: '⌫', kind: 'key', key: 'Backspace' },
+    title: 'INVERSE TRIG',
+    items: [
+      { label: 'arcsin', latex: '\\arcsin', mode: 'write' },
+      { label: 'arccos', latex: '\\arccos', mode: 'write' },
+      { label: 'arctan', latex: '\\arctan', mode: 'write' },
     ],
   },
   {
-    id: 'greek',
-    name: '希腊',
-    keys: [
-      { label: 'α', kind: 'cmd', latex: '\\alpha' },
-      { label: 'β', kind: 'cmd', latex: '\\beta' },
-      { label: 'γ', kind: 'cmd', latex: '\\gamma' },
-      { label: 'δ', kind: 'cmd', latex: '\\delta' },
-      { label: 'ε', kind: 'cmd', latex: '\\varepsilon' },
-      { label: 'θ', kind: 'cmd', latex: '\\theta' },
-
-      { label: 'λ', kind: 'cmd', latex: '\\lambda' },
-      { label: 'μ', kind: 'cmd', latex: '\\mu' },
-      { label: 'ν', kind: 'cmd', latex: '\\nu' },
-      { label: 'π', kind: 'cmd', latex: '\\pi' },
-      { label: 'ρ', kind: 'cmd', latex: '\\rho' },
-      { label: 'σ', kind: 'cmd', latex: '\\sigma' },
-
-      { label: 'τ', kind: 'cmd', latex: '\\tau' },
-      { label: 'φ', kind: 'cmd', latex: '\\phi' },
-      { label: 'ω', kind: 'cmd', latex: '\\omega' },
-      { label: 'Δ', kind: 'cmd', latex: '\\Delta' },
-      { label: 'Ω', kind: 'cmd', latex: '\\Omega' },
-      { label: 'Σ', kind: 'cmd', latex: '\\Sigma' },
+    title: 'HYPERBOLIC',
+    items: [
+      { label: 'sinh', latex: '\\sinh', mode: 'write' },
+      { label: 'cosh', latex: '\\cosh', mode: 'write' },
+      { label: 'tanh', latex: '\\tanh', mode: 'write' },
     ],
   },
   {
-    id: 'sym',
-    name: '符号',
-    keys: [
-      { label: '·', kind: 'cmd', latex: '\\cdot' },
-      { label: '×', kind: 'cmd', latex: '\\times' },
-      { label: '÷', kind: 'cmd', latex: '\\div' },
-      { label: '±', kind: 'cmd', latex: '\\pm' },
-      { label: '≠', kind: 'cmd', latex: '\\ne' },
-      { label: '≈', kind: 'cmd', latex: '\\approx' },
-
-      { label: '≤', kind: 'cmd', latex: '\\le' },
-      { label: '≥', kind: 'cmd', latex: '\\ge' },
-      { label: '<', kind: 'text', text: '<' },
-      { label: '>', kind: 'text', text: '>' },
-      { label: '∞', kind: 'cmd', latex: '\\infty' },
-      { label: '°', kind: 'write', latex: '^{\\circ}', title: '度' },
-
-      { label: '→', kind: 'cmd', latex: '\\to' },
-      { label: '⇒', kind: 'cmd', latex: '\\Rightarrow' },
-      { label: '∈', kind: 'cmd', latex: '\\in' },
-      { label: '⃗', kind: 'cmd', latex: '\\vec', title: '向量' },
-      { label: '˙', kind: 'cmd', latex: '\\dot', title: '对时间导数' },
-      { label: '¨', kind: 'cmd', latex: '\\ddot', title: '二阶导数' },
-
-      { label: '∫', kind: 'cmd', latex: '\\int' },
-      { label: '∑', kind: 'cmd', latex: '\\sum' },
-      { label: '∂', kind: 'cmd', latex: '\\partial' },
-      { label: '∇', kind: 'cmd', latex: '\\nabla' },
-      { label: '√', kind: 'cmd', latex: '\\sqrt' },
-      { label: '清空', kind: 'clear', wide: true, title: '清空当前输入框' },
+    title: 'CALCULUS',
+    items: [
+      { label: 'exp', latex: '\\exp', mode: 'write' },
+      { label: 'ln', latex: '\\ln', mode: 'cmd' },
+      { label: 'log', latex: '\\log', mode: 'cmd' },
+      { label: '√', latex: '\\sqrt', mode: 'cmd' },
+      { label: '∑', latex: '\\sum', mode: 'cmd' },
+      { label: '∏', latex: '\\prod', mode: 'cmd' },
+      { label: '∫', latex: '\\int', mode: 'cmd' },
+      { label: '∂', latex: '\\partial', mode: 'cmd' },
+    ],
+  },
+  {
+    title: 'STATS',
+    items: [
+      { label: 'nCr', latex: '\\operatorname{nCr}', mode: 'write' },
+      { label: 'nPr', latex: '\\operatorname{nPr}', mode: 'write' },
+      { label: 'mean', latex: '\\operatorname{mean}', mode: 'write' },
+      { label: 'median', latex: '\\operatorname{median}', mode: 'write' },
+      { label: 'stdev', latex: '\\operatorname{stdev}', mode: 'write' },
+      { label: 'var', latex: '\\operatorname{var}', mode: 'write' },
+    ],
+  },
+  {
+    title: 'MISC',
+    items: [
+      { label: 'floor', latex: '\\lfloor', mode: 'cmd' },
+      { label: 'ceil', latex: '\\lceil', mode: 'cmd' },
+      { label: 'round', latex: '\\operatorname{round}', mode: 'write' },
+      { label: 'abs', latex: '|', mode: 'cmd' },
+      { label: 'gcd', latex: '\\gcd', mode: 'write' },
+      { label: 'lcm', latex: '\\operatorname{lcm}', mode: 'write' },
+      { label: 'sign', latex: '\\operatorname{sign}', mode: 'write' },
+      { label: 'mod', latex: '\\bmod', mode: 'write' },
     ],
   },
 ];
 
+const ICONS: Record<NonNullable<KeySpec['icon']>, string> = {
+  backspace:
+    '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M22 4H8l-6 8 6 8h14V4zm-3.5 10.6L17 16l-2.5-2.5L12 16l-1.5-1.4L13 12l-2.5-2.6L12 8l2.5 2.5L17 8l1.5 1.4L16 12l2.5 2.6z"/></svg>',
+  enter:
+    '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M19 7v6H8.8l2.1-2.1L9.5 9.5 5 14l4.5 4.5 1.4-1.4L8.8 15H21V7z"/></svg>',
+  left:
+    '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M15.4 7.4 14 6l-6 6 6 6 1.4-1.4L10.8 12z"/></svg>',
+  right:
+    '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M10 6 8.6 7.4 13.2 12l-4.6 4.6L10 18l6-6z"/></svg>',
+  shift:
+    '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M12 5 4 13h5v6h6v-6h5L12 5z"/></svg>',
+  audio:
+    '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M4 10v4h3l4 3V7L7 10H4zm11.5 2a3.5 3.5 0 0 0-1.8-3.1v6.2A3.5 3.5 0 0 0 15.5 12zm-1.8-6.9v2.1a5.5 5.5 0 0 1 0 9.6v2.1a7.5 7.5 0 0 0 0-13.8z"/></svg>',
+  hide:
+    '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M4 6h16v2H4V6zm2 4h12v8H6v-8zm2 2v4h8v-4H8z"/></svg>',
+};
+
+/** Desmos main keypad — 4 rows × 10 standard keys (20 grid units). */
+function mainKeys(): KeySpec[] {
+  const u = (units: number) => units;
+  return [
+    // row 1
+    { label: 'x', action: { kind: 'text', text: 'x' }, tone: 'white', italic: true },
+    { label: 'y', action: { kind: 'text', text: 'y' }, tone: 'white', italic: true },
+    { label: 'a²', html: '<i>a</i><sup>2</sup>', action: { kind: 'cmd', latex: '^2' }, tone: 'white', title: 'square' },
+    { label: 'aᵇ', html: '<i>a</i><sup><i>b</i></sup>', action: { kind: 'cmd', latex: '^' }, tone: 'white', title: 'exponent' },
+    { label: '7', action: { kind: 'text', text: '7' }, tone: 'white' },
+    { label: '8', action: { kind: 'text', text: '8' }, tone: 'white' },
+    { label: '9', action: { kind: 'text', text: '9' }, tone: 'white' },
+    { label: '÷', action: { kind: 'cmd', latex: '\\div' }, tone: 'gray' },
+    { label: 'functions', action: { kind: 'functions' }, tone: 'gray', units: u(4) },
+
+    // row 2
+    { label: '(', action: { kind: 'cmd', latex: '(' }, tone: 'white' },
+    { label: ')', action: { kind: 'cmd', latex: ')' }, tone: 'white' },
+    { label: '<', action: { kind: 'text', text: '<' }, tone: 'white' },
+    { label: '>', action: { kind: 'text', text: '>' }, tone: 'white' },
+    { label: '4', action: { kind: 'text', text: '4' }, tone: 'white' },
+    { label: '5', action: { kind: 'text', text: '5' }, tone: 'white' },
+    { label: '6', action: { kind: 'text', text: '6' }, tone: 'white' },
+    { label: '×', action: { kind: 'cmd', latex: '\\times' }, tone: 'gray' },
+    { label: '←', action: { kind: 'key', key: 'Left' }, tone: 'gray', icon: 'left', title: 'Left' },
+    { label: '→', action: { kind: 'key', key: 'Right' }, tone: 'gray', icon: 'right', title: 'Right' },
+
+    // row 3
+    { label: '|a|', html: '|<i>a</i>|', action: { kind: 'cmd', latex: '|' }, tone: 'white', title: 'absolute value' },
+    { label: ',', action: { kind: 'text', text: ',' }, tone: 'white' },
+    { label: '≤', action: { kind: 'cmd', latex: '\\le' }, tone: 'white' },
+    { label: '≥', action: { kind: 'cmd', latex: '\\ge' }, tone: 'white' },
+    { label: '1', action: { kind: 'text', text: '1' }, tone: 'white' },
+    { label: '2', action: { kind: 'text', text: '2' }, tone: 'white' },
+    { label: '3', action: { kind: 'text', text: '3' }, tone: 'white' },
+    { label: '−', action: { kind: 'text', text: '-' }, tone: 'gray' },
+    { label: '⌫', action: { kind: 'key', key: 'Backspace' }, tone: 'gray', units: u(4), icon: 'backspace', title: 'Backspace' },
+
+    // row 4
+    { label: 'ABC', action: { kind: 'tab', tab: 'abc' }, tone: 'gray' },
+    { label: 'audio', action: { kind: 'noop' }, tone: 'gray', icon: 'audio', title: 'Audio (Desmos)' },
+    { label: '√', action: { kind: 'cmd', latex: '\\sqrt' }, tone: 'white', title: 'square root' },
+    { label: 'π', action: { kind: 'cmd', latex: '\\pi' }, tone: 'white', italic: true },
+    { label: '0', action: { kind: 'text', text: '0' }, tone: 'white' },
+    { label: '.', action: { kind: 'text', text: '.' }, tone: 'white' },
+    { label: '=', action: { kind: 'text', text: '=' }, tone: 'white' },
+    { label: '+', action: { kind: 'text', text: '+' }, tone: 'gray' },
+    { label: '⏎', action: { kind: 'enter' }, tone: 'blue', units: u(4), icon: 'enter', title: 'Enter' },
+  ];
+}
+
+function abcKeys(shiftOn: boolean): KeySpec[] {
+  const L = (ch: string): KeySpec => {
+    const t = shiftOn ? ch.toUpperCase() : ch;
+    return {
+      label: t,
+      action: { kind: 'text', text: t },
+      tone: 'white',
+      italic: true,
+    };
+  };
+  const dual = (primary: string, secondary: string, displayHtml: string): KeySpec => ({
+    label: primary,
+    html: displayHtml,
+    action: { kind: 'text', text: primary, alt: secondary },
+    tone: 'white',
+    title: `${primary} / ${secondary}`,
+  });
+  return [
+    // row 1
+    L('q'), L('w'), L('e'), L('r'), L('t'), L('y'), L('u'), L('i'), L('o'), L('p'),
+    // row 2
+    L('a'), L('s'), L('d'), L('f'), L('g'), L('h'), L('j'), L('k'), L('l'),
+    { label: 'θ', action: { kind: 'cmd', latex: '\\theta' }, tone: 'white', italic: true },
+    // row 3 — Shift ~1.5, 7 letters, Backspace ~1.5  → 3+14+3 = 20
+    { label: '⇧', action: { kind: 'shift' }, tone: 'gray', units: 3, icon: 'shift', title: 'Shift' },
+    L('z'), L('x'), L('c'), L('v'), L('b'), L('n'), L('m'),
+    { label: '⌫', action: { kind: 'key', key: 'Backspace' }, tone: 'gray', units: 3, icon: 'backspace', title: 'Backspace' },
+    // row 4 — 123 ~2, 6 symbols, Enter ~4?  Desmos: 123 wider, Enter ~2× → use 3 + 6×2 + 5 = 20
+    { label: '123', html: '1 2 3', action: { kind: 'tab', tab: 'main' }, tone: 'gray', units: 3 },
+    { label: 'aₙ', html: '<i>a</i><sub><i>b</i></sub>', action: { kind: 'cmd', latex: '_' }, tone: 'white', title: 'subscript' },
+    dual('!', "'", "! <span class=\"dsk-sec\">'</span>"),
+    dual('[', ']', "[ <span class=\"dsk-sec\">]</span>"),
+    {
+      label: '{',
+      html: '{ <span class="dsk-sec">}</span>',
+      action: { kind: 'cmd', latex: '\\{' },
+      tone: 'white',
+      title: '{ / }',
+    },
+    dual('~', '%', "~ <span class=\"dsk-sec\">%</span>"),
+    dual(':', ';', ": <span class=\"dsk-sec\">;</span>"),
+    { label: '⏎', action: { kind: 'enter' }, tone: 'blue', units: 5, icon: 'enter', title: 'Enter' },
+  ];
+}
+
 let activeField: MathFieldLike | null = null;
-let currentPage = 'main';
+let tab: 'main' | 'abc' = 'main';
+let shiftOn = false;
+let functionsOpen = false;
+let dockEl: HTMLElement | null = null;
+let showBtnEl: HTMLElement | null = null;
+let visible = false;
+let userHidden = false;
 
 export function setActiveMathField(field: MathFieldLike | null, el?: HTMLElement | null) {
   activeField = field;
@@ -165,105 +239,233 @@ export function getActiveMathField() {
 function ensureActiveField(): MathFieldLike | null {
   if (activeField) return activeField;
   const scratch = document.querySelector('.an-scratch [data-mq="edit"]') as HTMLElement | null;
-  if (scratch && (scratch as any).mq) {
-    setActiveMathField((scratch as any).mq as MathFieldLike, scratch);
-  }
+  if (scratch && (scratch as any).mq) setActiveMathField((scratch as any).mq, scratch);
   return activeField;
 }
 
-function applyKey(def: KeyDef) {
+function applyAction(action: KeyAction) {
+  if (action.kind === 'tab') {
+    tab = action.tab;
+    shiftOn = false;
+    functionsOpen = false;
+    renderDock();
+    return;
+  }
+  if (action.kind === 'shift') {
+    shiftOn = !shiftOn;
+    renderDock();
+    return;
+  }
+  if (action.kind === 'functions') {
+    functionsOpen = !functionsOpen;
+    renderDock();
+    return;
+  }
+  if (action.kind === 'noop') return;
+
   const f = ensureActiveField();
   if (!f) return;
-
   try { f.focus?.(); } catch { /* */ }
 
-  if (def.kind === 'clear') {
-    f.latex('');
+  if (action.kind === 'enter') {
+    if (f.keystroke) f.keystroke('Enter');
+    else if (f.write) f.write('\\\\');
     return;
   }
-  if (def.kind === 'key') {
-    if (f.keystroke) f.keystroke(def.key);
+  if (action.kind === 'key') {
+    f.keystroke?.(action.key);
     return;
   }
-  if (def.kind === 'text') {
-    if (f.typedText) f.typedText(def.text);
-    else if (f.write) f.write(def.text);
-    else f.latex((f.latex() || '') + def.text);
+  if (action.kind === 'text') {
+    const useAlt = !!(action.alt && shiftOn);
+    const text = useAlt ? action.alt! : action.text;
+    if (f.typedText) f.typedText(text);
+    else if (f.write) f.write(text);
+    else f.latex((f.latex() || '') + text);
+    if (shiftOn && tab === 'abc') {
+      shiftOn = false;
+      renderDock();
+    }
     return;
   }
-  if (def.kind === 'cmd') {
-    if (f.cmd) f.cmd(def.latex);
-    else if (f.write) f.write(def.latex);
+  if (action.kind === 'cmd') {
+    if (f.cmd) f.cmd(action.latex);
+    else f.write?.(action.latex);
     return;
   }
-  if (def.kind === 'write') {
-    if (f.write) f.write(def.latex);
-    else if (f.cmd) f.cmd(def.latex);
+  if (action.kind === 'write') {
+    if (f.write) f.write(action.latex);
+    else f.cmd?.(action.latex);
   }
 }
 
-function renderKeys(host: HTMLElement, pageId: string) {
-  const page = PAGES.find((p) => p.id === pageId) || PAGES[0];
-  currentPage = page.id;
-  host.querySelectorAll('[data-kb-page]').forEach((btn) => {
-    btn.classList.toggle('active', btn.getAttribute('data-kb-page') === page.id);
+function applyFunc(item: FuncItem) {
+  applyAction(item.mode === 'cmd' ? { kind: 'cmd', latex: item.latex } : { kind: 'write', latex: item.latex });
+  functionsOpen = false;
+  renderDock();
+}
+
+function makeKeyButton(spec: KeySpec) {
+  const units = spec.units ?? 2;
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = `dsk-key dsk-${spec.tone || 'white'}${spec.italic ? ' dsk-italic' : ''}`;
+  b.style.gridColumn = `span ${units}`;
+  if (spec.icon) b.innerHTML = ICONS[spec.icon];
+  else if (spec.html) b.innerHTML = spec.html;
+  else b.textContent = spec.label;
+  if (spec.title) b.title = spec.title;
+  if (spec.action.kind === 'shift' && shiftOn) b.classList.add('dsk-active');
+  if (spec.action.kind === 'functions' && functionsOpen) b.classList.add('dsk-active');
+  b.addEventListener('mousedown', (e) => e.preventDefault());
+  b.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    applyAction(spec.action);
   });
-  const grid = host.querySelector('.math-kb-grid') as HTMLElement;
-  if (!grid) return;
-  grid.innerHTML = '';
-  for (const key of page.keys) {
-    const b = document.createElement('button');
-    b.type = 'button';
-    b.className = 'math-kb-key' + (key.wide ? ' wide' : '');
-    b.textContent = key.label;
-    if (key.title) b.title = key.title;
-    b.addEventListener('mousedown', (e) => {
-      // Prevent stealing focus from MathQuill before inject
+  return b;
+}
+
+function renderFunctionsPopup(host: HTMLElement) {
+  const pop = document.createElement('div');
+  pop.className = 'dsk-functions';
+  for (const g of FUNC_GROUPS) {
+    const h = document.createElement('div');
+    h.className = 'dsk-func-title';
+    h.textContent = g.title;
+    pop.appendChild(h);
+    const row = document.createElement('div');
+    row.className = 'dsk-func-row';
+    for (const item of g.items) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'dsk-func-item';
+      b.textContent = item.label;
+      b.addEventListener('mousedown', (e) => e.preventDefault());
+      b.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        applyFunc(item);
+      });
+      row.appendChild(b);
+    }
+    pop.appendChild(row);
+  }
+  host.appendChild(pop);
+}
+
+function renderDock() {
+  if (!dockEl) return;
+  const body = dockEl.querySelector('.dsk-body') as HTMLElement;
+  if (!body) return;
+  body.innerHTML = '';
+
+  if (functionsOpen) renderFunctionsPopup(body);
+
+  const wrap = document.createElement('div');
+  wrap.className = 'dsk-wrap';
+  const grid = document.createElement('div');
+  grid.className = 'dsk-grid';
+  const keys = tab === 'main' ? mainKeys() : abcKeys(shiftOn);
+  for (const k of keys) grid.appendChild(makeKeyButton(k));
+  wrap.appendChild(grid);
+  body.appendChild(wrap);
+}
+
+function syncShowButton() {
+  if (!showBtnEl) return;
+  const right = document.getElementById('right');
+  const analysis = right?.classList.contains('analysis-keypad');
+  showBtnEl.hidden = !(analysis && !visible);
+  showBtnEl.classList.toggle('open', analysis && !visible);
+}
+
+/** Ensure a single fixed Desmos keypad dock under #right. */
+export function ensureDesmosKeypadDock(rightEl: HTMLElement = document.getElementById('right') as HTMLElement) {
+  if (!rightEl) return null;
+
+  let dock = rightEl.querySelector('#desmosKeypadDock') as HTMLElement | null;
+  if (!dock) {
+    dock = document.createElement('div');
+    dock.id = 'desmosKeypadDock';
+    dock.className = 'desmos-keypad-dock';
+    dock.hidden = true;
+    dock.innerHTML = `
+      <button type="button" class="dsk-hide" title="隐藏键盘" aria-label="隐藏键盘">
+        ${ICONS.hide}<span class="dsk-hide-arrow">▾</span>
+      </button>
+      <div class="dsk-body"></div>
+    `;
+    rightEl.appendChild(dock);
+    dock.querySelector('.dsk-hide')?.addEventListener('click', (e) => {
       e.preventDefault();
+      userHidden = true;
+      setDesmosKeypadVisible(false);
     });
-    b.addEventListener('click', (e) => {
+  }
+
+  let showBtn = rightEl.querySelector('#desmosKeypadShow') as HTMLButtonElement | null;
+  if (!showBtn) {
+    showBtn = document.createElement('button');
+    showBtn.id = 'desmosKeypadShow';
+    showBtn.type = 'button';
+    showBtn.className = 'dsk-show';
+    showBtn.title = '显示键盘';
+    showBtn.setAttribute('aria-label', '显示键盘');
+    showBtn.innerHTML = `${ICONS.hide}<span class="dsk-hide-arrow">▴</span>`;
+    showBtn.hidden = true;
+    rightEl.appendChild(showBtn);
+    showBtn.addEventListener('click', (e) => {
       e.preventDefault();
-      e.stopPropagation();
-      applyKey(key);
+      userHidden = false;
+      setDesmosKeypadVisible(true);
     });
-    grid.appendChild(b);
+  }
+
+  dockEl = dock;
+  showBtnEl = showBtn;
+  renderDock();
+  syncShowButton();
+  return dock;
+}
+
+export function setDesmosKeypadVisible(show: boolean) {
+  visible = show;
+  if (!dockEl) ensureDesmosKeypadDock();
+  if (!dockEl) return;
+  dockEl.classList.toggle('open', show);
+  dockEl.hidden = !show;
+  document.getElementById('right')?.classList.toggle('with-keypad', show);
+  if (show) {
+    functionsOpen = false;
+    renderDock();
+  }
+  syncShowButton();
+}
+
+/** Show fixed keypad only on Analysis tab; respect user hide. */
+export function syncDesmosKeypadForAnalysis(onAnalysisTab: boolean) {
+  const right = document.getElementById('right');
+  if (!right) return;
+  ensureDesmosKeypadDock(right);
+  right.classList.toggle('analysis-keypad', onAnalysisTab);
+  if (!onAnalysisTab) {
+    setDesmosKeypadVisible(false);
+    if (showBtnEl) showBtnEl.hidden = true;
+    return;
+  }
+  if (userHidden) {
+    setDesmosKeypadVisible(false);
+  } else {
+    setDesmosKeypadVisible(true);
   }
 }
 
-/** Build keyboard DOM into container; returns destroy/refresh helpers. */
-export function mountMathKeyboard(container: HTMLElement) {
-  container.innerHTML = '';
-  container.classList.add('math-kb');
+export function isDesmosKeypadVisible() {
+  return visible;
+}
 
-  const tabs = document.createElement('div');
-  tabs.className = 'math-kb-tabs';
-  for (const p of PAGES) {
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'math-kb-tab' + (p.id === currentPage ? ' active' : '');
-    btn.textContent = p.name;
-    btn.setAttribute('data-kb-page', p.id);
-    btn.addEventListener('mousedown', (e) => e.preventDefault());
-    btn.addEventListener('click', (e) => {
-      e.preventDefault();
-      renderKeys(container, p.id);
-    });
-    tabs.appendChild(btn);
-  }
-
-  const hint = document.createElement('div');
-  hint.className = 'math-kb-hint';
-  hint.textContent = '点击公式框后，用下方键盘输入（Desmos 风格）';
-
-  const grid = document.createElement('div');
-  grid.className = 'math-kb-grid';
-
-  container.appendChild(hint);
-  container.appendChild(tabs);
-  container.appendChild(grid);
-  renderKeys(container, currentPage);
-
-  return {
-    setPage: (id: string) => renderKeys(container, id),
-  };
+/** @deprecated */
+export function mountMathKeyboard(_container: HTMLElement) {
+  syncDesmosKeypadForAnalysis(true);
 }

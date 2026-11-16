@@ -1,6 +1,6 @@
 import { analyzeMotion, sampleAnalyticPath } from '../analysis/motionAnalysis.ts';
 import { mountMathQuill } from '../ui/mathquill.ts';
-import { mountMathKeyboard } from '../ui/mathKeyboard.ts';
+import { syncDesmosKeypadForAnalysis, ensureDesmosKeypadDock } from '../ui/mathKeyboard.ts';
 import {
   FieldSystem2,
   sourcesFromSceneObjects,
@@ -1104,6 +1104,7 @@ function buildNonBodyPanel(P, o) {
 
   panels.appendChild(pProps); panels.appendChild(pAct);
   P.appendChild(panels);
+  syncDesmosKeypadForAnalysis(false);
 }
 
 let chartMode = 'v';
@@ -1194,6 +1195,8 @@ function buildBodyPanel(P, b) {
 
   [pInit, pProps, pLive, pAn, pCh, pAct].forEach(x => panels.appendChild(x));
   P.appendChild(panels);
+  ensureDesmosKeypadDock(document.getElementById('right'));
+  syncDesmosKeypadForAnalysis(propsTab === 'analysis');
   updateReadouts();
 }
 
@@ -1322,6 +1325,7 @@ function buildScenePanel(P) {
 
   [pScene, pDisp, pHelp].forEach(x => panels.appendChild(x));
   P.appendChild(panels);
+  syncDesmosKeypadForAnalysis(false);
 }
 
 const ADD_CATALOG = [
@@ -1686,18 +1690,15 @@ function renderMotionAnalysis(b, force = false) {
     <div class="der-grid">${derHtml || '<span class="k">—</span>'}</div>
     <div class="an-sec-label">演算草稿</div>
     <div class="an-scratch eqblock">
-      <div data-mq="edit" data-latex="${attrLatex(analysisScratchLatex || 'E=')}" title="点击后用下方数学键盘输入"></div>
+      <div data-mq="edit" data-latex="${attrLatex(analysisScratchLatex || 'E=')}" title="点击后用固定 Desmos 键盘输入"></div>
     </div>
-    <div class="an-sec-label">数学键盘</div>
-    <div id="mathKeyboard" class="math-kb-host"></div>
     <div class="an-meta">
       <div><b>计入的力：</b>${report.forcesInModel.map(escapeHtml).join('、') || '无'}</div>
       <div><b>假定：</b>${report.assumptions.map(escapeHtml).join('； ')}</div>
       <div class="hint">${escapeHtml(report.validity)}</div>
     </div>`;
   mountMathQuill(host);
-  const kbHost = host.querySelector('#mathKeyboard');
-  if (kbHost) mountMathKeyboard(kbHost);
+  syncDesmosKeypadForAnalysis(true);
   host.querySelectorAll('[data-ref]').forEach(btn => {
     btn.addEventListener('click', () => {
       analysisRefMode = btn.getAttribute('data-ref');
@@ -2071,6 +2072,8 @@ function bootOnce() {
   if (!loaded) { const sc = PRESETS.welcome.make(); loadScene(sc, false); }
   setTool('select');
   syncPanelToggleButtons();
+  ensureDesmosKeypadDock(document.getElementById('right'));
+  syncDesmosKeypadForAnalysis(false);
   toast(loaded ? '已恢复上次场景' : '选中物体后拖动绿色箭头设置初速度，空格播放');
   window.__physim = {
     scene: () => scene, sim, advance, loadPreset, select, resetSim, togglePlay, fieldSys,
