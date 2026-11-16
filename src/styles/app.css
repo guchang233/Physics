@@ -512,7 +512,56 @@ body.dark .tabs button.active {
 .analysis-panel .der-math { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 6px; min-width: 0; }
 .analysis-panel .der-eq { color: var(--faint); }
 .analysis-panel .der-value { color: var(--accent); }
-.analysis-panel .an-scratch { min-height: 44px; }
+.analysis-panel .an-scratch { min-height: 48px; }
+.analysis-panel .mq-editable.mq-kb-target {
+  box-shadow: 0 0 0 2px var(--accent-soft);
+  border-radius: 10px;
+}
+.math-kb-host { margin: 0 0 8px; }
+.math-kb {
+  background: var(--select);
+  border-radius: 18px;
+  padding: 10px;
+}
+.math-kb-hint {
+  font-size: 11.5px; color: var(--muted); margin: 0 2px 8px;
+}
+.math-kb-tabs {
+  display: flex; gap: 4px; padding: 3px; margin-bottom: 8px;
+  background: rgba(15, 23, 42, 0.04);
+  border-radius: 12px;
+}
+body.dark .math-kb-tabs { background: rgba(255, 255, 255, 0.06); }
+.math-kb-tab {
+  flex: 1; border: none; border-radius: 10px; min-height: 30px;
+  background: transparent; color: var(--muted); font-weight: 550; font-size: 12px;
+  padding: 5px 6px;
+}
+.math-kb-tab.active {
+  background: var(--glass-strong); color: var(--text); font-weight: 650;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.1), 0 0 0 0.5px var(--stroke);
+}
+.math-kb-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 6px;
+}
+.math-kb-key {
+  border: none;
+  border-radius: 12px;
+  min-height: 40px;
+  padding: 6px 4px;
+  background: var(--glass-strong);
+  color: var(--text);
+  font-weight: 550;
+  font-size: 14px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06), 0 0 0 0.5px var(--stroke);
+  justify-content: center;
+}
+.math-kb-key:hover { background: #fff; }
+body.dark .math-kb-key:hover { background: rgba(255, 255, 255, 0.14); }
+.math-kb-key:active { transform: scale(0.97); background: var(--select-strong); }
+.math-kb-key.wide { grid-column: span 2; }
 .analysis-panel .an-meta {
   margin-top: 14px; padding: 12px;
   border-top: none;

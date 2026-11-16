@@ -1,5 +1,6 @@
 import { analyzeMotion, sampleAnalyticPath } from '../analysis/motionAnalysis.ts';
 import { mountMathQuill } from '../ui/mathquill.ts';
+import { mountMathKeyboard } from '../ui/mathKeyboard.ts';
 import {
   FieldSystem2,
   sourcesFromSceneObjects,
@@ -1683,16 +1684,20 @@ function renderMotionAnalysis(b, force = false) {
     ${report.extras.length ? `<div class="an-sec-label">补充关系</div>${eqBlocksHtml(report.extras, editableNumeric)}` : ''}
     <div class="an-sec-label">特征量（随选中物体与场状态更新）</div>
     <div class="der-grid">${derHtml || '<span class="k">—</span>'}</div>
-    <div class="an-sec-label">演算草稿（MathQuill 可编辑）</div>
+    <div class="an-sec-label">演算草稿</div>
     <div class="an-scratch eqblock">
-      <div data-mq="edit" data-latex="${attrLatex(analysisScratchLatex || 'E=')}" title="在此用键盘 / 快捷键书写 LaTeX"></div>
+      <div data-mq="edit" data-latex="${attrLatex(analysisScratchLatex || 'E=')}" title="点击后用下方数学键盘输入"></div>
     </div>
+    <div class="an-sec-label">数学键盘</div>
+    <div id="mathKeyboard" class="math-kb-host"></div>
     <div class="an-meta">
       <div><b>计入的力：</b>${report.forcesInModel.map(escapeHtml).join('、') || '无'}</div>
       <div><b>假定：</b>${report.assumptions.map(escapeHtml).join('； ')}</div>
       <div class="hint">${escapeHtml(report.validity)}</div>
     </div>`;
   mountMathQuill(host);
+  const kbHost = host.querySelector('#mathKeyboard');
+  if (kbHost) mountMathKeyboard(kbHost);
   host.querySelectorAll('[data-ref]').forEach(btn => {
     btn.addEventListener('click', () => {
       analysisRefMode = btn.getAttribute('data-ref');
