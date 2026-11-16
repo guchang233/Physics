@@ -48,6 +48,12 @@ function mkSpring(a, b, p = {}) { return Object.assign({ id: nextId++, kind: 'sp
 
 /* ---------------- 仿真状态 ---------------- */
 const sim = { t: 0, running: false, accum: 0 };
+let leftTab = 'objects'; // objects | add | presets
+let leftQuery = '';
+let leftChip = 'all';
+let propsTab = 'init';
+let mobileDock = 'stage';
+
 
 function initState(b) {
   b.st = { x: b.x0, y: b.y0, vx: b.vx0, vy: b.vy0, ang: b.ang0 * DEG, trail: [[b.x0, b.y0]], hist: [], forces: [],
@@ -565,8 +571,9 @@ const TOOL_HINT = {
 function setTool(t) {
   tool = t; pending = null;
   document.querySelectorAll('[data-tool]').forEach(b => b.classList.toggle('active', b.dataset.tool === t));
-  $('#toolhint').textContent = TOOL_HINT[t] || '';
+  const hint = $('#toolhint'); if (hint) hint.textContent = TOOL_HINT[t] || '';
   cv.style.cursor = t === 'pan' ? 'grab' : t === 'select' ? 'default' : 'crosshair';
+  if (leftTab === 'add') refreshLeft();
   draw();
 }
 function snap(v) { const S = scene.settings; return S.snap ? Math.round(v / S.snapStep) * S.snapStep : v; }
@@ -751,7 +758,7 @@ function initChanged() {
 }
 /** 非初始参数修改：实时生效 */
 function liveEdit() { refreshInputs(); markDirty(); draw(); }
-function afterStructure() { ensureStates(); buildList(); markDirty(); draw(); }
+function afterStructure() { ensureStates(); refreshLeft(); markDirty(); draw(); }
 
 /* ---------------- 键盘 ---------------- */
 document.addEventListener('keydown', e => {
@@ -790,7 +797,7 @@ function duplicateSel() {
 }
 
 /* ---------------- 播放控制 ---------------- */
-function updatePlayBtn() { const b = $('#bPlay'); if (b) b.innerHTML = sim.running ? '<span class="ic">⏸</span>暂停' : '<span class="ic">▶</span>播放'; }
+function updatePlayBtn() { const b = $('#bPlay'); if (b) b.textContent = sim.running ? '暂停' : '播放'; }
 function togglePlay() { ensureStates(); sim.running = !sim.running; updatePlayBtn(); lastTs = 0; draw(); updateReadouts(); }
 function stepOnce() { sim.running = false; updatePlayBtn(); advance(1 / 60 * scene.settings.speed); afterFrame(); }
 let lastTs = 0;
@@ -853,169 +860,440 @@ function chkRow(parent, lab, get, set, o = {}) {
 function btn(parent, html, fn, cls = '', title = '') { const b = el('button', { class: cls, title, onclick: fn }, html); parent.appendChild(b); return b; }
 function readRow(parent, pairs) { const g = el('div', { class: 'readout' }); pairs.forEach(([k, id]) => { g.appendChild(el('span', { class: 'k' }, k)); g.appendChild(el('span', { id })); }); parent.appendChild(g); return g; }
 
+
+function makeTabs(items, active, onPick, attrs = {}) {
+  const bar = el('div', { class: 'tabs', role: 'tablist' });
+  items.forEach(([id, label]) => {
+    const b = el('button', { type: 'button', class: id === active ? 'active' : '', 'data-tab': id }, label);
+    b.addEventListener('click', () => onPick(id));
+    bar.appendChild(b);
+  });
+  if (attrs.id) bar.id = attrs.id;
+  return bar;
+}
+
+function panelBox(id, active) {
+  return el('div', { class: 'tab-panel' + (id === active ? ' active' : ''), id: 'panel-' + id, 'data-panel': id });
+}
+
 function buildPanel() {
   binds = [];
-  const P = $('#props'); P.innerHTML = ''; const o = selected();
+  const P = $('#props'); P.innerHTML = '';
+  const o = selected();
   if (!o) return buildScenePanel(P);
-  // 标题
-  const head = el('div', { class: 'ptitle' });
-  const nm = el('input', { type: 'text', value: o.name, style: 'flex:1;margin-right:6px;font-weight:600' });
-  nm.addEventListener('input', () => { o.name = nm.value; buildList(); draw(); markDirty(); });
+
+  const head = el('div', { class: 'insp-head' });
+  const nm = el('input', { type: 'text', value: o.name, 'aria-label': '名称' });
+  nm.addEventListener('input', () => { o.name = nm.value; refreshLeft(); draw(); markDirty(); });
   head.appendChild(nm);
-  if (o.color != null) { const c = el('input', { type: 'color', value: o.color, title: '颜色' }); c.addEventListener('input', () => { o.color = c.value; buildList(); draw(); markDirty(); }); head.appendChild(c); }
+  if (o.color != null) {
+    const c = el('input', { type: 'color', value: o.color, title: '颜色' });
+    c.addEventListener('input', () => { o.color = c.value; refreshLeft(); draw(); markDirty(); });
+    head.appendChild(c);
+  }
   P.appendChild(head);
-  P.appendChild(el('div', { class: 'hint', style: 'padding:0 12px 6px' }, `类型：${KIND_NAME[o.kind]}${o.kind === 'bfield' ? (o.dir < 0 ? ' ⊗ 垂直纸面向里' : ' ⊙ 垂直纸面向外') : ''}`));
+  const kindExtra = o.kind === 'bfield' ? (o.dir < 0 ? ' · 向里' : ' · 向外') : '';
+  P.appendChild(el('div', { class: 'insp-meta' }, KIND_NAME[o.kind] + kindExtra));
+
   if (isBody(o)) buildBodyPanel(P, o);
-  else if (o.kind === 'efield') buildEPanel(P, o);
-  else if (o.kind === 'bfield') buildBPanel(P, o);
-  else if (o.kind === 'ground') { const s = section(P, '地面'); numRow(s, '高度 y', () => o.y, v => o.y = v, 'm'); surfOpts(s, o); }
-  else if (o.kind === 'wall') { const s = section(P, '挡板端点'); numRow(s, '起点 x₁', () => o.x1, v => o.x1 = v, 'm'); numRow(s, '起点 y₁', () => o.y1, v => o.y1 = v, 'm'); numRow(s, '终点 x₂', () => o.x2, v => o.x2 = v, 'm'); numRow(s, '终点 y₂', () => o.y2, v => o.y2 = v, 'm'); s.appendChild(el('div', { class: 'hint' }, '选中后可直接拖动两端圆点。')); surfOpts(s, o); }
-  else if (o.kind === 'incline') {
-    const s = section(P, '斜面');
-    numRow(s, '底角顶点 x', () => o.x, v => o.x = v, 'm'); numRow(s, '底角顶点 y', () => o.y, v => o.y = v, 'm');
-    numRow(s, '底边长 L', () => o.L, v => o.L = v, 'm', { min: 0.01 }); numRow(s, '倾角 θ', () => o.ang, v => o.ang = Math.min(85, v), '°', { min: 0 });
-    const br = el('div', { class: 'btnrow' }); [30, 37, 45, 53, 60].forEach(a => btn(br, a + '°', () => { pushUndo(); o.ang = a; liveEdit(); }));
-    btn(br, o.dir > 0 ? '朝向：◢' : '朝向：◣', () => { pushUndo(); o.dir *= -1; liveEdit(); buildPanel(); }); s.appendChild(br);
+  else buildNonBodyPanel(P, o);
+}
+
+function buildNonBodyPanel(P, o) {
+  const tabs = [['props', '属性'], ['actions', '操作']];
+  if (!tabs.some(([id]) => id === propsTab)) propsTab = 'props';
+  P.appendChild(makeTabs(tabs, propsTab, id => { propsTab = id; buildPanel(); }));
+  const panels = el('div', { class: 'tab-panels' });
+  const pProps = panelBox('props', propsTab);
+  const pAct = panelBox('actions', propsTab);
+
+  if (o.kind === 'efield') buildEPanel(pProps, o);
+  else if (o.kind === 'bfield') buildBPanel(pProps, o);
+  else if (o.kind === 'ground') {
+    const s = section(pProps, '几何'); numRow(s, '高度 y', () => o.y, v => o.y = v, 'm'); surfOpts(s, o);
+  } else if (o.kind === 'wall') {
+    const s = section(pProps, '端点');
+    numRow(s, '起点 x₁', () => o.x1, v => o.x1 = v, 'm');
+    numRow(s, '起点 y₁', () => o.y1, v => o.y1 = v, 'm');
+    numRow(s, '终点 x₂', () => o.x2, v => o.x2 = v, 'm');
+    numRow(s, '终点 y₂', () => o.y2, v => o.y2 = v, 'm');
+    s.appendChild(el('div', { class: 'hint' }, '可拖动两端控制点。'));
+    surfOpts(s, o);
+  } else if (o.kind === 'incline') {
+    const s = section(pProps, '几何');
+    numRow(s, '底角 x', () => o.x, v => o.x = v, 'm');
+    numRow(s, '底角 y', () => o.y, v => o.y = v, 'm');
+    numRow(s, '底边 L', () => o.L, v => o.L = v, 'm', { min: 0.01 });
+    numRow(s, '倾角 θ', () => o.ang, v => o.ang = Math.min(85, v), '°', { min: 0 });
+    const br = el('div', { class: 'btnrow' });
+    [30, 37, 45, 53, 60].forEach(a => btn(br, a + '°', () => { pushUndo(); o.ang = a; liveEdit(); }));
+    btn(br, o.dir > 0 ? '朝右' : '朝左', () => { pushUndo(); o.dir *= -1; liveEdit(); buildPanel(); });
+    s.appendChild(br);
     s.appendChild(el('div', { class: 'hint' }, `斜面长 ${fmt(o.L / Math.cos(o.ang * DEG), 3)} m，高 ${fmt(o.L * Math.tan(o.ang * DEG), 3)} m`));
     surfOpts(s, o);
-    const s2 = section(P, '快捷');
-    btn(s2, '在斜面顶端放一个滑块', () => placeOnIncline(o));
-  }
-  else if (o.kind === 'spring') buildSpringPanel(P, o);
-  const act = section(P, '操作'); const br = el('div', { class: 'btnrow' });
-  btn(br, '⧉ 复制', duplicateSel); btn(br, '🗑 删除', deleteSel, 'danger');
-  if (isBody(o)) btn(br, '清除轨迹', () => { o.st.trail = [[o.st.x, o.st.y]]; draw(); });
-  act.appendChild(br);
-}
-function surfOpts(s, o) {
-  chkRow(s, '光滑（无摩擦）', () => o.smooth, v => o.smooth = v);
-  numRow(s, '恢复系数 e', () => o.e, v => o.e = Math.min(1, Math.max(0, v)), '', { step: 0.1, min: 0 });
-  s.appendChild(el('div', { class: 'hint' }, '摩擦大小由物体的 μ 决定；碰撞恢复系数取物体与表面中的较小值。'));
-}
-function placeOnIncline(inc) {
-  pushUndo(); if (sim.t > 0) resetSim();
-  const p = inclinePts(inc), th = inc.ang * DEG, bw = 0.6, bh = 0.4;
-  const top = p[2], nx = -inc.dir * Math.sin(th), ny = Math.cos(th), along = 0.5;
-  const tx = -inc.dir * Math.cos(th), ty = -Math.sin(th);
-  const b = mkBody('box', { w: bw, h: bh, mu: 0.3, x0: clean(top[0] + nx * bh / 2 + tx * along), y0: clean(top[1] + ny * bh / 2 + ty * along), ang0: inc.dir * inc.ang });
-  scene.objects.push(b); initState(b); afterStructure(); select(b.id);
-}
-function buildBodyPanel(P, b) {
-  // ===== 初始条件（重点）=====
-  const s = section(P, '🚀 初始条件（t = 0）', 'hl');
-  numRow(s, '初位置 x₀', () => b.x0, v => b.x0 = v, 'm', { init: true });
-  numRow(s, '初位置 y₀', () => b.y0, v => b.y0 = v, 'm', { init: true });
-  const vmag = () => Math.hypot(b.vx0, b.vy0), vang = () => (b.vx0 || b.vy0) ? Math.atan2(b.vy0, b.vx0) / DEG : (b._lastAng || 0);
-  numRow(s, '初速度 v₀', vmag, v => { const a = vang() * DEG; b.vx0 = clean(v * Math.cos(a)); b.vy0 = clean(v * Math.sin(a)); }, 'm/s', { init: true, min: 0 });
-  numRow(s, '方向角 θ', vang, a => { b._lastAng = a; const v = vmag(); b.vx0 = clean(v * Math.cos(a * DEG)); b.vy0 = clean(v * Math.sin(a * DEG)); }, '°', { init: true, title: '与 +x（水平向右）夹角，逆时针为正' });
+    const s2 = section(pProps, '快捷');
+    btn(s2, '在顶端放置滑块', () => placeOnIncline(o));
+  } else if (o.kind === 'spring') buildSpringPanel(pProps, o);
+
+  const act = section(pAct, '操作');
   const br = el('div', { class: 'btnrow' });
-  [['→', 0], ['↗', 45], ['↑', 90], ['↖', 135], ['←', 180], ['↙', -135], ['↓', -90], ['↘', -45]].forEach(([t, a]) =>
-    btn(br, t, () => { pushUndo(); b._lastAng = a; let v = vmag() || 1; b.vx0 = clean(v * Math.cos(a * DEG)); b.vy0 = clean(v * Math.sin(a * DEG)); initChanged(); }, '', `方向 ${a}°`));
-  btn(br, '清零', () => { pushUndo(); b.vx0 = 0; b.vy0 = 0; initChanged(); }, 'danger');
-  s.appendChild(br);
-  numRow(s, '分量 vₓ₀', () => b.vx0, v => b.vx0 = v, 'm/s', { init: true });
-  numRow(s, '分量 v_y₀', () => b.vy0, v => b.vy0 = v, 'm/s', { init: true });
-  s.appendChild(el('div', { class: 'hint' }, '💡 也可以在画布上<b>拖动绿色箭头端点</b>设置初速度（按住 Shift 吸附 15°）。运行中修改初始条件会自动回到 t=0。'));
-  // ===== 物理属性 =====
-  const p = section(P, '⚙ 物理属性');
-  numRow(p, '质量 m', () => b.m, v => b.m = v, 'kg', { min: 1e-40, title: '支持科学计数法，如 9.1e-31' });
-  numRow(p, '电荷量 q', () => b.q, v => b.q = v, 'C', { title: '正负号表示电性，如 -1.6e-19' });
-  if (b.kind === 'box') { numRow(p, '宽 w', () => b.w, v => b.w = v, 'm', { min: 0.001 }); numRow(p, '高 h', () => b.h, v => b.h = v, 'm', { min: 0.001 }); numRow(p, '初始倾角', () => b.ang0, v => b.ang0 = v, '°', { init: true }); }
-  else numRow(p, '半径 r', () => b.r, v => b.r = v, 'm', { min: 0.0001 });
-  numRow(p, '动摩擦因数 μ', () => b.mu, v => b.mu = v, '', { step: 0.05, min: 0, title: '与地面/斜面/挡板间的动摩擦因数（最大静摩擦≈滑动摩擦）' });
-  numRow(p, '恢复系数 e', () => b.e, v => b.e = Math.min(1, v), '', { step: 0.1, min: 0, title: '1 = 完全弹性，0 = 完全非弹性' });
-  // ===== 外力 =====
-  const f = section(P, '➕ 恒定外力 F');
-  numRow(f, '大小 F', () => b.F, v => b.F = v, 'N', { min: 0 });
-  numRow(f, '方向角', () => b.Fang, v => b.Fang = v, '°');
-  // ===== 选项 =====
-  const o = section(P, '选项');
-  chkRow(o, '固定不动', () => b.fixed, v => b.fixed = v, { init: true });
-  chkRow(o, '显示轨迹', () => b.trail, v => b.trail = v);
-  chkRow(o, '与其他物体碰撞', () => b.collide, v => b.collide = v);
-  // ===== 实时数据 =====
-  const r = section(P, '📊 实时数据');
-  readRow(r, [['位置 (x, y)', 'r_pos'], ['速度 (vx, vy)', 'r_vel'], ['速率 |v|', 'r_v'], ['速度方向', 'r_ang'], ['加速度 |a|', 'r_a'], ['动能 Ek', 'r_ek'], ['动量 p', 'r_p'], ['重力势能 Ep', 'r_ep'], ['机械能 E', 'r_e']]);
-  const th = section(P, '📐 运动分析 · 参数方程'); th.appendChild(el('div', { id: 'r_theory', class: 'analysis-panel' }));
-  // ===== 图像 =====
-  const sel = el('select', { id: 'chartSel', style: 'font-size:11px;padding:1px 4px' });
-  [['v', 'v-t'], ['vx', 'vx-t'], ['vy', 'vy-t'], ['x', 'x-t'], ['y', 'y-t'], ['ek', 'Ek-t'], ['xy', 'y-x 轨迹']].forEach(([v, t]) => sel.appendChild(el('option', { value: v }, t)));
-  sel.value = chartMode; sel.addEventListener('change', () => { chartMode = sel.value; drawChart(); });
-  const g = section(P, '📈 图像', '', sel);
-  g.appendChild(el('canvas', { id: 'chart' }));
+  btn(br, '复制', duplicateSel); btn(br, '删除', deleteSel, 'danger');
+  act.appendChild(br);
+
+  panels.appendChild(pProps); panels.appendChild(pAct);
+  P.appendChild(panels);
+}
+
+let chartMode = 'v';
+function buildBodyPanel(P, b) {
+  const tabs = [
+    ['init', '初态'],
+    ['props', '属性'],
+    ['live', '实时'],
+    ['analysis', '分析'],
+    ['chart', '图像'],
+    ['actions', '操作'],
+  ];
+  if (!tabs.some(([id]) => id === propsTab)) propsTab = 'init';
+  P.appendChild(makeTabs(tabs, propsTab, id => { propsTab = id; buildPanel(); }));
+  const panels = el('div', { class: 'tab-panels' });
+
+  const pInit = panelBox('init', propsTab);
+  {
+    const s = section(pInit, '初始条件 t = 0', 'hl');
+    numRow(s, '位置 x₀', () => b.x0, v => b.x0 = v, 'm', { init: true });
+    numRow(s, '位置 y₀', () => b.y0, v => b.y0 = v, 'm', { init: true });
+    const vmag = () => Math.hypot(b.vx0, b.vy0);
+    const vang = () => (b.vx0 || b.vy0) ? Math.atan2(b.vy0, b.vx0) / DEG : (b._lastAng || 0);
+    numRow(s, '速率 v₀', vmag, v => { const a = vang() * DEG; b.vx0 = clean(v * Math.cos(a)); b.vy0 = clean(v * Math.sin(a)); }, 'm/s', { init: true, min: 0 });
+    numRow(s, '方向 θ', vang, a => { b._lastAng = a; const v = vmag(); b.vx0 = clean(v * Math.cos(a * DEG)); b.vy0 = clean(v * Math.sin(a * DEG)); }, '°', { init: true, title: '相对 +x，逆时针为正' });
+    const br = el('div', { class: 'btnrow' });
+    [[0, '0°'], [45, '45°'], [90, '90°'], [135, '135°'], [180, '180°'], [-90, '-90°']].forEach(([a, t]) =>
+      btn(br, t, () => { pushUndo(); b._lastAng = a; const v = vmag() || 1; b.vx0 = clean(v * Math.cos(a * DEG)); b.vy0 = clean(v * Math.sin(a * DEG)); initChanged(); }));
+    btn(br, '清零', () => { pushUndo(); b.vx0 = 0; b.vy0 = 0; initChanged(); }, 'danger');
+    s.appendChild(br);
+    numRow(s, '分量 vx₀', () => b.vx0, v => b.vx0 = v, 'm/s', { init: true });
+    numRow(s, '分量 vy₀', () => b.vy0, v => b.vy0 = v, 'm/s', { init: true });
+    s.appendChild(el('div', { class: 'hint' }, '也可拖动画布上的速度手柄；运行中修改初态会回到 t = 0。'));
+  }
+
+  const pProps = panelBox('props', propsTab);
+  {
+    const p = section(pProps, '物理量');
+    numRow(p, '质量 m', () => b.m, v => b.m = v, 'kg', { min: 1e-40, title: '如 9.1e-31' });
+    numRow(p, '电荷 q', () => b.q, v => b.q = v, 'C', { title: '如 -1.6e-19' });
+    if (b.kind === 'box') {
+      numRow(p, '宽 w', () => b.w, v => b.w = v, 'm', { min: 0.001 });
+      numRow(p, '高 h', () => b.h, v => b.h = v, 'm', { min: 0.001 });
+      numRow(p, '倾角', () => b.ang0, v => b.ang0 = v, '°', { init: true });
+    } else numRow(p, '半径 r', () => b.r, v => b.r = v, 'm', { min: 0.0001 });
+    numRow(p, '摩擦 μ', () => b.mu, v => b.mu = v, '', { step: 0.05, min: 0 });
+    numRow(p, '恢复系数 e', () => b.e, v => b.e = Math.min(1, v), '', { step: 0.1, min: 0 });
+    const f = section(pProps, '恒定外力');
+    numRow(f, '大小 F', () => b.F, v => b.F = v, 'N', { min: 0 });
+    numRow(f, '方向角', () => b.Fang, v => b.Fang = v, '°');
+    const o = section(pProps, '行为');
+    chkRow(o, '固定', () => b.fixed, v => b.fixed = v, { init: true });
+    chkRow(o, '显示轨迹', () => b.trail, v => b.trail = v);
+    chkRow(o, '参与碰撞', () => b.collide, v => b.collide = v);
+  }
+
+  const pLive = panelBox('live', propsTab);
+  {
+    const r = section(pLive, '瞬时状态');
+    readRow(r, [['位置', 'r_pos'], ['速度', 'r_vel'], ['速率', 'r_v'], ['方向', 'r_ang'], ['加速度', 'r_a'], ['动能', 'r_ek'], ['动量', 'r_p'], ['重力势能', 'r_ep'], ['机械能', 'r_e']]);
+  }
+
+  const pAn = panelBox('analysis', propsTab);
+  {
+    const th = section(pAn, '运动分析');
+    th.appendChild(el('div', { id: 'r_theory', class: 'analysis-panel' }));
+  }
+
+  const pCh = panelBox('chart', propsTab);
+  {
+    const sel = el('select', { id: 'chartSel' });
+    [['v', 'v–t'], ['vx', 'vx–t'], ['vy', 'vy–t'], ['x', 'x–t'], ['y', 'y–t'], ['ek', 'Ek–t'], ['xy', 'y–x']].forEach(([v, t]) => sel.appendChild(el('option', { value: v }, t)));
+    sel.value = chartMode;
+    sel.addEventListener('change', () => { chartMode = sel.value; drawChart(); });
+    const g = section(pCh, '图像', '', sel);
+    g.appendChild(el('canvas', { id: 'chart' }));
+  }
+
+  const pAct = panelBox('actions', propsTab);
+  {
+    const act = section(pAct, '操作');
+    const br = el('div', { class: 'btnrow' });
+    btn(br, '复制', duplicateSel);
+    btn(br, '删除', deleteSel, 'danger');
+    btn(br, '清除轨迹', () => { b.st.trail = [[b.st.x, b.st.y]]; draw(); });
+    act.appendChild(br);
+  }
+
+  [pInit, pProps, pLive, pAn, pCh, pAct].forEach(x => panels.appendChild(x));
+  P.appendChild(panels);
   updateReadouts();
 }
-let chartMode = 'v';
+
 function buildEPanel(P, o) {
   const s = section(P, '匀强电场');
   numRow(s, '场强 E', () => o.E, v => o.E = v, 'V/m', { min: 0 });
   numRow(s, '方向角', () => o.ang, v => o.ang = v, '°');
   const br = el('div', { class: 'btnrow' });
-  [['↑ 向上', 90], ['↓ 向下', -90], ['← 向左', 180], ['→ 向右', 0]].forEach(([t, a]) => btn(br, t, () => { pushUndo(); o.ang = a; liveEdit(); }));
+  [[90, '上'], [-90, '下'], [180, '左'], [0, '右']].forEach(([a, t]) => btn(br, t, () => { pushUndo(); o.ang = a; liveEdit(); }));
   s.appendChild(br);
   regionSec(P, o);
-  P.appendChild(el('div', { class: 'hint', style: 'padding:6px 12px' }, '电场力 F = qE，只作用于带电物体（q≠0）。两板间电压 U 与场强关系：E = U/d。'));
-  const s2 = section(P, '由电压计算'); let U = 0, d = 1;
-  const r1 = el('div', { class: 'row' }); r1.innerHTML = '<span class="lab">U / d</span>';
-  const iu = el('input', { type: 'number', value: '100', title: '电压 U (V)' }), id_ = el('input', { type: 'number', value: '1', title: '板间距 d (m)' });
+  P.appendChild(el('div', { class: 'hint', style: 'padding:8px 12px' }, 'F = qE。平行板：E = U/d。'));
+  const s2 = section(P, '由电压推算');
+  const r1 = el('div', { class: 'row' }); r1.appendChild(el('span', { class: 'lab' }, 'U / d'));
+  const iu = el('input', { type: 'number', value: '100', title: 'U (V)' });
+  const id_ = el('input', { type: 'number', value: '1', title: 'd (m)' });
   r1.appendChild(iu); r1.appendChild(id_); s2.appendChild(r1);
-  btn(s2, '设置 E = U/d', () => { const u = +iu.value, dd = +id_.value; if (dd > 0) { pushUndo(); o.E = Math.abs(u / dd); liveEdit(); } });
+  btn(s2, '设 E = U/d', () => { const u = +iu.value, dd = +id_.value; if (dd > 0) { pushUndo(); o.E = Math.abs(u / dd); liveEdit(); } });
 }
+
 function buildBPanel(P, o) {
   const s = section(P, '匀强磁场');
   numRow(s, '磁感应强度 B', () => o.B, v => o.B = v, 'T', { min: 0 });
   const br = el('div', { class: 'btnrow' });
-  btn(br, '⊗ 垂直纸面向里', () => { pushUndo(); o.dir = -1; liveEdit(); buildPanel(); }, o.dir < 0 ? 'active' : '');
-  btn(br, '⊙ 垂直纸面向外', () => { pushUndo(); o.dir = 1; liveEdit(); buildPanel(); }, o.dir > 0 ? 'active' : '');
+  btn(br, '向里 ⊗', () => { pushUndo(); o.dir = -1; liveEdit(); buildPanel(); }, o.dir < 0 ? 'active' : '');
+  btn(br, '向外 ⊙', () => { pushUndo(); o.dir = 1; liveEdit(); buildPanel(); }, o.dir > 0 ? 'active' : '');
   s.appendChild(br);
   regionSec(P, o);
-  P.appendChild(el('div', { class: 'hint', style: 'padding:6px 12px' }, '洛伦兹力 F = qv×B，始终垂直于速度，不做功。<br>半径 r = mv/(|q|B)，周期 T = 2πm/(|q|B)。'));
+  P.appendChild(el('div', { class: 'hint', style: 'padding:8px 12px' }, 'F = qv×B。r = mv/|qB|，T = 2πm/|qB|。'));
 }
+
 function regionSec(P, o) {
   const s = section(P, '作用区域');
   chkRow(s, '全空间', () => o.all, v => o.all = v, { rebuild: true });
   if (!o.all) {
-    numRow(s, '左下角 x', () => o.x, v => o.x = v, 'm'); numRow(s, '左下角 y', () => o.y, v => o.y = v, 'm');
-    numRow(s, '宽度', () => o.w, v => o.w = v, 'm', { min: 0 }); numRow(s, '高度', () => o.h, v => o.h = v, 'm', { min: 0 });
-    s.appendChild(el('div', { class: 'hint' }, '可在画布上拖动四角圆点调整，拖动内部移动。'));
+    numRow(s, '左下角 x', () => o.x, v => o.x = v, 'm');
+    numRow(s, '左下角 y', () => o.y, v => o.y = v, 'm');
+    numRow(s, '宽度', () => o.w, v => o.w = v, 'm', { min: 0 });
+    numRow(s, '高度', () => o.h, v => o.h = v, 'm', { min: 0 });
+    s.appendChild(el('div', { class: 'hint' }, '可拖四角调整，拖内部移动。'));
   }
 }
 function buildSpringPanel(P, o) {
   const s = section(P, o.rope ? '轻绳' : '弹簧');
-  chkRow(s, '轻绳模式（只能拉、不能压）', () => o.rope, v => o.rope = v, { rebuild: true });
+  chkRow(s, '轻绳模式（只拉不压）', () => o.rope, v => o.rope = v, { rebuild: true });
   numRow(s, o.rope ? '绳长 L' : '原长 L₀', () => o.L0, v => o.L0 = v, 'm', { min: 0 });
-  numRow(s, o.rope ? '刚度(近似)' : '劲度系数 k', () => o.k, v => o.k = v, 'N/m', { min: 0 });
-  if (o.b == null) { numRow(s, '固定点 x', () => o.ax, v => o.ax = v, 'm'); numRow(s, '固定点 y', () => o.ay, v => o.ay = v, 'm'); }
+  numRow(s, o.rope ? '刚度' : '劲度 k', () => o.k, v => o.k = v, 'N/m', { min: 0 });
+  if (o.b == null) {
+    numRow(s, '固定点 x', () => o.ax, v => o.ax = v, 'm');
+    numRow(s, '固定点 y', () => o.ay, v => o.ay = v, 'm');
+  }
   const A = byId(o.a), B = o.b != null ? byId(o.b) : null;
-  s.appendChild(el('div', { class: 'hint' }, `连接：${A ? A.name : '?'} ↔ ${B ? B.name : '固定点'}`));
+  s.appendChild(el('div', { class: 'hint' }, `连接：${A ? A.name : '?'} — ${B ? B.name : '固定点'}`));
   btn(s, '原长 = 当前长度', () => { const e = springEnds(o); if (e) { pushUndo(); o.L0 = clean(Math.hypot(e.x2 - e.x1, e.y2 - e.y1)); liveEdit(); } });
-  if (o.rope) s.appendChild(el('div', { class: 'hint' }, '轻绳用很硬的弹簧近似，刚度越大越接近不可伸长（建议 ≥ 1000 N/m）。'));
+  if (o.rope) s.appendChild(el('div', { class: 'hint' }, '轻绳用硬弹簧近似，建议 k ≥ 1000 N/m。'));
 }
+
 function buildScenePanel(P) {
   const S = scene.settings;
-  P.appendChild(el('div', { class: 'ptitle' }, '场景设置'));
-  const s = section(P, '全局物理');
-  chkRow(s, '开启重力', () => S.gOn, v => { S.gOn = v; syncToolbar(); });
-  numRow(s, '重力加速度 g', () => S.g, v => { S.g = v; syncToolbar(); }, 'm/s²');
-  const br = el('div', { class: 'btnrow' }); btn(br, 'g = 9.8', () => { S.g = 9.8; syncToolbar(); liveEdit(); }); btn(br, 'g = 10', () => { S.g = 10; syncToolbar(); liveEdit(); }); s.appendChild(br);
-  numRow(s, '空气阻力系数', () => S.drag, v => S.drag = v, 'N·s/m', { min: 0, title: '线性阻力 f = -k·v' });
-  chkRow(s, '物体间库仑力', () => S.coulomb, v => S.coulomb = v);
-  numRow(s, '静电力常量 k', () => S.kc, v => S.kc = v, 'N·m²/C²');
-  const d = section(P, '显示与精度');
-  numRow(d, '速度箭头比例', () => S.vPx, v => S.vPx = v, 'px/(m/s)', { min: 0.0001, title: '1 m/s 对应多少像素' });
-  numRow(d, '积分步长', () => S.maxDt, v => S.maxDt = v, 's', { min: 1e-9, title: '越小越精确但越慢' });
-  chkRow(d, '吸附网格', () => S.snap, v => S.snap = v);
-  numRow(d, '吸附步长', () => S.snapStep, v => S.snapStep = v, 'm', { min: 1e-6 });
-  chkRow(d, '显示名称', () => S.showLabels, v => S.showLabels = v);
-  const view = el('div', { class: 'btnrow' }); btn(view, '⤢ 适配视图 (F)', fitView); btn(view, '回到原点', () => { scene.view.cx = 0; scene.view.cy = 0; draw(); }); d.appendChild(view);
-  const h = section(P, '快速上手');
-  h.appendChild(el('div', { class: 'hint' }, `
-  1. 顶部点 <b>小球 / 带电粒子 / 滑块</b>，再点画布放置；<br>
-  2. 选中物体，<b>拖绿色箭头</b>或在右侧输入设置 <b>初速度 v₀</b>；<br>
-  3. 用 <b>地面 / 挡板 / 斜面</b> 搭建场景，用 <b>电场 / 磁场</b> 拖出场区域；<br>
-  4. 点 <b>▶ 播放</b>（空格）观察运动，<b>↺ 重置</b>（R）回到初始状态；<br>
-  5. 打开「受力」可以看到受力分析箭头，右侧可看 v-t / x-t 图像。<br>
-  当前场景：${bodies().length} 个物体，${scene.objects.length - bodies().length} 个场/表面/弹簧。`));
+  propsTab = propsTab === 'init' ? 'scene' : propsTab;
+  const tabs = [['scene', '场景'], ['display', '显示'], ['help', '指引']];
+  if (!tabs.some(([id]) => id === propsTab)) propsTab = 'scene';
+  const head = el('div', { class: 'insp-head' });
+  head.appendChild(el('div', { style: 'font-weight:600' }, '场景'));
+  P.appendChild(head);
+  P.appendChild(makeTabs(tabs, propsTab, id => { propsTab = id; buildPanel(); }));
+  const panels = el('div', { class: 'tab-panels' });
+
+  const pScene = panelBox('scene', propsTab);
+  {
+    const s = section(pScene, '全局物理');
+    chkRow(s, '开启重力', () => S.gOn, v => { S.gOn = v; syncToolbar(); });
+    numRow(s, '重力加速度 g', () => S.g, v => { S.g = v; syncToolbar(); }, 'm/s²');
+    const br = el('div', { class: 'btnrow' });
+    btn(br, 'g = 9.8', () => { S.g = 9.8; syncToolbar(); liveEdit(); });
+    btn(br, 'g = 10', () => { S.g = 10; syncToolbar(); liveEdit(); });
+    s.appendChild(br);
+    numRow(s, '空气阻力', () => S.drag, v => S.drag = v, 'N·s/m', { min: 0 });
+    chkRow(s, '物体间库仑力', () => S.coulomb, v => S.coulomb = v);
+    numRow(s, '静电力常量 k', () => S.kc, v => S.kc = v, 'N·m²/C²');
+  }
+
+  const pDisp = panelBox('display', propsTab);
+  {
+    const d = section(pDisp, '显示与精度');
+    numRow(d, '速度箭头比例', () => S.vPx, v => S.vPx = v, 'px/(m/s)', { min: 0.0001 });
+    numRow(d, '积分步长', () => S.maxDt, v => S.maxDt = v, 's', { min: 1e-9 });
+    chkRow(d, '吸附网格', () => S.snap, v => S.snap = v);
+    numRow(d, '吸附步长', () => S.snapStep, v => S.snapStep = v, 'm', { min: 1e-6 });
+    chkRow(d, '显示名称', () => S.showLabels, v => S.showLabels = v);
+    const view = el('div', { class: 'btnrow' });
+    btn(view, '适配视图', fitView);
+    btn(view, '回到原点', () => { scene.view.cx = 0; scene.view.cy = 0; draw(); });
+    d.appendChild(view);
+  }
+
+  const pHelp = panelBox('help', propsTab);
+  {
+    const h = section(pHelp, '流程');
+    h.appendChild(el('div', { class: 'hint' }, `
+      1. 在左侧「添加」放入物体与场；<br>
+      2. 在「初态」或画布上设置 v₀；<br>
+      3. 播放观察，于「分析」查看参数方程；<br>
+      4. 当前：${bodies().length} 个物体，${scene.objects.length - bodies().length} 个场/表面/约束。`));
+  }
+
+  [pScene, pDisp, pHelp].forEach(x => panels.appendChild(x));
+  P.appendChild(panels);
+}
+
+const ADD_CATALOG = [
+  { cat: '质点与刚体', items: [
+    { tool: 'ball', name: '小球', desc: '质点' },
+    { tool: 'particle', name: '带电粒子', desc: '可受电磁力' },
+    { tool: 'box', name: '滑块', desc: '矩形刚体' },
+  ]},
+  { cat: '表面与边界', items: [
+    { tool: 'ground', name: '地面', desc: '水平半空间' },
+    { tool: 'wall', name: '挡板', desc: '线段/极板' },
+    { tool: 'incline', name: '斜面', desc: '三角形楔' },
+  ]},
+  { cat: '场', items: [
+    { tool: 'efield', name: '电场', desc: '匀强 E' },
+    { tool: 'bfield_in', name: '磁场向里', desc: 'B ⊗' },
+    { tool: 'bfield_out', name: '磁场向外', desc: 'B ⊙' },
+  ]},
+  { cat: '约束', items: [
+    { tool: 'spring', name: '弹簧 / 绳', desc: '连接两点' },
+  ]},
+];
+
+function matchQuery(text, q) {
+  if (!q) return true;
+  return String(text).toLowerCase().includes(q.trim().toLowerCase());
+}
+
+function refreshLeft() {
+  const host = $('#leftBody');
+  if (!host) return;
+  host.innerHTML = '';
+  const q = leftQuery;
+
+  if (leftTab === 'objects') {
+    const chips = el('div', { class: 'chips' });
+    [['all', '全部'], ['body', '物体'], ['field', '场'], ['surface', '表面'], ['spring', '约束']].forEach(([id, lab]) => {
+      const b = el('button', { type: 'button', class: 'chip' + (leftChip === id ? ' active' : '') }, lab);
+      b.onclick = () => { leftChip = id; refreshLeft(); };
+      chips.appendChild(b);
+    });
+    host.appendChild(chips);
+    const wrap = el('div', { class: 'side-body pad' });
+    const groups = [
+      ['物体', 'body', o => isBody(o)],
+      ['场', 'field', o => o.kind === 'efield' || o.kind === 'bfield'],
+      ['表面', 'surface', o => ['ground', 'wall', 'incline'].includes(o.kind)],
+      ['约束', 'spring', o => o.kind === 'spring'],
+    ];
+    let any = false;
+    for (const [title, chip, pred] of groups) {
+      if (leftChip !== 'all' && leftChip !== chip) continue;
+      const items = scene.objects.filter(o => pred(o) && (matchQuery(o.name, q) || matchQuery(KIND_NAME[o.kind], q)));
+      if (!items.length) continue;
+      any = true;
+      wrap.appendChild(el('div', { class: 'objgroup' }, `${title} · ${items.length}`));
+      const ul = el('ul', { class: 'objlist' });
+      for (const o of items) {
+        const li = el('li', { class: o.id === selId ? 'sel' : '' });
+        const col = o.color || (o.kind === 'efield' ? '#b45f14' : o.kind === 'bfield' ? '#0f6e6a' : o.kind === 'spring' ? '#0f766e' : '#6b7280');
+        li.appendChild(el('span', { class: 'dot', style: `background:${col}` }));
+        li.appendChild(el('span', {}, o.name));
+        li.appendChild(el('span', { class: 'ty' }, o.kind === 'bfield' ? (o.dir < 0 ? 'in' : 'out') : KIND_NAME[o.kind]));
+        li.addEventListener('click', () => { select(o.id); closeMobilePanels(); });
+        ul.appendChild(li);
+      }
+      wrap.appendChild(ul);
+    }
+    if (!any) wrap.appendChild(el('div', { class: 'empty-hint' }, scene.objects.length ? '无匹配结果。' : '场景为空。切换到「添加」或「预设」开始。'));
+    host.appendChild(wrap);
+    return;
+  }
+
+  if (leftTab === 'add') {
+    const grid = el('div', { class: 'add-grid' });
+    for (const block of ADD_CATALOG) {
+      const visibleItems = block.items.filter(it => matchQuery(it.name + it.desc + block.cat, q));
+      if (!visibleItems.length) continue;
+      grid.appendChild(el('div', { class: 'add-cat' }, block.cat));
+      for (const it of visibleItems) {
+        const b = el('button', { type: 'button', title: it.desc }, `<div><b>${it.name}</b><div class="hint" style="margin:0">${it.desc}</div></div>`);
+        b.onclick = () => { setTool(it.tool); closeMobilePanels(false); toast('在画布上点击或拖拽以放置'); };
+        if (tool === it.tool) b.classList.add('active');
+        grid.appendChild(b);
+      }
+    }
+    if (!grid.childNodes.length) grid.appendChild(el('div', { class: 'empty-hint' }, '无匹配的工具。'));
+    host.appendChild(grid);
+    return;
+  }
+
+  if (leftTab === 'presets') {
+    const chips = el('div', { class: 'chips' });
+    const cats = ['全部', '力学', '电磁', '振动'];
+    const cur = leftChip === 'all' ? '全部' : leftChip;
+    cats.forEach(c => {
+      const id = c === '全部' ? 'all' : c;
+      const b = el('button', { type: 'button', class: 'chip' + (cur === c || (c === '全部' && leftChip === 'all') ? ' active' : '') }, c);
+      b.onclick = () => { leftChip = id; refreshLeft(); };
+      chips.appendChild(b);
+    });
+    // fix active state
+    chips.querySelectorAll('.chip').forEach(ch => {
+      const lab = ch.textContent;
+      const id = lab === '全部' ? 'all' : lab;
+      ch.classList.toggle('active', leftChip === id);
+    });
+    host.appendChild(chips);
+    const wrap = el('div', { class: 'side-body pad' });
+    let any = false;
+    for (const key of Object.keys(PRESETS)) {
+      const meta = PRESET_META[key] || { cat: '其他', tags: [] };
+      if (leftChip !== 'all' && meta.cat !== leftChip) continue;
+      const name = PRESETS[key].name;
+      const blob = [name, meta.cat, ...(meta.tags || [])].join(' ');
+      if (!matchQuery(blob, q)) continue;
+      any = true;
+      const item = el('div', { class: 'preset-item' });
+      item.appendChild(el('div', { class: 'p-name' }, name));
+      item.appendChild(el('div', { class: 'p-cat' }, `${meta.cat}${(meta.tags || []).length ? ' · ' + meta.tags.join(' ') : ''}`));
+      item.onclick = () => { loadPreset(key); closeMobilePanels(); };
+      wrap.appendChild(item);
+    }
+    if (!any) wrap.appendChild(el('div', { class: 'empty-hint' }, '无匹配预设。'));
+    host.appendChild(wrap);
+  }
+}
+
+function buildList() { refreshLeft(); }
+
+function closeMobilePanels(resetDock = true) {
+  $('#left')?.classList.remove('open');
+  $('#right')?.classList.remove('open');
+  $('#panelScrim')?.classList.remove('show');
+  if (resetDock) {
+    mobileDock = 'stage';
+    document.querySelectorAll('#mobile-dock button').forEach(b => b.classList.toggle('active', b.dataset.dock === 'stage'));
+  }
+}
+
+function openMobile(which) {
+  const left = $('#left'), right = $('#right'), scrim = $('#panelScrim');
+  closeMobilePanels(false);
+  if (which === 'objects' || which === 'add' || which === 'presets') {
+    leftTab = which;
+    leftChip = 'all';
+    document.querySelectorAll('#leftTabs button').forEach(b => b.classList.toggle('active', b.dataset.leftTab === leftTab));
+    refreshLeft();
+    left.classList.add('open');
+    scrim?.classList.add('show');
+  } else if (which === 'inspect') {
+    right.classList.add('open');
+    scrim?.classList.add('show');
+  }
 }
 
 /* ---------------- 实时读数 ---------------- */
@@ -1206,33 +1484,11 @@ function updateStatus() {
       `<span><span class="k">vx</span>${fmt(st.vx)}</span>`, `<span><span class="k">vy</span>${fmt(st.vy)} m/s</span>`,
       `<span><span class="k">|v|</span>${fmt(v)} m/s</span>`, `<span><span class="k">Ek</span>${fmt(0.5 * b.m * v * v)} J</span>`,
       `<span><span class="k">p</span>${fmt(b.m * v)} kg·m/s</span>`);
-  } else parts.push('<span class="sep"></span>', '<span class="k">未选中物体 —— 点击物体查看实时数据</span>');
+  } else parts.push('<span class="sep"></span>', '<span class="k">未选中</span>');
   parts.push('<span class="sep"></span>', `<span id="mousepos"></span>`);
   $('#status').innerHTML = parts.join(''); updateStatusMouse();
 }
 function updateStatusMouse() { const m = document.getElementById('mousepos'); if (m) m.innerHTML = `<span class="k">鼠标</span>(${fmt(mouseW[0], 2)}, ${fmt(mouseW[1], 2)}) m <span class="k" style="margin-left:8px">缩放</span>${fmt(scene.view.scale, 3)} px/m`; }
-
-/* ---------------- 左侧对象列表 ---------------- */
-function buildList() {
-  const L = $('#objlist'); L.innerHTML = '';
-  const groups = [['物体', o => isBody(o)], ['场', o => o.kind === 'efield' || o.kind === 'bfield'], ['表面', o => ['ground', 'wall', 'incline'].includes(o.kind)], ['弹簧/绳', o => o.kind === 'spring']];
-  for (const [title, f] of groups) {
-    const items = scene.objects.filter(f); if (!items.length) continue;
-    L.appendChild(el('div', { class: 'objgroup' }, `${title} (${items.length})`));
-    const ul = el('ul', { class: 'objlist' });
-    for (const o of items) {
-      const li = el('li', { class: o.id === selId ? 'sel' : '' });
-      const col = o.color || (o.kind === 'efield' ? '#e08600' : o.kind === 'bfield' ? '#2f6fed' : o.kind === 'spring' ? '#14b8a6' : '#718096');
-      li.appendChild(el('span', { class: 'dot', style: `background:${col}` }));
-      li.appendChild(el('span', {}, o.name));
-      li.appendChild(el('span', { class: 'ty' }, o.kind === 'bfield' ? (o.dir < 0 ? '⊗' : '⊙') : KIND_NAME[o.kind]));
-      li.addEventListener('click', () => select(o.id));
-      ul.appendChild(li);
-    }
-    L.appendChild(ul);
-  }
-  if (!scene.objects.length) L.appendChild(el('div', { class: 'hint', style: 'padding:6px 12px' }, '场景为空。用顶部工具栏添加物体，或选择一个预设场景。'));
-}
 
 /* ---------------- 提示 ---------------- */
 let toastT = 0;
@@ -1242,8 +1498,23 @@ function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.ad
  *  预设场景
  * ===================================================================== */
 function sceneOf(objects, settings = {}, view = null) { return { settings: Object.assign(defaultSettings(), settings), objects, view }; }
+const PRESET_META = {
+  welcome: { cat: '力学', tags: ['斜抛', '摩擦'] },
+  projectile: { cat: '力学', tags: ['平抛'] },
+  vertical: { cat: '力学', tags: ['竖直上抛'] },
+  incline: { cat: '力学', tags: ['斜面', '摩擦'] },
+  collision: { cat: '力学', tags: ['碰撞'] },
+  selector: { cat: '电磁', tags: ['速度选择器'] },
+  edeflect: { cat: '电磁', tags: ['电场偏转'] },
+  bbound: { cat: '电磁', tags: ['有界磁场'] },
+  accel: { cat: '电磁', tags: ['加速', '偏转'] },
+  cycloid: { cat: '电磁', tags: ['摆线'] },
+  springosc: { cat: '振动', tags: ['弹簧'] },
+  pendulum: { cat: '振动', tags: ['单摆'] },
+  coulomb: { cat: '电磁', tags: ['库仑'] },
+};
 const PRESETS = {
-  welcome: { name: '欢迎：斜抛 + 滑块', make() {
+  welcome: { name: '斜抛与滑块', make() {
     nextId = 1;
     return sceneOf([mkGround(0), mkBody('ball', { name: '小球', x0: -4, y0: 0.25, vx0: 6, vy0: 8, e: 0.5 }),
       mkBody('box', { name: '滑块', x0: -6, y0: 0.2, vx0: 5, vy0: 0, mu: 0.3, color: '#f59e0b' })], {}, { cx: 3, cy: 2.6, scale: 42 });
@@ -1257,7 +1528,7 @@ const PRESETS = {
     nextId = 1;
     return sceneOf([mkGround(0), mkBody('ball', { name: '小球', x0: 0, y0: 0.2, r: 0.2, vx0: 0, vy0: 10, e: 0.6 })], {}, null);
   } },
-  incline: { name: '斜面上的滑块（带摩擦）', make() {
+  incline: { name: '斜面滑块', make() {
     nextId = 1;
     const inc = mkIncline(-2, 0, { L: 4, ang: 37, dir: 1, smooth: false });
     const th = 37 * DEG, top = inclinePts(inc)[2], h = 0.4, along = 0.6;
@@ -1265,7 +1536,7 @@ const PRESETS = {
       x0: +(top[0] - Math.sin(th) * h / 2 - Math.cos(th) * along).toFixed(3), y0: +(top[1] + Math.cos(th) * h / 2 - Math.sin(th) * along).toFixed(3) });
     return sceneOf([mkGround(0), inc, b], { showForce: true, g: 9.8 });
   } },
-  collision: { name: '弹性碰撞（光滑水平面）', make() {
+  collision: { name: '弹性碰撞', make() {
     nextId = 1;
     return sceneOf([mkGround(0, { smooth: true }),
       mkBody('ball', { name: 'A (1kg)', m: 1, r: 0.3, x0: -3, y0: 0.3, vx0: 4, e: 1, color: '#2f6fed' }),
@@ -1280,7 +1551,7 @@ const PRESETS = {
       mkBody('particle', { name: 'v=8', x0: -2, y0: 0, vx0: 8, color: '#e5484d' }),
       mkBody('particle', { name: 'v=3', x0: -2, y0: 0, vx0: 3, color: '#2f6fed' })], { gOn: false, showLabels: false });
   } },
-  edeflect: { name: '电场偏转（类平抛）', make() {
+  edeflect: { name: '电场偏转', make() {
     nextId = 1;
     return sceneOf([mkE({ name: '偏转电场', E: 1, ang: -90, x: 0, y: -1, w: 4, h: 2 }),
       mkWall(0, 1, 4, 1, { name: '上极板' }), mkWall(0, -1, 4, -1, { name: '下极板' }), mkWall(8, -3, 8, 3, { name: '荧光屏', e: 0 }),
@@ -1292,29 +1563,29 @@ const PRESETS = {
       mkBody('particle', { name: '粒子 q/m=1', m: 1, q: 1, r: 0.1, x0: -2, y0: 0, vx0: 2 }),
       mkBody('particle', { name: '斜射入', m: 1, q: 1, r: 0.1, x0: -2, y0: -2, vx0: 1.732, vy0: 1, color: '#8b5cf6' })], { gOn: false });
   } },
-  accel: { name: '加速后偏转（电场加速 + 磁场偏转）', make() {
+  accel: { name: '加速后偏转', make() {
     nextId = 1;
     return sceneOf([mkE({ name: '加速电场', E: 2, ang: 0, x: -4, y: -1, w: 3, h: 2 }),
       mkB({ name: '偏转磁场 ⊗', B: 1, dir: -1, x: 0, y: -1, w: 10, h: 9 }),
       mkBody('particle', { name: '粒子 q/m=1', m: 1, q: 1, r: 0.1, x0: -3.9, y0: 0 })], { gOn: false });
   } },
-  cycloid: { name: '摆线（正交电磁场，从静止释放）', make() {
+  cycloid: { name: '正交电磁场摆线', make() {
     nextId = 1;
     return sceneOf([mkE({ name: '电场 E↓', E: 2, ang: -90, all: true }), mkB({ name: '磁场 ⊗', B: 1, dir: -1, all: true }),
       mkBody('particle', { name: '粒子 q/m=1', m: 1, q: 1, r: 0.1, x0: 0, y0: 0 })], { gOn: false }, { cx: 8, cy: -2, scale: 45 });
   } },
-  springosc: { name: '弹簧振子（光滑水平面）', make() {
+  springosc: { name: '弹簧振子', make() {
     nextId = 1;
     const b = mkBody('box', { name: '振子', w: 0.5, h: 0.5, m: 1, mu: 0, x0: 1, y0: 0.25 });
     return sceneOf([mkGround(0, { smooth: true }), mkWall(-3, 0, -3, 1.5, { name: '墙' }), b,
       mkSpring(b.id, null, { ax: -3, ay: 0.25, k: 20, L0: 3 })]);
   } },
-  pendulum: { name: '单摆（轻绳）', make() {
+  pendulum: { name: '单摆', make() {
     nextId = 1;
     const b = mkBody('ball', { name: '摆球', m: 0.5, r: 0.15, x0: 1, y0: 2.268 });
     return sceneOf([b, mkSpring(b.id, null, { name: '轻绳', ax: 0, ay: 4, L0: 2, k: 5000, rope: true })], {}, { cx: 0, cy: 2.5, scale: 90 });
   } },
-  coulomb: { name: '库仑力：点电荷绕核运动', make() {
+  coulomb: { name: '库仑绕核', make() {
     nextId = 1;
     return sceneOf([mkBody('ball', { name: '+Q 固定', fixed: true, q: 1e-4, m: 1, r: 0.2, x0: 0, y0: 0, color: '#e5484d' }),
       mkBody('ball', { name: '−q', q: -1e-5, m: 1, r: 0.1, x0: 2, y0: 0, vx0: 0, vy0: 2.12, color: '#2f6fed' })], { gOn: false, coulomb: true }, { cx: 0, cy: 0, scale: 80 });
@@ -1354,41 +1625,118 @@ function markDirty() { clearTimeout(saveT); saveT = setTimeout(() => { try { loc
  * ===================================================================== */
 function syncToolbar() {
   const S = scene.settings;
-  $('#chkG').checked = S.gOn; $('#numG').value = S.g; $('#chkGrid').checked = S.showGrid; $('#chkTrail').checked = S.showTrail;
-  $('#chkVel').checked = S.showVel; $('#chkForce').checked = S.showForce;
-  const ca = $('#chkAnalytic'); if (ca) ca.checked = !!S.showAnalytic;
-  const sel = $('#selSpeed'); if (![...sel.options].some(o => +o.value === S.speed)) sel.appendChild(el('option', { value: S.speed }, S.speed + '×')); sel.value = String(S.speed);
+  if ($('#chkG')) $('#chkG').checked = S.gOn;
+  if ($('#numG')) $('#numG').value = S.g;
+  if ($('#chkGrid')) $('#chkGrid').checked = S.showGrid;
+  if ($('#chkTrail')) $('#chkTrail').checked = S.showTrail;
+  if ($('#chkVel')) $('#chkVel').checked = S.showVel;
+  if ($('#chkForce')) $('#chkForce').checked = S.showForce;
+  if ($('#chkAnalytic')) $('#chkAnalytic').checked = !!S.showAnalytic;
+  const sel = $('#selSpeed');
+  if (sel) {
+    if (![...sel.options].some(o => +o.value === S.speed)) sel.appendChild(el('option', { value: S.speed }, S.speed + '×'));
+    sel.value = String(S.speed);
+  }
 }
+
 function initToolbar() {
   document.querySelectorAll('[data-tool]').forEach(b => b.addEventListener('click', () => setTool(b.dataset.tool)));
-  $('#bPlay').onclick = togglePlay; $('#bStep').onclick = stepOnce;
+  $('#bPlay').onclick = togglePlay;
+  $('#bStep').onclick = stepOnce;
   $('#bReset').onclick = () => { resetSim('已重置到 t=0'); draw(); updateReadouts(); };
   $('#selSpeed').onchange = e => { scene.settings.speed = +e.target.value; markDirty(); draw(); };
   $('#chkG').onchange = e => { scene.settings.gOn = e.target.checked; liveEdit(); };
   $('#numG').oninput = e => { const v = parseFloat(e.target.value); if (isFinite(v)) { scene.settings.g = v; liveEdit(); } };
-  const flag = (id, k) => $(id).onchange = e => { scene.settings[k] = e.target.checked; markDirty(); draw(); };
+  const flag = (id, k) => { const node = $(id); if (node) node.onchange = e => { scene.settings[k] = e.target.checked; markDirty(); draw(); }; };
   flag('#chkGrid', 'showGrid'); flag('#chkTrail', 'showTrail'); flag('#chkVel', 'showVel'); flag('#chkForce', 'showForce');
-  if ($('#chkAnalytic')) flag('#chkAnalytic', 'showAnalytic');
-  const ps = $('#selPreset');
-  for (const k in PRESETS) ps.appendChild(el('option', { value: k }, PRESETS[k].name));
-  ps.onchange = () => { if (ps.value) loadPreset(ps.value); ps.value = ''; ps.blur(); };
+  flag('#chkAnalytic', 'showAnalytic');
+
+  // left tabs
+  document.querySelectorAll('#leftTabs [data-left-tab]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      leftTab = btn.dataset.leftTab;
+      leftChip = 'all';
+      document.querySelectorAll('#leftTabs button').forEach(b => b.classList.toggle('active', b === btn));
+      refreshLeft();
+    });
+  });
+  const q = $('#qLeft');
+  if (q) {
+    q.addEventListener('input', () => { leftQuery = q.value; refreshLeft(); });
+  }
+  document.addEventListener('keydown', e => {
+    if (e.key === '/' && !['INPUT', 'TEXTAREA', 'SELECT'].includes((document.activeElement || {}).tagName)) {
+      e.preventDefault();
+      if (window.matchMedia('(max-width: 820px)').matches) openMobile('objects');
+      $('#qLeft')?.focus();
+    }
+  });
+
+  // more menu
+  const moreBtn = $('#bMore'), moreMenu = $('#moreMenu');
+  moreBtn?.addEventListener('click', e => { e.stopPropagation(); moreMenu.classList.toggle('open'); });
+  document.addEventListener('click', () => moreMenu?.classList.remove('open'));
+  moreMenu?.addEventListener('click', e => e.stopPropagation());
+
   $('#bUndo').onclick = undo;
   $('#bSave').onclick = () => {
-    const blob = new Blob([serialize()], { type: 'application/json' }), a = el('a', { href: URL.createObjectURL(blob), download: `物理场景_${new Date().toISOString().slice(0, 10)}.json` });
-    document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 1000); toast('场景已导出为 JSON 文件');
+    const blob = new Blob([serialize()], { type: 'application/json' });
+    const a = el('a', { href: URL.createObjectURL(blob), download: `物理场景_${new Date().toISOString().slice(0, 10)}.json` });
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    toast('已导出');
+    moreMenu?.classList.remove('open');
   };
-  $('#bLoad').onclick = () => $('#fileIn').click();
+  $('#bLoad').onclick = () => { $('#fileIn').click(); moreMenu?.classList.remove('open'); };
   $('#fileIn').onchange = e => {
-    const f = e.target.files[0]; if (!f) return; const rd = new FileReader();
-    rd.onload = () => { try { pushUndo(); loadScene(JSON.parse(rd.result), false); toast('场景已导入'); } catch (err) { toast('导入失败：' + err.message); } };
+    const f = e.target.files[0]; if (!f) return;
+    const rd = new FileReader();
+    rd.onload = () => { try { pushUndo(); loadScene(JSON.parse(rd.result), false); toast('已导入'); } catch (err) { toast('导入失败：' + err.message); } };
     rd.readAsText(f); e.target.value = '';
   };
-  $('#bClear').onclick = () => { if (!confirm('确定清空整个场景吗？（可用撤销恢复）')) return; pushUndo(); const s = scene.settings; loadScene({ objects: [], settings: s, view: scene.view }, true); toast('场景已清空'); };
-  $('#bTheme').onclick = () => { document.body.classList.toggle('dark'); try { localStorage.setItem('physim.theme', document.body.classList.contains('dark') ? 'dark' : 'light'); } catch (e) { } readColors(); draw(); drawChart(); };
-  $('#bLeft').onclick = () => { $('#main').classList.toggle('noleft'); $('#left').style.display = $('#main').classList.contains('noleft') ? 'none' : ''; setTimeout(resize, 0); };
-  $('#bHelp').onclick = () => $('#help').classList.add('show');
+  $('#bClear').onclick = () => {
+    if (!confirm('确定清空场景？')) return;
+    pushUndo();
+    const s = scene.settings;
+    loadScene({ objects: [], settings: s, view: scene.view }, true);
+    toast('已清空');
+    moreMenu?.classList.remove('open');
+  };
+  $('#bTheme').onclick = () => {
+    document.body.classList.toggle('dark');
+    try { localStorage.setItem('physim.theme', document.body.classList.contains('dark') ? 'dark' : 'light'); } catch (e) {}
+    readColors(); draw(); drawChart();
+    moreMenu?.classList.remove('open');
+  };
+  $('#bHelp').onclick = () => { $('#help').classList.add('show'); moreMenu?.classList.remove('open'); };
+  $('#bHelpClose')?.addEventListener('click', () => $('#help').classList.remove('show'));
   $('#help').addEventListener('click', e => { if (e.target.id === 'help') e.target.classList.remove('show'); });
+
+  $('#bLeft')?.addEventListener('click', () => {
+    $('#main').classList.toggle('noleft');
+    setTimeout(resize, 0);
+  });
+  $('#bRight')?.addEventListener('click', () => {
+    $('#main').classList.toggle('noright');
+    setTimeout(resize, 0);
+  });
+
+  // mobile dock
+  document.querySelectorAll('#mobile-dock [data-dock]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const dock = btn.dataset.dock;
+      mobileDock = dock;
+      document.querySelectorAll('#mobile-dock button').forEach(b => b.classList.toggle('active', b === btn));
+      if (dock === 'stage') closeMobilePanels();
+      else if (dock === 'objects') openMobile('objects');
+      else if (dock === 'add') openMobile('add');
+      else if (dock === 'inspect') openMobile('inspect');
+    });
+  });
+  $('#panelScrim')?.addEventListener('click', () => closeMobilePanels());
+
   document.addEventListener('keydown', e => { if (e.key === ' ' && e.target === document.body) e.preventDefault(); });
+  refreshLeft();
 }
 
 /* =====================================================================
@@ -1403,7 +1751,7 @@ function boot() {
   try { const s = localStorage.getItem(STORE_KEY); if (s) { loadScene(JSON.parse(s), false); loaded = true; } } catch (e) { loaded = false; }
   if (!loaded) { const sc = PRESETS.welcome.make(); loadScene(sc, false); }
   setTool('select');
-  toast(loaded ? '已恢复上次的场景（自动保存）' : '欢迎！选中物体后拖动绿色箭头设置初速度，按空格播放');
+  toast(loaded ? '已恢复上次场景' : '选中物体后拖动绿色箭头设置初速度，空格播放');
   window.__physim = { scene: () => scene, sim, advance, loadPreset, select, resetSim, togglePlay };
   requestAnimationFrame(loop);
 }
