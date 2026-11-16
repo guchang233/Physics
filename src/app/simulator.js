@@ -1,4 +1,10 @@
 import { analyzeMotion, sampleAnalyticPath } from '../analysis/motionAnalysis.ts';
+import {
+  FieldSystem2,
+  sourcesFromSceneObjects,
+  StubContactWorld,
+  createRapierContactWorld,
+} from '../engine/index.ts';
 
 
 /* =====================================================================
@@ -16,12 +22,12 @@ const STORE_KEY = 'physim.scene.v1';
 let nextId = 1;
 const BODY_KINDS = ['ball', 'particle', 'box'];
 const KIND_NAME = { ball: '小球', particle: '带电粒子', box: '滑块', ground: '地面', wall: '挡板', incline: '斜面',
-  efield: '电场', bfield: '磁场', spring: '弹簧' };
+  efield: '电场', bfield: '磁场', spring: '弹簧', pointCharge: '点电荷' };
 const PALETTE = ['#2f6fed', '#e5484d', '#1f9d55', '#f59e0b', '#8b5cf6', '#0ea5e9', '#ec4899', '#14b8a6'];
 
 function defaultSettings() {
   return { gOn: true, g: 9.8, drag: 0, coulomb: false, kc: K_COULOMB, maxDt: 0.001, vPx: 20, snap: true, snapStep: 0.1,
-    showLabels: true, showGrid: true, showTrail: true, showVel: true, showForce: false, showAnalytic: true, speed: 1 };
+    showLabels: true, showGrid: true, showTrail: true, showVel: true, showForce: false, showAnalytic: true, showFieldLines: true, coulombLaw: 'coulomb3d', contactBackend: 'native', speed: 1 };
 }
 let scene = { settings: defaultSettings(), objects: [], view: { cx: 0, cy: 2, scale: 60 } };
 
@@ -44,6 +50,11 @@ function mkWall(x1, y1, x2, y2, p = {}) { return Object.assign({ id: nextId++, k
 function mkIncline(x, y, p = {}) { return Object.assign({ id: nextId++, kind: 'incline', name: '斜面', x, y, L: 4, ang: 37, dir: 1, smooth: false, e: 0.1 }, p); }
 function mkE(p = {}) { return Object.assign({ id: nextId++, kind: 'efield', name: '电场', E: 1, ang: -90, all: false, x: 0, y: -1, w: 4, h: 2 }, p); }
 function mkB(p = {}) { return Object.assign({ id: nextId++, kind: 'bfield', name: '磁场', B: 1, dir: -1, all: false, x: 0, y: -2, w: 4, h: 4 }, p); }
+function mkPointCharge(x = 0, y = 0, p = {}) {
+  return Object.assign({
+    id: nextId++, kind: 'pointCharge', name: '点电荷', x, y, q: 1e-6, softRadius: 0.08, fixed: true, color: '#e5484d',
+  }, p);
+}
 function mkSpring(a, b, p = {}) { return Object.assign({ id: nextId++, kind: 'spring', name: '弹簧', a, b, ax: 0, ay: 0, k: 20, L0: 1, rope: false }, p); }
 
 /* ---------------- 仿真状态 ---------------- */
@@ -53,6 +64,9 @@ let leftQuery = '';
 let leftChip = 'all';
 let propsTab = 'init';
 let mobileDock = 'stage';
+const fieldSys = new FieldSystem2({ law: 'coulomb3d', k: K_COULOMB, softening: 0.02 });
+let contactWorld = new StubContactWorld();
+let fieldsDirty = true;
 
 
 function initState(b) {
@@ -99,13 +113,49 @@ function support(b, nx, ny) {
   const c = Math.cos(b.st.ang), s = Math.sin(b.st.ang);
   return b.w / 2 * Math.abs(nx * c + ny * s) + b.h / 2 * Math.abs(-nx * s + ny * c);
 }
+function rebuildFieldSources() {
+  fieldSys.k = scene.settings.kc || K_COULOMB;
+  fieldSys.law = scene.settings.coulombLaw || 'coulomb3d';
+  fieldSys.softening = 0.02;
+  // Dynamic charged bodies emit field when coulomb toggle is on (unified with F=qE path)
+  fieldSys.setSources(sourcesFromSceneObjects(scene.objects, {
+    includeBodyCharges: !!scene.settings.coulomb,
+  }));
+  const v = scene.view;
+  const halfW = (W || 800) / (2 * (v.scale || 60));
+  const halfH = (H || 600) / (2 * (v.scale || 60));
+  fieldSys.setLineOptions({
+    enabled: !!scene.settings.showFieldLines,
+    linesPerUnitCharge: 10,
+    step: Math.max(0.02, 4 / (v.scale || 60)),
+    maxSteps: 600,
+    bounds: { x0: v.cx - halfW * 1.4, y0: v.cy - halfH * 1.4, x1: v.cx + halfW * 1.4, y1: v.cy + halfH * 1.4 },
+  });
+  fieldsDirty = false;
+}
+function ensureFields() {
+  if (fieldsDirty) rebuildFieldSources();
+}
+function markFieldsDirty() { fieldsDirty = true; fieldSys.markDirty(); }
 function fieldAt(x, y) {
-  let Ex = 0, Ey = 0, Bz = 0;
-  for (const o of scene.objects) {
-    if (o.kind === 'efield' && inRect(o, x, y)) { Ex += o.E * Math.cos(o.ang * DEG); Ey += o.E * Math.sin(o.ang * DEG); }
-    else if (o.kind === 'bfield' && inRect(o, x, y)) Bz += o.B * o.dir;
+  ensureFields();
+  const s = fieldSys.sample(x, y);
+  return { Ex: s.Ex, Ey: s.Ey, Bz: s.Bz, phi: s.phi };
+}
+function fieldAtExcluding(x, y, excludeId) {
+  ensureFields();
+  // Temporary filter: rebuild without excludeId if needed — cheap enough for few sources
+  const all = fieldSys.sources;
+  const filtered = all.filter(s => s.id !== excludeId);
+  if (filtered.length === all.length) return fieldAt(x, y);
+  let Ex = 0, Ey = 0, Bz = 0, phi = 0;
+  for (const s of filtered) {
+    const e = s.sampleE(x, y, fieldSys.law, fieldSys.k);
+    Ex += e.x; Ey += e.y;
+    if (s.sampleB) Bz += s.sampleB(x, y).Bz;
+    if (s.samplePhi) phi += s.samplePhi(x, y, fieldSys.law, fieldSys.k);
   }
-  return { Ex, Ey, Bz };
+  return { Ex, Ey, Bz, phi };
 }
 
 /* ---------------- 力的计算（不含磁场力和接触力） ---------------- */
@@ -122,7 +172,8 @@ function computeForces(list, record) {
     const add = (fx, fy, label, color) => { f.x += fx; f.y += fy; if (record && (fx || fy)) f.parts.push({ fx, fy, label, color }); };
     if (S.gOn) add(0, -b.m * S.g, 'G', '#e5484d');
     if (b.q) {
-      const F = fieldAt(b.st.x, b.st.y);
+      // Exclude self-field if this body is also an emitter
+      const F = fieldAtExcluding(b.st.x, b.st.y, b.id);
       if (F.Ex || F.Ey) add(b.q * F.Ex, b.q * F.Ey, 'F电', '#e08600');
     }
     if (b.F) add(b.F * Math.cos(b.Fang * DEG), b.F * Math.sin(b.Fang * DEG), 'F', '#8b5cf6');
@@ -138,20 +189,8 @@ function computeForces(list, record) {
     const fa = out.get(e.A); if (fa) { fa.x += fx; fa.y += fy; if (record && T) fa.parts.push({ fx, fy, label: lab, color: '#14b8a6' }); }
     const fb = e.B && out.get(e.B); if (fb) { fb.x -= fx; fb.y -= fy; if (record && T) fb.parts.push({ fx: -fx, fy: -fy, label: lab, color: '#14b8a6' }); }
   }
-  // 库仑力
-  if (S.coulomb) {
-    const all = bodies().filter(b => b.q && b.st);
-    for (const b of list) {
-      if (!b.q) continue; const f = out.get(b); let fx = 0, fy = 0;
-      for (const c of all) {
-        if (c === b) continue;
-        const dx = b.st.x - c.st.x, dy = b.st.y - c.st.y;
-        const r = Math.max(Math.hypot(dx, dy), (bodyRadius(b) + bodyRadius(c)) * 0.5, 1e-6);
-        const F = S.kc * b.q * c.q / (r * r); fx += F * dx / r; fy += F * dy / r;
-      }
-      f.x += fx; f.y += fy; if (record && (fx || fy)) f.parts.push({ fx, fy, label: 'F库', color: '#ec4899' });
-    }
-  }
+  // 库仑力：由 FieldSystem 中的点电荷/带电体源经 F=qE 统一计入（见上方电场力）。
+  // 保留开关 scene.settings.coulomb → includeBodyCharges。
   return out;
 }
 
@@ -269,6 +308,7 @@ function readColors() { ['--canvas', '--grid', '--grid2', '--axis', '--text', '-
 function resize() {
   const r = cv.getBoundingClientRect(); DPR = window.devicePixelRatio || 1;
   W = r.width; H = r.height; cv.width = Math.round(W * DPR); cv.height = Math.round(H * DPR);
+  markFieldsDirty();
   draw();
 }
 function w2s(x, y) { const v = scene.view; return [W / 2 + (x - v.cx) * v.scale, H / 2 - (y - v.cy) * v.scale]; }
@@ -506,6 +546,51 @@ function drawV0(b) {
   label(txt, H0.hx + 12, H0.hy - 12, '#1f9d55');
 }
 
+
+function drawElectricFieldLines() {
+  const lines = fieldSys.getFieldLines();
+  if (!lines.length) return;
+  ctx.save();
+  ctx.strokeStyle = C['--efield-line'] || '#b45f14';
+  ctx.globalAlpha = 0.55;
+  ctx.lineWidth = 1.2;
+  for (const line of lines) {
+    ctx.beginPath();
+    line.forEach((p, i) => {
+      const [sx, sy] = w2s(p.x, p.y);
+      if (i) ctx.lineTo(sx, sy); else ctx.moveTo(sx, sy);
+    });
+    ctx.stroke();
+    // arrowhead near 60% mark
+    if (line.length > 8) {
+      const a = line[Math.floor(line.length * 0.55)];
+      const b = line[Math.floor(line.length * 0.58)];
+      const [x1, y1] = w2s(a.x, a.y), [x2, y2] = w2s(b.x, b.y);
+      arrow(x1, y1, x2, y2, C['--efield-line'] || '#b45f14', 1.2, 6);
+    }
+  }
+  ctx.restore();
+}
+function drawPointCharge(o) {
+  const [sx, sy] = w2s(o.x, o.y);
+  const r = Math.max(8, (o.softRadius || 0.08) * scene.view.scale);
+  const pos = o.q >= 0;
+  ctx.save();
+  ctx.fillStyle = o.color || (pos ? '#e5484d' : '#2f6fed');
+  ctx.strokeStyle = 'rgba(0,0,0,.35)';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.arc(sx, sy, r, 0, 7); ctx.fill(); ctx.stroke();
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+  const k = r * 0.45;
+  ctx.beginPath(); ctx.moveTo(sx - k, sy); ctx.lineTo(sx + k, sy);
+  if (pos) { ctx.moveTo(sx, sy - k); ctx.lineTo(sx, sy + k); }
+  ctx.stroke();
+  if (o === selected()) {
+    ctx.setLineDash([4, 3]); ctx.strokeStyle = C['--accent']; ctx.beginPath(); ctx.arc(sx, sy, r + 5, 0, 7); ctx.stroke();
+  }
+  if (scene.settings.showLabels) label(o.name + ` (${pos ? '+' : ''}${fmt(o.q, 2)} C)`, sx, sy + r + 12, C['--muted'], 'center', false);
+  ctx.restore();
+}
 function drawAnalyticPath(b) {
   if (!b || !b.st) return;
   const sampled = sampleAnalyticPath(buildAnalysisContext(b), {});
@@ -535,7 +620,10 @@ function draw() {
   ctx.fillStyle = C['--canvas']; ctx.fillRect(0, 0, W, H);
   if (scene.settings.showGrid) drawGrid();
   const objs = scene.objects;
+  ensureFields();
+  if (scene.settings.showFieldLines) drawElectricFieldLines();
   objs.filter(o => o.kind === 'efield' || o.kind === 'bfield').forEach(drawField);
+  objs.filter(o => o.kind === 'pointCharge').forEach(drawPointCharge);
   objs.filter(o => ['ground', 'wall', 'incline'].includes(o.kind)).forEach(drawSurface);
   objs.filter(o => o.kind === 'spring').forEach(drawSpring);
   ensureStates();
@@ -565,7 +653,7 @@ const TOOL_HINT = {
   pan: '平移：拖动画布移动视图，滚轮缩放', ball: '点击画布放置小球（按住 Shift 可连续放置）',
   particle: '点击画布放置带电粒子（按住 Shift 可连续放置）', box: '点击画布放置滑块（按住 Shift 可连续放置）',
   ground: '点击画布确定地面高度', wall: '按住拖动画出挡板/极板（线段）', incline: '点击放置斜面（点击处为底角顶点）',
-  efield: '拖动画出电场矩形区域；单击 = 全空间电场', bfield_in: '拖动画出磁场 ⊗ 区域；单击 = 全空间',
+  pointCharge: '点击画布放置点电荷（右侧可改 q）', efield: '拖动画出电场矩形区域；单击 = 全空间电场', bfield_in: '拖动画出磁场 ⊗ 区域；单击 = 全空间',
   bfield_out: '拖动画出磁场 ⊙ 区域；单击 = 全空间', spring: '先点击物体 A，再点击物体 B（或空白处作为固定点）'
 };
 function setTool(t) {
@@ -600,6 +688,11 @@ function pointInTri(p, a, b, c) {
 }
 function hitOther(sx, sy) {
   const objs = scene.objects;
+  for (const o of objs) if (o.kind === 'pointCharge') {
+    const [x, y] = w2s(o.x, o.y);
+    const r = Math.max(8, (o.softRadius || 0.08) * scene.view.scale);
+    if (Math.hypot(sx - x, sy - y) <= r + 4) return o;
+  }
   for (const o of objs) if (o.kind === 'spring') { const e = springEnds(o); if (!e) continue; const [a, b] = w2s(e.x1, e.y1), [c, d] = w2s(e.x2, e.y2); if (distSeg(sx, sy, a, b, c, d) < 6) return o; }
   for (const o of objs) {
     if (o.kind === 'wall') { const [a, b] = w2s(o.x1, o.y1), [c, d] = w2s(o.x2, o.y2); if (distSeg(sx, sy, a, b, c, d) < 7) return o; }
@@ -626,6 +719,12 @@ cv.addEventListener('pointerdown', e => {
     pushUndo(); if (sim.t > 0) resetSim('添加物体，已重置到 t=0');
     const b = mkBody(tool, { x0: sp[0], y0: sp[1] }); scene.objects.push(b); initState(b);
     afterStructure(); select(b.id); if (!e.shiftKey) setTool('select'); return;
+  }
+  if (tool === 'pointCharge') {
+    pushUndo(); if (sim.t > 0) resetSim('添加点电荷，已重置');
+    const q = 1e-6;
+    const o = mkPointCharge(sp[0], sp[1], { q, color: q >= 0 ? '#e5484d' : '#2f6fed' });
+    scene.objects.push(o); afterStructure(); select(o.id); if (!e.shiftKey) setTool('select'); return;
   }
   if (tool === 'ground') { pushUndo(); const g = mkGround(sp[1]); scene.objects.push(g); afterStructure(); select(g.id); setTool('select'); return; }
   if (tool === 'incline') { pushUndo(); const o = mkIncline(sp[0], sp[1]); scene.objects.push(o); afterStructure(); select(o.id); setTool('select'); return; }
@@ -754,11 +853,11 @@ function clean(v) { return +(+v).toFixed(6); }
 function initChanged() {
   const wasRunning = sim.t > 0;
   resetSim(wasRunning ? '初始条件已修改，已重置到 t=0' : null);
-  refreshInputs(); markDirty(); draw();
+  markFieldsDirty(); refreshInputs(); markDirty(); draw();
 }
 /** 非初始参数修改：实时生效 */
-function liveEdit() { refreshInputs(); markDirty(); draw(); }
-function afterStructure() { ensureStates(); refreshLeft(); markDirty(); draw(); }
+function liveEdit() { markFieldsDirty(); refreshInputs(); markDirty(); draw(); }
+function afterStructure() { ensureStates(); markFieldsDirty(); refreshLeft(); markDirty(); draw(); }
 
 /* ---------------- 键盘 ---------------- */
 document.addEventListener('keydown', e => {
@@ -907,7 +1006,8 @@ function buildNonBodyPanel(P, o) {
   const pProps = panelBox('props', propsTab);
   const pAct = panelBox('actions', propsTab);
 
-  if (o.kind === 'efield') buildEPanel(pProps, o);
+  if (o.kind === 'pointCharge') buildPointChargePanel(pProps, o);
+  else if (o.kind === 'efield') buildEPanel(pProps, o);
   else if (o.kind === 'bfield') buildBPanel(pProps, o);
   else if (o.kind === 'ground') {
     const s = section(pProps, '几何'); numRow(s, '高度 y', () => o.y, v => o.y = v, 'm'); surfOpts(s, o);
@@ -1035,6 +1135,21 @@ function buildBodyPanel(P, b) {
   updateReadouts();
 }
 
+function buildPointChargePanel(P, o) {
+  const s = section(P, '点电荷');
+  numRow(s, '位置 x', () => o.x, v => o.x = v, 'm');
+  numRow(s, '位置 y', () => o.y, v => o.y = v, 'm');
+  numRow(s, '电荷 q', () => o.q, v => { o.q = v; o.color = v >= 0 ? '#e5484d' : '#2f6fed'; }, 'C', { title: '如 1e-6；负号表示负电' });
+  numRow(s, '软化半径', () => o.softRadius, v => o.softRadius = v, 'm', { min: 1e-4 });
+  const br = el('div', { class: 'btnrow' });
+  btn(br, '+1 μC', () => { pushUndo(); o.q = 1e-6; o.color = '#e5484d'; liveEdit(); buildPanel(); });
+  btn(br, '−1 μC', () => { pushUndo(); o.q = -1e-6; o.color = '#2f6fed'; liveEdit(); buildPanel(); });
+  btn(br, '取反', () => { pushUndo(); o.q = -o.q; o.color = o.q >= 0 ? '#e5484d' : '#2f6fed'; liveEdit(); buildPanel(); });
+  s.appendChild(br);
+  s.appendChild(el('div', { class: 'hint' }, `力律：${scene.settings.coulombLaw === 'coulomb2d' ? '二维/线电荷截面 (1/r)' : '三维点电荷 (1/r²)'}。电场线由 FieldSystem 积分绘制。`));
+  const f = fieldAt(o.x + (o.softRadius || 0.08) * 2, o.y);
+  s.appendChild(el('div', { class: 'hint' }, `旁侧抽样 |E| ≈ ${fmt(Math.hypot(f.Ex, f.Ey))} V/m`));
+}
 function buildEPanel(P, o) {
   const s = section(P, '匀强电场');
   numRow(s, '场强 E', () => o.E, v => o.E = v, 'V/m', { min: 0 });
@@ -1110,8 +1225,13 @@ function buildScenePanel(P) {
     btn(br, 'g = 10', () => { S.g = 10; syncToolbar(); liveEdit(); });
     s.appendChild(br);
     numRow(s, '空气阻力', () => S.drag, v => S.drag = v, 'N·s/m', { min: 0 });
-    chkRow(s, '物体间库仑力', () => S.coulomb, v => S.coulomb = v);
-    numRow(s, '静电力常量 k', () => S.kc, v => S.kc = v, 'N·m²/C²');
+    chkRow(s, '带电体发射库仑场', () => S.coulomb, v => { S.coulomb = v; markFieldsDirty(); });
+    numRow(s, '静电力常量 k', () => S.kc, v => { S.kc = v; markFieldsDirty(); }, 'N·m²/C²');
+    const lawRow = el('div', { class: 'btnrow' });
+    btn(lawRow, '力律 1/r²', () => { S.coulombLaw = 'coulomb3d'; markFieldsDirty(); liveEdit(); buildPanel(); }, S.coulombLaw !== 'coulomb2d' ? 'active' : '');
+    btn(lawRow, '力律 1/r', () => { S.coulombLaw = 'coulomb2d'; markFieldsDirty(); liveEdit(); buildPanel(); }, S.coulombLaw === 'coulomb2d' ? 'active' : '');
+    s.appendChild(lawRow);
+    chkRow(s, '显示电场线', () => S.showFieldLines, v => { S.showFieldLines = v; markFieldsDirty(); });
   }
 
   const pDisp = panelBox('display', propsTab);
@@ -1154,7 +1274,8 @@ const ADD_CATALOG = [
     { tool: 'incline', name: '斜面', desc: '三角形楔' },
   ]},
   { cat: '场', items: [
-    { tool: 'efield', name: '电场', desc: '匀强 E' },
+    { tool: 'pointCharge', name: '点电荷', desc: '库仑场 · 力线' },
+    { tool: 'efield', name: '匀强电场', desc: '矩形 / 全空间' },
     { tool: 'bfield_in', name: '磁场向里', desc: 'B ⊗' },
     { tool: 'bfield_out', name: '磁场向外', desc: 'B ⊙' },
   ]},
@@ -1185,7 +1306,7 @@ function refreshLeft() {
     const wrap = el('div', { class: 'side-body pad' });
     const groups = [
       ['物体', 'body', o => isBody(o)],
-      ['场', 'field', o => o.kind === 'efield' || o.kind === 'bfield'],
+      ['场', 'field', o => o.kind === 'efield' || o.kind === 'bfield' || o.kind === 'pointCharge'],
       ['表面', 'surface', o => ['ground', 'wall', 'incline'].includes(o.kind)],
       ['约束', 'spring', o => o.kind === 'spring'],
     ];
@@ -1520,6 +1641,7 @@ const PRESET_META = {
   springosc: { cat: '振动', tags: ['弹簧'] },
   pendulum: { cat: '振动', tags: ['单摆'] },
   coulomb: { cat: '电磁', tags: ['库仑'] },
+  dipole: { cat: '电磁', tags: ['偶极', '场线'] },
 };
 const PRESETS = {
   welcome: { name: '斜抛与滑块', make() {
@@ -1593,6 +1715,14 @@ const PRESETS = {
     const b = mkBody('ball', { name: '摆球', m: 0.5, r: 0.15, x0: 1, y0: 2.268 });
     return sceneOf([b, mkSpring(b.id, null, { name: '轻绳', ax: 0, ay: 4, L0: 2, k: 5000, rope: true })], {}, { cx: 0, cy: 2.5, scale: 90 });
   } },
+  dipole: { name: '电偶极子场线', make() {
+    nextId = 1;
+    return sceneOf([
+      mkPointCharge(-1, 0, { name: '+q', q: 1e-6, color: '#e5484d' }),
+      mkPointCharge(1, 0, { name: '−q', q: -1e-6, color: '#2f6fed' }),
+      mkBody('particle', { name: '试探电荷', m: 0.01, q: 1e-8, r: 0.06, x0: 0, y0: 1.2, vx0: 0.8 }),
+    ], { gOn: false, showFieldLines: true, coulomb: false }, { cx: 0, cy: 0, scale: 80 });
+  } },
   coulomb: { name: '库仑绕核', make() {
     nextId = 1;
     return sceneOf([mkBody('ball', { name: '+Q 固定', fixed: true, q: 1e-4, m: 1, r: 0.2, x0: 0, y0: 0, color: '#e5484d' }),
@@ -1623,7 +1753,7 @@ function loadScene(data, keepView) {
   nextId = scene.objects.reduce((m, o) => Math.max(m, o.id || 0), 0) + 1;
   if (selId != null && !byId(selId)) selId = null;
   if (!keepView) selId = null;
-  resetSim(); syncToolbar(); buildList(); buildPanel(); draw(); markDirty();
+  resetSim(); markFieldsDirty(); syncToolbar(); buildList(); buildPanel(); draw(); markDirty();
 }
 let saveT = 0;
 function markDirty() { clearTimeout(saveT); saveT = setTimeout(() => { try { localStorage.setItem(STORE_KEY, serialize()); } catch (e) { } }, 400); }
@@ -1640,6 +1770,7 @@ function syncToolbar() {
   if ($('#chkVel')) $('#chkVel').checked = S.showVel;
   if ($('#chkForce')) $('#chkForce').checked = S.showForce;
   if ($('#chkAnalytic')) $('#chkAnalytic').checked = !!S.showAnalytic;
+  if ($('#chkFieldLines')) $('#chkFieldLines').checked = !!S.showFieldLines;
   const sel = $('#selSpeed');
   if (sel) {
     if (![...sel.options].some(o => +o.value === S.speed)) sel.appendChild(el('option', { value: S.speed }, S.speed + '×'));
@@ -1658,6 +1789,9 @@ function initToolbar() {
   const flag = (id, k) => { const node = $(id); if (node) node.onchange = e => { scene.settings[k] = e.target.checked; markDirty(); draw(); }; };
   flag('#chkGrid', 'showGrid'); flag('#chkTrail', 'showTrail'); flag('#chkVel', 'showVel'); flag('#chkForce', 'showForce');
   flag('#chkAnalytic', 'showAnalytic');
+  if ($('#chkFieldLines')) {
+    $('#chkFieldLines').onchange = e => { scene.settings.showFieldLines = e.target.checked; markFieldsDirty(); markDirty(); draw(); };
+  }
 
   // left tabs
   document.querySelectorAll('#leftTabs [data-left-tab]').forEach(btn => {
@@ -1760,7 +1894,15 @@ function boot() {
   if (!loaded) { const sc = PRESETS.welcome.make(); loadScene(sc, false); }
   setTool('select');
   toast(loaded ? '已恢复上次场景' : '选中物体后拖动绿色箭头设置初速度，空格播放');
-  window.__physim = { scene: () => scene, sim, advance, loadPreset, select, resetSim, togglePlay };
+  window.__physim = {
+    scene: () => scene, sim, advance, loadPreset, select, resetSim, togglePlay, fieldSys,
+    async enableRapier() {
+      contactWorld = await createRapierContactWorld(0);
+      scene.settings.contactBackend = 'rapier2d';
+      toast('Rapier 接触后端已加载（试验）');
+      return contactWorld.backend;
+    },
+  };
   requestAnimationFrame(loop);
 }
 boot();

@@ -16,6 +16,15 @@ npm run test:analysis
 
 ## 功能要点
 
-- 搭建：质点 / 带电粒子 / 滑块、地面、挡板、斜面、匀强 E/B、弹簧与轻绳
-- 仿真：Boris 磁场积分、接触冲量与摩擦
-- 分析：与选中物体运动状态绑定的参数方程；参考点可切换「初始条件 / 当前状态」
+- 搭建：质点 / 带电粒子 / 滑块、地面、挡板、斜面、匀强 E/B、**点电荷**、弹簧与轻绳
+- 场引擎：`FieldSystem` 统一采样 E/B/φ（默认三维库仑 \(1/r^2\)）；RK4 电场线；可选 \(1/r\) 线电荷截面
+- 接触：原生冲量求解；可选 Rapier2D 后端（`__physim.enableRapier()`）
+- 分析：与选中物体运动状态绑定的参数方程
+
+## 引擎分层
+
+```
+src/engine/fields   FieldSystem + PointCharge + 力线（EFSim 思路）
+src/engine/rapier   Rapier 接触适配（刚体/碰撞，不做 EM）
+src/app             UI 与编排
+```
