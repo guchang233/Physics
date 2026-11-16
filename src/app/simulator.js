@@ -1202,7 +1202,15 @@ function refreshLeft() {
         const col = o.color || (o.kind === 'efield' ? '#b45f14' : o.kind === 'bfield' ? '#0f6e6a' : o.kind === 'spring' ? '#0f766e' : '#6b7280');
         li.appendChild(el('span', { class: 'dot', style: `background:${col}` }));
         li.appendChild(el('span', {}, o.name));
-        li.appendChild(el('span', { class: 'ty' }, o.kind === 'bfield' ? (o.dir < 0 ? 'in' : 'out') : KIND_NAME[o.kind]));
+        const kindLabel = o.kind === 'bfield' ? (o.dir < 0 ? 'B⊗' : 'B⊙')
+          : o.kind === 'efield' ? 'E'
+          : o.kind === 'spring' ? (o.rope ? '绳' : '簧')
+          : KIND_NAME[o.kind];
+        if (kindLabel && o.name !== kindLabel && !o.name.startsWith(KIND_NAME[o.kind] || '')) {
+          li.appendChild(el('span', { class: 'ty' }, kindLabel));
+        } else if (o.kind === 'bfield' || o.kind === 'efield' || o.kind === 'spring') {
+          li.appendChild(el('span', { class: 'ty' }, kindLabel));
+        }
         li.addEventListener('click', () => { select(o.id); closeMobilePanels(); });
         ul.appendChild(li);
       }
