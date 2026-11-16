@@ -61,5 +61,53 @@ const outside = analyzeMotion({
 assert(outside.regimeId === 'cyclotron', 'model field cyclotron');
 assert(outside.title.includes('场景场模型') || outside.assumptions.some(a => a.includes('参考点')), 'model note');
 
+// 点电荷非匀强：不得误判为匀强 E
+const k = 8.99e9;
+const Q = 1e-4;
+const q = -1e-5;
+const r = 2;
+const vCirc = Math.sqrt((k * Math.abs(q * Q)) / (1 * r));
+const coulombCirc = analyzeMotion(base(
+  { m: 1, q, x: r, y: 0, vx: 0, vy: vCirc },
+  { Ex: (k * Q) / (r * r), Ey: 0, Bz: 0 },
+  {
+    pointCharges: [{ id: 99, x: 0, y: 0, q: Q, fixed: true }],
+    coulombLaw: 'coulomb3d',
+    kCoulomb: k,
+    hasUniformE: false,
+  },
+));
+assert(coulombCirc.regimeId === 'coulomb_circular' || coulombCirc.regimeId === 'coulomb_central', `expected coulomb orbit, got ${coulombCirc.regimeId}`);
+assert(coulombCirc.regimeId !== 'uniform_e', 'must not classify point-charge field as uniform_e');
+
+const pathC = sampleAnalyticPath(base(
+  { m: 1, q, x: r, y: 0, vx: 0, vy: vCirc },
+  { Ex: (k * Q) / (r * r), Ey: 0, Bz: 0 },
+  {
+    pointCharges: [{ id: 99, x: 0, y: 0, q: Q, fixed: true }],
+    coulombLaw: 'coulomb3d',
+    kCoulomb: k,
+  },
+));
+if (coulombCirc.regimeId === 'coulomb_circular') {
+  assert(pathC && pathC.points.length > 10, 'circular coulomb path');
+  const p = pathC!.points[Math.floor(pathC!.points.length / 2)];
+  assert(Math.abs(Math.hypot(p.x, p.y) - r) < 0.08, `point on coulomb circle, r=${Math.hypot(p.x, p.y)}`);
+}
+
+const multi = analyzeMotion(base(
+  { q: 1e-8, x: 0, y: 1.2, vx: 0.8, vy: 0 },
+  { Ex: 1, Ey: 0, Bz: 0 },
+  {
+    pointCharges: [
+      { id: 2, x: -1, y: 0, q: 1e-6, fixed: true },
+      { id: 3, x: 1, y: 0, q: -1e-6, fixed: true },
+    ],
+    coulombLaw: 'coulomb3d',
+    kCoulomb: k,
+  },
+));
+assert(multi.regimeId === 'coulomb_field' || multi.regimeId === 'coulomb_central', `dipole field regime got ${multi.regimeId}`);
+
 console.log('motionAnalysis selftest OK');
 

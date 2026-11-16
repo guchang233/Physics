@@ -32,6 +32,15 @@ export type SpringInfo = {
   otherBody: boolean;
 };
 
+export type PointChargeInfo = {
+  id: number | string;
+  x: number;
+  y: number;
+  q: number;
+  /** 是否固定（可作中心力心） */
+  fixed?: boolean;
+};
+
 export type AnalysisContext = {
   gOn: boolean;
   g: number;
@@ -51,6 +60,14 @@ export type AnalysisContext = {
   refMode: 'initial' | 'current';
   /** 空气阻力系数（线性） */
   drag: number;
+  /** 场景中的点电荷源（含「带电体发射」），供非匀强库仑分析 */
+  pointCharges?: PointChargeInfo[];
+  /** Coulomb 力律与常量（默认 1/r²） */
+  coulombLaw?: 'coulomb3d' | 'coulomb2d';
+  kCoulomb?: number;
+  /** 是否存在匀强 E 源（有则优先走匀强 E 闭式，而非局部抽样） */
+  hasUniformE?: boolean;
+  hasUniformB?: boolean;
 };
 
 export type EquationBlock = {
@@ -184,7 +201,49 @@ export function sampleAnalyticPath(
     return { regimeId: report.regimeId, points };
   }
 
+  // 近似圆轨道：绕固定点电荷匀速圆周
+  if (report.regimeId === 'coulomb_circular') {
+    const center = dominantFixedCharge(ctx);
+    if (!center) return null;
+    const rx = b.x - center.x;
+    const ry = b.y - center.y;
+    const r = hypot(rx, ry);
+    if (r < 1e-12) return null;
+    const Lz = b.m * (rx * b.vy - ry * b.vx);
+    const ω = Lz / (b.m * r * r);
+    if (Math.abs(ω) < 1e-15) return null;
+    const duration = opts.duration ?? (2 * Math.PI) / Math.abs(ω);
+    for (let i = 0; i <= steps; i++) {
+      const τ = (duration * i) / steps;
+      const c = Math.cos(ω * τ);
+      const s = Math.sin(ω * τ);
+      points.push({
+        x: center.x + rx * c - ry * s,
+        y: center.y + rx * s + ry * c,
+      });
+    }
+    return { regimeId: report.regimeId, points };
+  }
+
   return null;
+}
+
+function dominantFixedCharge(ctx: AnalysisContext): PointChargeInfo | null {
+  const list = (ctx.pointCharges || []).filter(c => c.id !== ctx.body.id && c.q && (c.fixed !== false));
+  if (!list.length) return null;
+  // Prefer truly fixed; else nearest
+  const fixed = list.filter(c => c.fixed);
+  const pool = fixed.length ? fixed : list;
+  let best = pool[0];
+  let bestD = Infinity;
+  for (const c of pool) {
+    const d = hypot(ctx.body.x - c.x, ctx.body.y - c.y);
+    if (d < bestD) {
+      bestD = d;
+      best = c;
+    }
+  }
+  return best;
 }
 
 /**
@@ -247,15 +306,37 @@ export function analyzeMotion(ctx: AnalysisContext): MotionAnalysis {
   const hasSpring = springs.length > 0;
   const hasDrag = drag > 0;
   const hasFext = !!(Fext.x || Fext.y);
+  const pointCharges = (ctx.pointCharges || []).filter(c => c.id !== b.id && Math.abs(c.q) > 0);
+  const hasPointCharges = pointCharges.length > 0;
+  const hasUniformE = !!ctx.hasUniformE;
+  const hasUniformB = !!ctx.hasUniformB;
 
   // 闭式解使用 effective field（含「场外但按场景模型」）
   const ctxF: AnalysisContext = { ...ctx, field: F };
+
+  // —— 非匀强库仑场（点电荷）：优先于「局部 E 当作匀强」——
+  if (
+    b.q &&
+    hasPointCharges &&
+    !hasUniformB &&
+    Math.abs(B) < 1e-15 &&
+    !hasSpring &&
+    !hasDrag &&
+    !hasFext &&
+    (!gOn || Math.abs(g) < 1e-15)
+  ) {
+    // 若同时有匀强 E，仍走交叉/匀强分支；纯点电荷 → 中心力分析
+    if (!hasUniformE) {
+      return analyzeCentralCoulomb(ctxF, forcesInModel, pointCharges);
+    }
+  }
 
   // —— 匀强 B、无 E、无 g（或 g 关）、无弹簧：圆周 ——
   if (
     b.q &&
     Math.abs(B) > 1e-15 &&
     E < 1e-15 &&
+    !hasPointCharges &&
     !hasSpring &&
     !hasDrag &&
     !hasFext &&
@@ -269,6 +350,7 @@ export function analyzeMotion(ctx: AnalysisContext): MotionAnalysis {
     b.q &&
     Math.abs(B) > 1e-15 &&
     E > 1e-15 &&
+    !hasPointCharges &&
     !hasSpring &&
     !hasDrag &&
     !hasFext &&
@@ -277,11 +359,12 @@ export function analyzeMotion(ctx: AnalysisContext): MotionAnalysis {
     return withModelNote(analyzeCrossedEB(ctxF, forcesInModel));
   }
 
-  // —— 匀强 E、无 B、g 关：类平抛 ——
+  // —— 匀强 E、无 B、g 关：类平抛（仅当真有匀强 E，或无点电荷时的局部近似）——
   if (
     b.q &&
     E > 1e-15 &&
     Math.abs(B) < 1e-15 &&
+    (hasUniformE || !hasPointCharges) &&
     !hasSpring &&
     !hasDrag &&
     !hasFext &&
@@ -450,6 +533,199 @@ function analyzeCrossedEB(ctx: AnalysisContext, forcesInModel: string[]): Motion
     ],
     validity: '场区有界或存在重力时，解析式仅在均匀区内近似成立。',
     forcesInModel,
+  };
+}
+
+function analyzeCentralCoulomb(
+  ctx: AnalysisContext,
+  forcesInModel: string[],
+  charges: PointChargeInfo[],
+): MotionAnalysis {
+  const b = ctx.body;
+  const law = ctx.coulombLaw || 'coulomb3d';
+  const k = ctx.kCoulomb ?? 8.99e9;
+  const refNote = ctx.refMode === 'current' ? `以当前时刻 t=${fmt(b.t, 3)}s 为 τ=0` : '以初始条件 t=0 为 τ=0';
+  const forces = forcesInModel.includes('电场力 qE')
+    ? forcesInModel
+    : [...forcesInModel, '库仑力（非匀强）'];
+
+  // 单固定心：Kepler / Rutherford
+  const fixed = charges.filter(c => c.fixed);
+  const center = fixed.length === 1
+    ? fixed[0]
+    : (fixed.length ? dominantFixedCharge({ ...ctx, pointCharges: fixed }) : null);
+
+  if (center && (fixed.length === 1 || charges.length === 1)) {
+    const Q = center.q;
+    const α = k * b.q * Q; // F = α r̂ / r² (3d) or (2α/r) wait — 3d: F=kqq/r²
+    const rx = b.x - center.x;
+    const ry = b.y - center.y;
+    const r = hypot(rx, ry);
+    const vr = r > 1e-15 ? (b.vx * rx + b.vy * ry) / r : 0;
+    const Lz = b.m * (rx * b.vy - ry * b.vx);
+    const L = Math.abs(Lz);
+    const v2 = b.vx * b.vx + b.vy * b.vy;
+    const U = law === 'coulomb2d'
+      ? -2 * k * b.q * Q * Math.log(Math.max(r, 1e-12))
+      : α / Math.max(r, 1e-12);
+    const Ek = 0.5 * b.m * v2;
+    const Etot = Ek + U;
+    const attract = α < 0;
+
+    // 圆轨道判据：径向速度≈0 且向心加速度匹配库仑力
+    let circular = false;
+    let ωCirc = 0;
+    let rCirc = r;
+    if (law === 'coulomb3d' && attract && r > 1e-12) {
+      const vθ = L / (b.m * r);
+      const aNeed = (Math.abs(α) / (b.m * r * r));
+      const aHave = (vθ * vθ) / r;
+      if (Math.abs(vr) < 0.05 * Math.max(Math.sqrt(v2), 1e-6) && Math.abs(aHave - aNeed) / aNeed < 0.08) {
+        circular = true;
+        ωCirc = Lz / (b.m * r * r);
+        rCirc = r;
+      }
+    }
+
+    // 偏心率（仅 1/r²）：e = sqrt(1 + 2 E L² /(m α²))
+    let ecc = NaN;
+    let orbitKind = '一般有心力轨道';
+    if (law === 'coulomb3d' && Math.abs(α) > 1e-30 && L > 1e-30) {
+      const disc = 1 + (2 * Etot * L * L) / (b.m * α * α);
+      ecc = Math.sqrt(Math.max(0, disc));
+      if (attract) {
+        if (ecc < 1e-3) orbitKind = '近圆轨道';
+        else if (ecc < 1) orbitKind = '椭圆（束缚）';
+        else if (Math.abs(ecc - 1) < 1e-3) orbitKind = '抛物线（E≈0）';
+        else orbitKind = '双曲线（散射）';
+      } else {
+        orbitKind = '同号排斥 · 双曲散射';
+      }
+    } else if (law === 'coulomb2d') {
+      orbitKind = '二维/线电荷势（对数）· 无初等圆锥曲线分类';
+    }
+
+    if (circular) {
+      const T = (2 * Math.PI) / Math.abs(ωCirc);
+      return {
+        regimeId: 'coulomb_circular',
+        title: '库仑中心力 · 圆轨道',
+        summary: `试探电荷绕固定点电荷做近似匀速圆周运动（${orbitKind}）。`,
+        assumptions: [
+          '中心电荷固定',
+          law === 'coulomb3d' ? '三维点电荷 Coulomb 1/r²' : '二维 1/r 力律',
+          '忽略重力与磁场',
+          refNote,
+        ],
+        parametric: [
+          {
+            symbolic: 'x(τ) = x_c + r cos(ωτ+φ)，  y(τ) = y_c + r sin(ωτ+φ)',
+            numeric: `(x_c,y_c)=(${fmt(center.x)}, ${fmt(center.y)})，r=${fmt(rCirc)}，ω=${fmt(ωCirc)} rad/s`,
+          },
+          {
+            symbolic: 'ω² = |k q Q| / (m r³)（引力类比 / 向心力）',
+            numeric: `|ω|=${fmt(Math.abs(ωCirc))}，T=${fmt(T)} s`,
+          },
+        ],
+        extras: [
+          {
+            symbolic: 'v = √(|k q Q|/(m r))，  L = m v r',
+            numeric: `|v|=${fmt(Math.sqrt(v2))} m/s，L_z=${fmt(Lz)} kg·m²/s`,
+          },
+        ],
+        derived: [
+          { name: '轨道半径 r', formula: 'r', value: `${fmt(rCirc)} m` },
+          { name: '周期 T', formula: '2π/|ω|', value: `${fmt(T)} s` },
+          { name: '机械能 E', formula: '½mv² + kqQ/r', value: `${fmt(Etot)} J` },
+          { name: '角动量 L_z', formula: 'm(x v_y − y v_x)', value: `${fmt(Lz)} kg·m²/s` },
+        ],
+        validity: '中心若可动或存在其它电荷，圆轨道条件被破坏；软核半径内力被截断。',
+        forcesInModel: forces,
+      };
+    }
+
+    const phiLaw = law === 'coulomb3d'
+      ? 'φ = k Q / r，  U = q φ = k q Q / r'
+      : 'φ = −2 k Q ln r，  U = q φ';
+    return {
+      regimeId: 'coulomb_central',
+      title: '库仑中心力（固定点电荷）',
+      summary: `单固定源下的二维有心力问题：${orbitKind}。能量与角动量守恒；轨迹一般非初等 τ 参数式。`,
+      assumptions: [
+        '中心电荷固定、其余电荷可忽略',
+        law === 'coulomb3d' ? 'F = k q Q / r² r̂' : 'F ∝ 1/r（二维截面）',
+        '平面运动、无耗散',
+        refNote,
+      ],
+      parametric: [
+        {
+          symbolic: 'm r̈ = L²/(m r³) + F_r(r)，  F_r = ' + (law === 'coulomb3d' ? 'k q Q / r²' : '2 k q Q / r'),
+          numeric: `相对心 ((${fmt(center.x)}, ${fmt(center.y)}))：r=${fmt(r)} m，v_r=${fmt(vr)}，L_z=${fmt(Lz)}`,
+        },
+        {
+          symbolic: 'θ̇ = L_z / (m r²)',
+          numeric: `θ̇ = ${fmt(Lz / (b.m * Math.max(r * r, 1e-18)))} rad/s`,
+        },
+        {
+          symbolic: law === 'coulomb3d'
+            ? '圆锥曲线：r = (L²/(m|α|)) / (1 + e cos θ)（吸引 α=kqQ<0 时）'
+            : '对数势无统一圆锥曲线公式',
+          numeric: Number.isFinite(ecc) ? `e ≈ ${fmt(ecc, 4)}，α=kqQ=${fmt(α)}` : `α=${fmt(α)}`,
+        },
+      ],
+      extras: [
+        { symbolic: phiLaw, numeric: `U=${fmt(U)} J，E_k=${fmt(Ek)} J，E=${fmt(Etot)} J` },
+        {
+          symbolic: '守恒：E = ½mṙ² + L²/(2m r²) + U(r)，  L_z = const',
+          numeric: '右侧轨迹为数值积分；解析叠加仅在近圆时给出圆轨道',
+        },
+      ],
+      derived: [
+        { name: '势能 U', formula: law === 'coulomb3d' ? 'kqQ/r' : '−2kqQ ln r', value: `${fmt(U)} J` },
+        { name: '机械能 E', formula: 'Ek+U', value: `${fmt(Etot)} J` },
+        { name: '角动量 |L|', formula: '|r×p|', value: `${fmt(L)} kg·m²/s` },
+        { name: '偏心率 e', formula: '√(1+2EL²/(mα²))', value: Number.isFinite(ecc) ? fmt(ecc, 4) : '—' },
+        { name: '轨道类型', formula: 'e 与符号(α)', value: orbitKind },
+        { name: '比荷 q/m', formula: 'q/m', value: `${fmt(b.q / b.m)} C/kg` },
+      ],
+      validity: '多电荷、可动源或软核截断时，上式仅为以最近固定源为心的近似。',
+      forcesInModel: forces,
+    };
+  }
+
+  // 多点电荷 / 无单一固定心
+  return {
+    regimeId: 'coulomb_field',
+    title: '非匀强静电场（多点电荷）',
+    summary: `场由 ${charges.length} 个点电荷叠加；一般无初等轨迹参数方程，按 F=qE(r) 数值积分。`,
+    assumptions: [
+      law === 'coulomb3d' ? '各源 Coulomb 1/r² 叠加' : '各源 1/r 叠加',
+      '线性叠加、准静态（源瞬时位置）',
+      refNote,
+    ],
+    parametric: [
+      {
+        symbolic: 'm a = q Σ_i E_i(r)，  E_i = k Q_i (r−r_i)/|r−r_i|³',
+        numeric: `当前位置 (${fmt(b.x)}, ${fmt(b.y)})，抽样 E=(${fmt(ctx.field.Ex)}, ${fmt(ctx.field.Ey)})`,
+      },
+      {
+        symbolic: 'φ = Σ_i k Q_i / |r−r_i|，  U = q φ（保守场，无 B 时机械能守恒）',
+        numeric: `k=${fmt(k)}，源数=${charges.length}`,
+      },
+    ],
+    extras: [
+      {
+        symbolic: '可尝试：只留一个固定源 → 落入「库仑中心力」圆锥曲线分析',
+        numeric: charges.map(c => `Q@(${fmt(c.x)},${fmt(c.y)})=${fmt(c.q)}C${c.fixed ? '·固定' : ''}`).join('； '),
+      },
+    ],
+    derived: [
+      { name: '|E|', formula: '|Σ E_i|', value: `${fmt(hypot(ctx.field.Ex, ctx.field.Ey))} N/C` },
+      { name: '|a|', formula: '|qE|/m', value: `${fmt((Math.abs(b.q) * hypot(ctx.field.Ex, ctx.field.Ey)) / b.m)} m/s²` },
+      { name: '动能', formula: '½mv²', value: `${fmt(0.5 * b.m * (b.vx * b.vx + b.vy * b.vy))} J` },
+    ],
+    validity: '电场线为可视化；解析轨迹需对称性（单固定心、匀强区等）。',
+    forcesInModel: forces,
   };
 }
 

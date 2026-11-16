@@ -113,10 +113,10 @@ export function sourcesFromSceneObjects(
         : ({ all: false, x: o.x, y: o.y, w: o.w, h: o.h } as const);
       out.push(new UniformBSource2(o.id, o.B * o.dir, region));
     } else if (opts.includeBodyCharges && o.q && o.st && (o.kind === 'particle' || o.kind === 'ball' || o.kind === 'box')) {
-      // Optional: treat dynamic charged bodies as emitters (expensive for lines)
-      if (o.emitField) {
-        out.push(new PointChargeSource2(o.id, o.st.x, o.st.y, o.q, { softRadius: Math.max(o.r || 0.05, 0.02) }));
-      }
+      // Charged bodies act as Coulomb emitters when scene.settings.coulomb is on
+      out.push(new PointChargeSource2(o.id, o.st.x, o.st.y, o.q, {
+        softRadius: Math.max(o.r || 0.05, o.softRadius || 0.02),
+      }));
     }
   }
   return out;

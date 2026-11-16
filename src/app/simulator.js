@@ -137,6 +137,24 @@ function ensureFields() {
   if (fieldsDirty) rebuildFieldSources();
 }
 function markFieldsDirty() { fieldsDirty = true; fieldSys.markDirty(); }
+/** Update emitter positions in-place so multi-substep Coulomb stays consistent without full rebuild. */
+function syncBodyEmitterPositions() {
+  if (!scene.settings.coulomb) return;
+  ensureFields();
+  let moved = false;
+  for (const s of fieldSys.sources) {
+    const o = byId(s.id);
+    if (!o || !o.st) continue;
+    if (o.kind !== 'particle' && o.kind !== 'ball' && o.kind !== 'box') continue;
+    if (typeof s.x === 'number' && typeof s.y === 'number') {
+      if (s.x !== o.st.x || s.y !== o.st.y || s.q !== o.q) moved = true;
+      s.x = o.st.x;
+      s.y = o.st.y;
+      s.q = o.q;
+    }
+  }
+  if (moved) fieldSys.markDirty();
+}
 function fieldAt(x, y) {
   ensureFields();
   const s = fieldSys.sample(x, y);
@@ -283,7 +301,10 @@ function advance(dtFrame) {
   const n = Math.min(20000, Math.max(1, Math.ceil(dtFrame / scene.settings.maxDt)));
   const h = dtFrame / n;
   for (const b of bodies()) { b.st.contactN = [0, 0]; b.st.contactF = [0, 0]; b.st.pvx = b.st.vx; b.st.pvy = b.st.vy; }
-  for (let i = 0; i < n; i++) substep(h, segs);
+  for (let i = 0; i < n; i++) {
+    syncBodyEmitterPositions();
+    substep(h, segs);
+  }
   sim.t += dtFrame;
   for (const b of bodies()) {
     const st = b.st; st.contactN[0] /= n; st.contactN[1] /= n; st.contactF[0] /= n; st.contactF[1] /= n;
@@ -1484,6 +1505,30 @@ function sceneModelField() {
   };
 }
 
+function collectPointChargesForAnalysis(excludeId) {
+  const out = [];
+  for (const o of scene.objects) {
+    if (o.id === excludeId) continue;
+    if (o.kind === 'pointCharge' && o.q) {
+      out.push({ id: o.id, x: o.x, y: o.y, q: o.q, fixed: true });
+    } else if (
+      scene.settings.coulomb &&
+      o.q &&
+      o.st &&
+      (o.kind === 'particle' || o.kind === 'ball' || o.kind === 'box')
+    ) {
+      out.push({
+        id: o.id,
+        x: o.st.x,
+        y: o.st.y,
+        q: o.q,
+        fixed: !!o.fixed,
+      });
+    }
+  }
+  return out;
+}
+
 function buildAnalysisContext(b) {
   const useInit = analysisRefMode === 'initial';
   const st = b.st;
@@ -1491,8 +1536,13 @@ function buildAnalysisContext(b) {
   const y = useInit ? b.y0 : st.y;
   const vx = useInit ? b.vx0 : st.vx;
   const vy = useInit ? b.vy0 : st.vy;
-  const field = fieldAt(x, y);
+  const field = fieldAtExcluding(x, y, b.id);
   const model = sceneModelField();
+  let hasUniformE = false, hasUniformB = false;
+  for (const o of scene.objects) {
+    if (o.kind === 'efield') hasUniformE = true;
+    if (o.kind === 'bfield') hasUniformB = true;
+  }
   return {
     gOn: scene.settings.gOn,
     g: scene.settings.g,
@@ -1507,6 +1557,11 @@ function buildAnalysisContext(b) {
     modelFieldNote: model ? model.note : undefined,
     Fext: { x: b.F * Math.cos(b.Fang * DEG), y: b.F * Math.sin(b.Fang * DEG) },
     springs: collectSpringsFor(b),
+    pointCharges: collectPointChargesForAnalysis(b.id),
+    coulombLaw: scene.settings.coulombLaw || 'coulomb3d',
+    kCoulomb: scene.settings.kc || K_COULOMB,
+    hasUniformE,
+    hasUniformB,
   };
 }
 
@@ -1725,8 +1780,11 @@ const PRESETS = {
   } },
   coulomb: { name: '库仑绕核', make() {
     nextId = 1;
-    return sceneOf([mkBody('ball', { name: '+Q 固定', fixed: true, q: 1e-4, m: 1, r: 0.2, x0: 0, y0: 0, color: '#e5484d' }),
-      mkBody('ball', { name: '−q', q: -1e-5, m: 1, r: 0.1, x0: 2, y0: 0, vx0: 0, vy0: 2.12, color: '#2f6fed' })], { gOn: false, coulomb: true }, { cx: 0, cy: 0, scale: 80 });
+    // v = √(k|qQ|/(m r)) ≈ 2.120 with k=8.99e9, |qQ|=1e-9, m=1, r=2
+    return sceneOf([
+      mkBody('ball', { name: '+Q 固定', fixed: true, q: 1e-4, m: 1, r: 0.2, x0: 0, y0: 0, color: '#e5484d' }),
+      mkBody('ball', { name: '−q', q: -1e-5, m: 1, r: 0.1, x0: 2, y0: 0, vx0: 0, vy0: 2.12, color: '#2f6fed' }),
+    ], { gOn: false, coulomb: true, showFieldLines: true, showAnalytic: true }, { cx: 0, cy: 0, scale: 80 });
   } },
 };
 function loadPreset(key) {
