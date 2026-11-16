@@ -139,7 +139,8 @@ function ensureFields() {
 }
 function markFieldsDirty() { fieldsDirty = true; fieldSys.markDirty(); }
 /** Update emitter positions in-place so multi-substep Coulomb stays consistent without full rebuild. */
-function syncBodyEmitterPositions() {
+let lastLineRemesh = 0;
+function syncBodyEmitterPositions(opts = {}) {
   if (!scene.settings.coulomb) return;
   ensureFields();
   let moved = false;
@@ -154,7 +155,14 @@ function syncBodyEmitterPositions() {
       s.q = o.q;
     }
   }
-  if (moved) fieldSys.markDirty();
+  // Remesh field lines at most ~8 Hz while emitters move (forces still use live positions)
+  if (moved && scene.settings.showFieldLines) {
+    const now = performance.now();
+    if (opts.forceLines || now - lastLineRemesh > 120) {
+      fieldSys.markDirty();
+      lastLineRemesh = now;
+    }
+  }
 }
 function fieldAt(x, y) {
   ensureFields();
@@ -652,8 +660,11 @@ function draw() {
   bodies().forEach(drawBody);
   bodies().forEach(drawVectors);
   const s = selected();
-  if (isBody(s) && scene.settings.showAnalytic) drawAnalyticPath(s);
-  if (isBody(s) && tool === 'select') drawV0(s);
+  // Analytic overlay is relatively expensive — refresh every other frame while running
+  if (isBody(s) && scene.settings.showAnalytic && (!sim.running || ((performance.now() / 32) | 0) % 2 === 0)) {
+    drawAnalyticPath(s);
+  }
+  if (isBody(s) && tool === 'select' && !sim.running) drawV0(s);
   if (pending) {
     ctx.save(); ctx.strokeStyle = C['--accent']; ctx.setLineDash([5, 4]); ctx.lineWidth = 1.5;
     if (pending.type === 'rect') { const [a, b] = w2s(pending.x1, pending.y1), [c, d] = w2s(pending.x2, pending.y2); ctx.strokeRect(Math.min(a, c), Math.min(b, d), Math.abs(c - a), Math.abs(d - b)); label(`${fmt(Math.abs(pending.x2 - pending.x1), 2)} × ${fmt(Math.abs(pending.y2 - pending.y1), 2)} m`, Math.max(a, c) + 6, Math.max(b, d) + 10, C['--accent']); }
@@ -669,7 +680,21 @@ function draw() {
  * ===================================================================== */
 let tool = 'select', selId = null, drag = null, mouseW = [0, 0], spaceDown = false;
 function selected() { return selId != null ? byId(selId) : null; }
-function select(id) { selId = id; buildPanel(); buildList(); draw(); }
+function select(id) {
+  const prev = selId;
+  selId = id;
+  if (prev !== id) {
+    // Cheap list highlight update; full rebuild only when structure changes
+    document.querySelectorAll('.objlist li').forEach(li => {
+      const lid = +li.dataset.id;
+      li.classList.toggle('sel', lid === selId);
+    });
+    buildPanel();
+  } else {
+    buildPanel();
+  }
+  draw();
+}
 const TOOL_HINT = {
   select: '选择：点击选中，拖动移动；拖绿色箭头端点设初速度；拖空白处平移，滚轮缩放',
   pan: '平移：拖动画布移动视图，滚轮缩放', ball: '点击画布放置小球（按住 Shift 可连续放置）',
@@ -891,7 +916,13 @@ document.addEventListener('keydown', e => {
   if (e.ctrlKey || e.metaKey || e.altKey) return;
   if (e.key === ' ') { e.preventDefault(); if (!spaceDown) togglePlay(); return; }
   if (k === 'delete' || k === 'backspace') { deleteSel(); return; }
-  if (k === 'escape') { setTool('select'); return; }
+  if (k === 'escape') {
+    $('#moreMenu')?.classList.remove('open');
+    closeMobilePanels();
+    if (tool !== 'select') setTool('select');
+    else if (selId != null) select(null);
+    return;
+  }
   if (k === 'r') { resetSim('已重置到 t=0'); draw(); return; }
   if (k === '.') { stepOnce(); return; }
   if (k === 'v') setTool('select'); if (k === 'h') setTool('pan'); if (k === 'f') fitView();
@@ -922,15 +953,23 @@ function updatePlayBtn() { const b = $('#bPlay'); if (b) b.textContent = sim.run
 function togglePlay() { ensureStates(); sim.running = !sim.running; updatePlayBtn(); lastTs = 0; draw(); updateReadouts(); }
 function stepOnce() { sim.running = false; updatePlayBtn(); advance(1 / 60 * scene.settings.speed); afterFrame(); }
 let lastTs = 0;
+let needsDraw = true;
+function requestDraw() { needsDraw = true; }
 function loop(ts) {
   if (sim.running) {
     const real = lastTs ? Math.min((ts - lastTs) / 1000, 1 / 20) : 1 / 60;
-    advance(real * scene.settings.speed); afterFrame();
+    advance(real * scene.settings.speed);
+    needsDraw = true;
+    updateReadouts();
+  }
+  if (needsDraw) {
+    needsDraw = false;
+    draw();
   }
   lastTs = ts;
   requestAnimationFrame(loop);
 }
-function afterFrame() { draw(); updateReadouts(); }
+function afterFrame() { requestDraw(); updateReadouts(); }
 function updateBadge() {
   $('#tbadge').innerHTML = `t = <b>${fmt(sim.t, 3)}</b> s &nbsp; <span class="${sim.running ? 'run' : 'pause'}">${sim.running ? '● 运行中' : sim.t === 0 ? '■ 初始状态' : '❚❚ 已暂停'}</span> &nbsp; ${scene.settings.speed}×`;
 }
@@ -1354,6 +1393,7 @@ function refreshLeft() {
         } else if (o.kind === 'bfield' || o.kind === 'efield' || o.kind === 'spring') {
           li.appendChild(el('span', { class: 'ty' }, kindLabel));
         }
+        li.dataset.id = String(o.id);
         li.addEventListener('click', () => { select(o.id); closeMobilePanels(); });
         ul.appendChild(li);
       }
@@ -1421,6 +1461,13 @@ function refreshLeft() {
 
 function buildList() { refreshLeft(); }
 
+function syncPanelToggleButtons() {
+  const main = $('#main');
+  if (!main) return;
+  $('#bLeft')?.classList.toggle('active', !main.classList.contains('noleft'));
+  $('#bRight')?.classList.toggle('active', !main.classList.contains('noright'));
+}
+
 function closeMobilePanels(resetDock = true) {
   $('#left')?.classList.remove('open');
   $('#right')?.classList.remove('open');
@@ -1457,8 +1504,9 @@ function updateReadouts() {
   setTxt('r_v', `${fmt(v)} m/s`); setTxt('r_ang', v > 1e-9 ? `${fmt(Math.atan2(st.vy, st.vx) / DEG, 2)}°` : '—');
   setTxt('r_a', sim.t > 0 ? `${fmt(Math.hypot(st.ax, st.ay))} m/s²` : '—');
   setTxt('r_ek', `${fmt(Ek)} J`); setTxt('r_p', `${fmt(b.m * v)} kg·m/s`); setTxt('r_ep', S.gOn ? `${fmt(Ep)} J（以 y=0 为零势面）` : '—'); setTxt('r_e', `${fmt(Ek + Ep)} J`);
-  renderMotionAnalysis(b, true);
-  drawChart();
+  // Throttle MathQuill remount while running — force only when paused / tab switch
+  if (propsTab === 'analysis') renderMotionAnalysis(b, !sim.running);
+  if (propsTab === 'chart' && (!sim.running || (performance.now() / 200 | 0) % 2 === 0)) drawChart();
 }
 
 let analysisRefMode = 'initial'; // 'initial' | 'current'
@@ -1598,7 +1646,9 @@ function renderMotionAnalysis(b, force = false) {
   const host = document.getElementById('r_theory');
   if (!host || !b || !b.st) return;
   const now = performance.now();
-  if (!force && sim.running && now - lastAnalysisTs < 250) return;
+  // Remounting MathQuill is costly — keep live updates sparse while playing
+  if (!force && sim.running && now - lastAnalysisTs < 500) return;
+  if (!force && !sim.running && now - lastAnalysisTs < 80) return;
   lastAnalysisTs = now;
   // Preserve scratch pad edits across live refreshes
   const prevScratch = host.querySelector('.an-scratch [data-mq="edit"]');
@@ -1693,7 +1743,14 @@ function drawChart() {
   g.textAlign = 'center'; g.textBaseline = 'top'; g.fillText(fmt(x0, 2), L, h - B + 3); g.fillText(fmt(x1, 2) + (chartMode === 'xy' ? ' m' : ' s'), w - R - 12, h - B + 3);
   g.strokeStyle = b.color; g.lineWidth = 1.6; g.beginPath(); pts.forEach((p, i) => i ? g.lineTo(X(p[0]), Y(p[1])) : g.moveTo(X(p[0]), Y(p[1]))); g.stroke();
 }
-function updateStatus() {
+let lastStatusTs = 0;
+function updateStatus(force = false) {
+  const now = performance.now();
+  if (!force && sim.running && now - lastStatusTs < 66) {
+    updateStatusMouse();
+    return;
+  }
+  lastStatusTs = now;
   const b = selected(), parts = [`<span><span class="k">t</span>${fmt(sim.t, 3)} s</span>`];
   if (isBody(b) && b.st) {
     const st = b.st, v = Math.hypot(st.vx, st.vy);
@@ -1908,8 +1965,16 @@ function initToolbar() {
 
   // more menu
   const moreBtn = $('#bMore'), moreMenu = $('#moreMenu');
-  moreBtn?.addEventListener('click', e => { e.stopPropagation(); moreMenu.classList.toggle('open'); });
-  document.addEventListener('click', () => moreMenu?.classList.remove('open'));
+  moreBtn?.addEventListener('click', e => {
+    e.preventDefault();
+    e.stopPropagation();
+    moreMenu?.classList.toggle('open');
+  });
+  document.addEventListener('click', e => {
+    if (moreMenu?.classList.contains('open') && !moreMenu.contains(e.target) && e.target !== moreBtn) {
+      moreMenu.classList.remove('open');
+    }
+  });
   moreMenu?.addEventListener('click', e => e.stopPropagation());
 
   $('#bUndo').onclick = undo;
@@ -1947,12 +2012,24 @@ function initToolbar() {
   $('#help').addEventListener('click', e => { if (e.target.id === 'help') e.target.classList.remove('show'); });
 
   $('#bLeft')?.addEventListener('click', () => {
-    $('#main').classList.toggle('noleft');
-    setTimeout(resize, 0);
+    const main = $('#main');
+    main.classList.toggle('noleft');
+    syncPanelToggleButtons();
+    toast(main.classList.contains('noleft') ? '已隐藏对象栏' : '已显示对象栏');
+    requestAnimationFrame(() => { resize(); requestDraw(); });
   });
   $('#bRight')?.addEventListener('click', () => {
-    $('#main').classList.toggle('noright');
-    setTimeout(resize, 0);
+    const main = $('#main');
+    main.classList.toggle('noright');
+    syncPanelToggleButtons();
+    toast(main.classList.contains('noright') ? '已隐藏检视栏' : '已显示检视栏');
+    requestAnimationFrame(() => { resize(); requestDraw(); });
+  });
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') {
+      moreMenu?.classList.remove('open');
+      closeMobilePanels();
+    }
   });
 
   // mobile dock
@@ -1974,17 +2051,21 @@ function initToolbar() {
 }
 
 /* =====================================================================
- *  启动
+ *  启动（仅由 main.ts 调用一次；禁止在模块底再自动 boot）
  * ===================================================================== */
-function boot() {
+function bootOnce() {
   try { if (localStorage.getItem('physim.theme') === 'dark') document.body.classList.add('dark'); } catch (e) { }
   readColors(); initToolbar();
   new ResizeObserver(resize).observe($('#stage'));
   resize();
   let loaded = false;
-  try { const s = localStorage.getItem(STORE_KEY); if (s) { loadScene(JSON.parse(s), false); loaded = true; } } catch (e) { loaded = false; }
+  try {
+    const s = localStorage.getItem(STORE_KEY);
+    if (s) { loadScene(JSON.parse(s), false); loaded = true; }
+  } catch (e) { loaded = false; }
   if (!loaded) { const sc = PRESETS.welcome.make(); loadScene(sc, false); }
   setTool('select');
+  syncPanelToggleButtons();
   toast(loaded ? '已恢复上次场景' : '选中物体后拖动绿色箭头设置初速度，空格播放');
   window.__physim = {
     scene: () => scene, sim, advance, loadPreset, select, resetSim, togglePlay, fieldSys,
@@ -1997,6 +2078,10 @@ function boot() {
   };
   requestAnimationFrame(loop);
 }
-boot();
 
-export { boot };
+let booted = false;
+export function boot() {
+  if (booted) return;
+  booted = true;
+  bootOnce();
+}

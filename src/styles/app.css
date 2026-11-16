@@ -139,8 +139,10 @@ body.dark {
   border: 1px solid var(--hairline);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow);
-  z-index: 20;
-  overflow: hidden;
+  z-index: 40;
+  /* Must stay visible so #moreMenu can overflow below the island */
+  overflow: visible;
+  position: relative;
 }
 .brand {
   font-weight: 700; font-size: 15px; letter-spacing: -0.02em;
@@ -591,7 +593,7 @@ kbd {
 
 /* Pop menus */
 .menu {
-  position: absolute; top: calc(100% + 8px); right: 0; z-index: 30;
+  position: absolute; top: calc(100% + 8px); right: 0; z-index: 50;
   background: var(--glass-strong);
   border: 1px solid var(--hairline);
   border-radius: 16px;
@@ -599,7 +601,7 @@ kbd {
   box-shadow: var(--shadow);
 }
 .menu.open { display: block; }
-.menu-wrap { position: relative; }
+.menu-wrap { position: relative; z-index: 50; }
 .menu button {
   width: 100%; justify-content: flex-start; border: none; border-radius: 11px;
   min-height: 34px; padding: 7px 12px;
