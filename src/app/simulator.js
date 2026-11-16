@@ -24,7 +24,9 @@ const STORE_KEY = 'physim.scene.v1';
 let nextId = 1;
 const BODY_KINDS = ['ball', 'particle', 'box'];
 const KIND_NAME = { ball: '小球', particle: '带电粒子', box: '滑块', ground: '地面', wall: '挡板', incline: '斜面',
-  efield: '电场', bfield: '磁场', spring: '弹簧', pointCharge: '点电荷' };
+  efield: '电场', bfield: '磁场', spring: '弹簧', rope: '轻绳', rod: '青杆', pointCharge: '点电荷' };
+const LINK_KINDS = ['spring', 'rope', 'rod'];
+function isLink(o) { return o && LINK_KINDS.includes(o.kind); }
 const PALETTE = ['#2f6fed', '#e5484d', '#1f9d55', '#f59e0b', '#8b5cf6', '#0ea5e9', '#ec4899', '#14b8a6'];
 
 function defaultSettings() {
@@ -57,7 +59,10 @@ function mkPointCharge(x = 0, y = 0, p = {}) {
     id: nextId++, kind: 'pointCharge', name: '点电荷', x, y, q: 1e-6, softRadius: 0.08, fixed: true, color: '#e5484d',
   }, p);
 }
-function mkSpring(a, b, p = {}) { return Object.assign({ id: nextId++, kind: 'spring', name: '弹簧', a, b, ax: 0, ay: 0, k: 20, L0: 1, rope: false }, p); }
+function mkSpring(a, b, p = {}) { return Object.assign({ id: nextId++, kind: 'spring', name: '弹簧', a, b, ax: 0, ay: 0, k: 20, L0: 1, m: 0 }, p); }
+function mkRope(a, b, p = {}) { return Object.assign({ id: nextId++, kind: 'rope', name: '轻绳', a, b, ax: 0, ay: 0, k: 5000, L0: 1, m: 0 }, p); }
+/** 青杆：不可伸缩的刚性杆（长度约束），质量默认 0 */
+function mkRod(a, b, p = {}) { return Object.assign({ id: nextId++, kind: 'rod', name: '青杆', a, b, ax: 0, ay: 0, L0: 1, m: 0 }, p); }
 
 /* ---------------- 仿真状态 ---------------- */
 const sim = { t: 0, running: false, accum: 0 };
@@ -187,12 +192,32 @@ function fieldAtExcluding(x, y, excludeId) {
 }
 
 /* ---------------- 力的计算（不含磁场力和接触力） ---------------- */
-function springEnds(s) {
+function linkEnds(s) {
   const A = byId(s.a); if (!A || !A.st) return null;
   const B = s.b != null ? byId(s.b) : null;
   if (s.b != null && (!B || !B.st)) return null;
   return { A, B, x1: A.st.x, y1: A.st.y, x2: B ? B.st.x : s.ax, y2: B ? B.st.y : s.ay };
 }
+const springEnds = linkEnds;
+
+/** 连接件自身质量的重力：均匀分布到两端（固定端不吃力）。 */
+function applyLinkWeight(out, e, m, g, record) {
+  if (!(m > 0) || !g) return;
+  const w = m * g;
+  const shareA = e.A && !e.A.fixed;
+  const shareB = e.B && !e.B.fixed;
+  const n = (shareA ? 1 : 0) + (shareB ? 1 : 0);
+  if (!n) return;
+  const each = w / n;
+  const addW = (body, fy) => {
+    const f = out.get(body); if (!f) return;
+    f.y += fy;
+    if (record && fy) f.parts.push({ fx: 0, fy, label: 'G连', color: '#94a3b8' });
+  };
+  if (shareA) addW(e.A, -each);
+  if (shareB) addW(e.B, -each);
+}
+
 function computeForces(list, record) {
   const S = scene.settings, out = new Map();
   for (const b of list) {
@@ -200,26 +225,83 @@ function computeForces(list, record) {
     const add = (fx, fy, label, color) => { f.x += fx; f.y += fy; if (record && (fx || fy)) f.parts.push({ fx, fy, label, color }); };
     if (S.gOn) add(0, -b.m * S.g, 'G', '#e5484d');
     if (b.q) {
-      // Exclude self-field if this body is also an emitter
       const F = fieldAtExcluding(b.st.x, b.st.y, b.id);
       if (F.Ex || F.Ey) add(b.q * F.Ex, b.q * F.Ey, 'F电', '#e08600');
     }
     if (b.F) add(b.F * Math.cos(b.Fang * DEG), b.F * Math.sin(b.Fang * DEG), 'F', '#8b5cf6');
     if (S.drag) add(-S.drag * b.st.vx, -S.drag * b.st.vy, 'F阻', '#6b7385');
   }
-  // 弹簧/轻绳
+  // 弹簧：胡克定律（可拉可压）
+  // 轻绳：只拉不压（松弛时张力为 0）
+  // 青杆：长度由约束投影保证，这里只计自重；张力/压力在 applyRodConstraints 中估出
   for (const s of scene.objects) {
-    if (s.kind !== 'spring') continue;
-    const e = springEnds(s); if (!e) continue;
+    if (!isLink(s)) continue;
+    const e = linkEnds(s); if (!e) continue;
+    if (S.gOn) applyLinkWeight(out, e, s.m || 0, S.g, record);
+    if (s.kind === 'rod') continue;
     const dx = e.x2 - e.x1, dy = e.y2 - e.y1, L = Math.hypot(dx, dy) || 1e-9;
-    let T = s.k * (L - s.L0); if (s.rope && T < 0) T = 0;
-    const fx = T * dx / L, fy = T * dy / L, lab = s.rope ? 'T' : 'F弹';
-    const fa = out.get(e.A); if (fa) { fa.x += fx; fa.y += fy; if (record && T) fa.parts.push({ fx, fy, label: lab, color: '#14b8a6' }); }
-    const fb = e.B && out.get(e.B); if (fb) { fb.x -= fx; fb.y -= fy; if (record && T) fb.parts.push({ fx: -fx, fy: -fy, label: lab, color: '#14b8a6' }); }
+    let T = (s.k || 0) * (L - s.L0);
+    if (s.kind === 'rope' && T < 0) T = 0;
+    const fx = T * dx / L, fy = T * dy / L;
+    const lab = s.kind === 'rope' ? 'T' : 'F弹';
+    const col = s.kind === 'rope' ? '#0ea5e9' : '#14b8a6';
+    const fa = out.get(e.A); if (fa) { fa.x += fx; fa.y += fy; if (record && T) fa.parts.push({ fx, fy, label: lab, color: col }); }
+    const fb = e.B && out.get(e.B); if (fb) { fb.x -= fx; fb.y -= fy; if (record && T) fb.parts.push({ fx: -fx, fy: -fy, label: lab, color: col }); }
   }
-  // 库仑力：由 FieldSystem 中的点电荷/带电体源经 F=qE 统一计入（见上方电场力）。
-  // 保留开关 scene.settings.coulomb → includeBodyCharges。
   return out;
+}
+
+/**
+ * 青杆刚性长度约束：位置 + 速度投影（可压可拉，长度恒为 L₀）。
+ * 自重已在 computeForces 中处理；此处估出约束力供受力显示。
+ */
+function applyRodConstraints(h, recordMap) {
+  for (const s of scene.objects) {
+    if (s.kind !== 'rod') continue;
+    const e = linkEnds(s); if (!e) continue;
+    const mRod = s.m || 0;
+    const invMass = (body) => {
+      if (!body || body.fixed) return 0;
+      return 1 / Math.max(body.m + mRod * 0.5, 1e-12);
+    };
+    const invA = invMass(e.A);
+    const invB = e.B ? invMass(e.B) : 0;
+    const invSum = invA + invB;
+    if (invSum < 1e-18) continue;
+
+    let dx = e.x2 - e.x1, dy = e.y2 - e.y1;
+    let L = Math.hypot(dx, dy) || 1e-9;
+    let nx = dx / L, ny = dy / L;
+    const err = L - s.L0;
+    // 位置 Baumgarte 修正
+    const corr = err / invSum;
+    if (invA) { e.A.st.x += corr * invA * nx; e.A.st.y += corr * invA * ny; }
+    if (invB) { e.B.st.x -= corr * invB * nx; e.B.st.y -= corr * invB * ny; }
+
+    // 刷新端点后做速度约束：相对速度沿杆方向为 0
+    dx = (e.B ? e.B.st.x : s.ax) - e.A.st.x;
+    dy = (e.B ? e.B.st.y : s.ay) - e.A.st.y;
+    L = Math.hypot(dx, dy) || 1e-9;
+    nx = dx / L; ny = dy / L;
+    const vAx = e.A.st.vx, vAy = e.A.st.vy;
+    const vBx = e.B ? e.B.st.vx : 0, vBy = e.B ? e.B.st.vy : 0;
+    const vrel = (vBx - vAx) * nx + (vBy - vAy) * ny;
+    const j = vrel / invSum;
+    if (invA) { e.A.st.vx += j * invA * nx; e.A.st.vy += j * invA * ny; }
+    if (invB) { e.B.st.vx -= j * invB * nx; e.B.st.vy -= j * invB * ny; }
+
+    // 约束力估计（冲量 / Δt），供受力箭头
+    if (recordMap && h > 0) {
+      const Fx = (j / h) * nx, Fy = (j / h) * ny;
+      if (Math.hypot(Fx, Fy) > 1e-9) {
+        const fa = recordMap.get(e.A);
+        if (fa && fa.parts) fa.parts.push({ fx: Fx, fy: Fy, label: 'N杆', color: '#0f766e' });
+        const fb = e.B && recordMap.get(e.B);
+        if (fb && fb.parts) fb.parts.push({ fx: -Fx, fy: -Fy, label: 'N杆', color: '#0f766e' });
+      }
+    }
+    s._N = j / (h || 1e-6); // signed axial force estimate
+  }
 }
 
 /* ---------------- 单个子步 ---------------- */
@@ -242,6 +324,8 @@ function substep(h, segs) {
     st.vx = vx + ax * h / 2; st.vy = vy + ay * h / 2;
     st.x += st.vx * h; st.y += st.vy * h;
   }
+  // 青杆：刚性长度约束（在接触前投影，避免穿透后再强拧）
+  applyRodConstraints(h, null);
   // 与静止表面接触
   for (const b of movers) {
     for (const sg of segs) contactSeg(b, sg, h);
@@ -249,6 +333,8 @@ function substep(h, segs) {
   // 物体间碰撞
   const bl = bodies().filter(b => b.collide);
   for (let i = 0; i < bl.length; i++) for (let j = i + 1; j < bl.length; j++) collidePair(bl[i], bl[j]);
+  // 接触后再投影一次，稳住杆长
+  applyRodConstraints(h, null);
   // 轨迹
   for (const b of movers) {
     const tr = b.st.trail, last = tr[tr.length - 1];
@@ -474,23 +560,46 @@ function drawSurface(o) {
   }
   ctx.restore();
 }
-function drawSpring(s) {
-  const e = springEnds(s); if (!e) return;
+function drawLink(s) {
+  const e = linkEnds(s); if (!e) return;
   const [x1, y1] = w2s(e.x1, e.y1), [x2, y2] = w2s(e.x2, e.y2), sel = s === selected();
-  ctx.save(); ctx.strokeStyle = sel ? C['--accent'] : '#14b8a6'; ctx.lineWidth = sel ? 2.5 : 1.8; ctx.lineJoin = 'round';
+  const kind = s.kind;
+  const base = kind === 'rod' ? '#0f766e' : kind === 'rope' ? '#0284c7' : '#14b8a6';
+  ctx.save();
+  ctx.strokeStyle = sel ? C['--accent'] : base;
+  ctx.lineWidth = sel ? (kind === 'rod' ? 3.2 : 2.5) : (kind === 'rod' ? 2.6 : 1.8);
+  ctx.lineJoin = 'round';
+  ctx.lineCap = kind === 'rod' ? 'round' : 'butt';
   const dx = x2 - x1, dy = y2 - y1, L = Math.hypot(dx, dy) || 1, ux = dx / L, uy = dy / L;
   ctx.beginPath(); ctx.moveTo(x1, y1);
-  if (s.rope) ctx.lineTo(x2, y2);
-  else {
+  if (kind === 'spring') {
     const n = 12, lead = Math.min(10, L * 0.15), amp = 6;
     ctx.lineTo(x1 + ux * lead, y1 + uy * lead);
-    for (let i = 1; i < n * 2; i++) { const t = lead + (L - 2 * lead) * i / (n * 2), sgn = i % 2 ? 1 : -1; ctx.lineTo(x1 + ux * t - uy * amp * sgn, y1 + uy * t + ux * amp * sgn); }
+    for (let i = 1; i < n * 2; i++) {
+      const t = lead + (L - 2 * lead) * i / (n * 2), sgn = i % 2 ? 1 : -1;
+      ctx.lineTo(x1 + ux * t - uy * amp * sgn, y1 + uy * t + ux * amp * sgn);
+    }
     ctx.lineTo(x2 - ux * lead, y2 - uy * lead); ctx.lineTo(x2, y2);
+  } else {
+    // 轻绳 / 青杆：直线；青杆略粗已在 lineWidth 体现
+    ctx.lineTo(x2, y2);
   }
   ctx.stroke();
-  if (s.b == null) { ctx.fillStyle = C['--surface']; ctx.fillRect(x2 - 8, y2 - 3, 16, 6); hatchLine(x2 - 8, y2 - 3, x2 + 8, y2 - 3, 1, C['--surface']); }
+  if (kind === 'rod') {
+    // 端点铰接小圆
+    ctx.fillStyle = sel ? C['--accent'] : base;
+    for (const [px, py] of [[x1, y1], [x2, y2]]) {
+      ctx.beginPath(); ctx.arc(px, py, 3.2, 0, 7); ctx.fill();
+    }
+  }
+  if (s.b == null) {
+    ctx.fillStyle = C['--surface'];
+    ctx.fillRect(x2 - 8, y2 - 3, 16, 6);
+    hatchLine(x2 - 8, y2 - 3, x2 + 8, y2 - 3, 1, C['--surface']);
+  }
   ctx.restore();
 }
+const drawSpring = drawLink;
 function bodyScreenR(b) { return Math.max(bodyRadius(b) * scene.view.scale, b.kind === 'particle' ? 5 : 3); }
 function drawBodyShape(b, x, y, ang, ghost) {
   const s = scene.view.scale;
@@ -547,7 +656,20 @@ function drawVectors(b) {
   }
 }
 function forceParts(b) {
-  const f = computeForces([b], true).get(b), parts = f.parts.slice(), st = b.st;
+  const fmap = computeForces([b], true);
+  const f = fmap.get(b), parts = f.parts.slice(), st = b.st;
+  // 估测青杆约束力（用最近一次 _N；无则瞬时投影一次）
+  for (const s of scene.objects) {
+    if (s.kind !== 'rod') continue;
+    if (s.a !== b.id && s.b !== b.id) continue;
+    const e = linkEnds(s); if (!e) continue;
+    const dx = e.x2 - e.x1, dy = e.y2 - e.y1, L = Math.hypot(dx, dy) || 1e-9;
+    const nx = dx / L, ny = dy / L;
+    const N = s._N || 0;
+    if (Math.abs(N) < 1e-9) continue;
+    const sign = s.a === b.id ? 1 : -1;
+    parts.push({ fx: sign * N * nx, fy: sign * N * ny, label: 'N杆', color: '#0f766e' });
+  }
   if (b.q) {
     const Bz = fieldAt(st.x, st.y).Bz;
     if (Bz) parts.push({ fx: b.q * st.vy * Bz, fy: -b.q * st.vx * Bz, label: 'F洛', color: '#2f6fed' });
@@ -656,7 +778,7 @@ function draw() {
   objs.filter(o => o.kind === 'efield' || o.kind === 'bfield').forEach(drawField);
   objs.filter(o => o.kind === 'pointCharge').forEach(drawPointCharge);
   objs.filter(o => ['ground', 'wall', 'incline'].includes(o.kind)).forEach(drawSurface);
-  objs.filter(o => o.kind === 'spring').forEach(drawSpring);
+  objs.filter(isLink).forEach(drawLink);
   ensureStates();
   bodies().forEach(drawBody);
   bodies().forEach(drawVectors);
@@ -670,7 +792,13 @@ function draw() {
     ctx.save(); ctx.strokeStyle = C['--accent']; ctx.setLineDash([5, 4]); ctx.lineWidth = 1.5;
     if (pending.type === 'rect') { const [a, b] = w2s(pending.x1, pending.y1), [c, d] = w2s(pending.x2, pending.y2); ctx.strokeRect(Math.min(a, c), Math.min(b, d), Math.abs(c - a), Math.abs(d - b)); label(`${fmt(Math.abs(pending.x2 - pending.x1), 2)} × ${fmt(Math.abs(pending.y2 - pending.y1), 2)} m`, Math.max(a, c) + 6, Math.max(b, d) + 10, C['--accent']); }
     if (pending.type === 'line') { const [a, b] = w2s(pending.x1, pending.y1), [c, d] = w2s(pending.x2, pending.y2); ctx.beginPath(); ctx.moveTo(a, b); ctx.lineTo(c, d); ctx.stroke(); label(`${fmt(Math.hypot(pending.x2 - pending.x1, pending.y2 - pending.y1), 2)} m`, c + 8, d, C['--accent']); }
-    if (pending.type === 'spring') { const A = byId(pending.a); if (A) { const [a, b] = w2s(A.st.x, A.st.y), [c, d] = w2s(mouseW[0], mouseW[1]); ctx.beginPath(); ctx.moveTo(a, b); ctx.lineTo(c, d); ctx.stroke(); } }
+    if (pending && LINK_KINDS.includes(pending.type)) {
+      const A = byId(pending.a);
+      if (A) {
+        const [a, b] = w2s(A.st.x, A.st.y), [c, d] = w2s(mouseW[0], mouseW[1]);
+        ctx.beginPath(); ctx.moveTo(a, b); ctx.lineTo(c, d); ctx.stroke();
+      }
+    }
     ctx.restore();
   }
   updateBadge();
@@ -702,7 +830,10 @@ const TOOL_HINT = {
   particle: '点击画布放置带电粒子（按住 Shift 可连续放置）', box: '点击画布放置滑块（按住 Shift 可连续放置）',
   ground: '点击画布确定地面高度', wall: '按住拖动画出挡板/极板（线段）', incline: '点击放置斜面（点击处为底角顶点）',
   pointCharge: '点击画布放置点电荷（右侧可改 q）', efield: '拖动画出电场矩形区域；单击 = 全空间电场', bfield_in: '拖动画出磁场 ⊗ 区域；单击 = 全空间',
-  bfield_out: '拖动画出磁场 ⊙ 区域；单击 = 全空间', spring: '先点击物体 A，再点击物体 B（或空白处作为固定点）'
+  bfield_out: '拖动画出磁场 ⊙ 区域；单击 = 全空间',
+  spring: '弹簧：先点物体 A，再点物体 B（或空白处作为固定点）',
+  rope: '轻绳：只拉不压。先点物体 A，再点物体 B（或空白固定点）',
+  rod: '青杆：不可伸缩。先点物体 A，再点物体 B（或空白固定点）',
 };
 function setTool(t) {
   tool = t; pending = null;
@@ -741,7 +872,7 @@ function hitOther(sx, sy) {
     const r = Math.max(8, (o.softRadius || 0.08) * scene.view.scale);
     if (Math.hypot(sx - x, sy - y) <= r + 4) return o;
   }
-  for (const o of objs) if (o.kind === 'spring') { const e = springEnds(o); if (!e) continue; const [a, b] = w2s(e.x1, e.y1), [c, d] = w2s(e.x2, e.y2); if (distSeg(sx, sy, a, b, c, d) < 6) return o; }
+  for (const o of objs) if (isLink(o)) { const e = linkEnds(o); if (!e) continue; const [a, b] = w2s(e.x1, e.y1), [c, d] = w2s(e.x2, e.y2); if (distSeg(sx, sy, a, b, c, d) < 6) return o; }
   for (const o of objs) {
     if (o.kind === 'wall') { const [a, b] = w2s(o.x1, o.y1), [c, d] = w2s(o.x2, o.y2); if (distSeg(sx, sy, a, b, c, d) < 7) return o; }
     if (o.kind === 'ground') { if (Math.abs(sy - w2s(0, o.y)[1]) < 6) return o; }
@@ -755,12 +886,21 @@ function hitOther(sx, sy) {
   return best;
 }
 
-cv.addEventListener('contextmenu', e => e.preventDefault());
+cv.addEventListener('contextmenu', e => {
+  e.preventDefault();
+  const [sx, sy] = evPos(e);
+  const hb = hitBody(sx, sy);
+  const ho = hb || hitOther(sx, sy);
+  if (ho) select(ho.id);
+  openContextMenu(e.clientX, e.clientY, ho || null, 'canvas');
+});
 cv.addEventListener('pointerdown', e => {
   cv.setPointerCapture(e.pointerId);
   const [sx, sy] = evPos(e), wp = s2w(sx, sy); mouseW = wp;
-  if (e.button === 1 || e.button === 2 || tool === 'pan' || spaceDown) { drag = { type: 'pan', sx, sy, cx: scene.view.cx, cy: scene.view.cy }; cv.style.cursor = 'grabbing'; return; }
+  if (e.button === 1 || tool === 'pan' || spaceDown) { drag = { type: 'pan', sx, sy, cx: scene.view.cx, cy: scene.view.cy }; cv.style.cursor = 'grabbing'; return; }
+  if (e.button === 2) return; // 右键留给 contextmenu
   if (e.button !== 0) return;
+  hideContextMenu();
   const sp = snapPt(wp);
   // ---- 添加工具 ----
   if (['ball', 'particle', 'box'].includes(tool)) {
@@ -778,13 +918,26 @@ cv.addEventListener('pointerdown', e => {
   if (tool === 'incline') { pushUndo(); const o = mkIncline(sp[0], sp[1]); scene.objects.push(o); afterStructure(); select(o.id); setTool('select'); return; }
   if (['efield', 'bfield_in', 'bfield_out'].includes(tool)) { pending = { type: 'rect', x1: sp[0], y1: sp[1], x2: sp[0], y2: sp[1], sx, sy }; drag = { type: 'create' }; return; }
   if (tool === 'wall') { pending = { type: 'line', x1: sp[0], y1: sp[1], x2: sp[0], y2: sp[1], sx, sy }; drag = { type: 'create' }; return; }
-  if (tool === 'spring') {
+  if (LINK_KINDS.includes(tool)) {
     const hb = hitBody(sx, sy);
-    if (!pending) { if (hb) { pending = { type: 'spring', a: hb.id }; draw(); } else toast('请先点击一个物体作为弹簧的一端'); return; }
+    const label = KIND_NAME[tool] || tool;
+    if (!pending) {
+      if (hb) { pending = { type: tool, a: hb.id }; draw(); }
+      else toast(`请先点击一个物体作为${label}的一端`);
+      return;
+    }
     pushUndo();
-    const A = byId(pending.a); let s;
-    if (hb && hb.id !== pending.a) s = mkSpring(pending.a, hb.id, { L0: +Math.hypot(hb.st.x - A.st.x, hb.st.y - A.st.y).toFixed(3) });
-    else s = mkSpring(pending.a, null, { ax: sp[0], ay: sp[1], L0: +Math.hypot(sp[0] - A.st.x, sp[1] - A.st.y).toFixed(3) });
+    const A = byId(pending.a);
+    const L0 = hb && hb.id !== pending.a
+      ? +Math.hypot(hb.st.x - A.st.x, hb.st.y - A.st.y).toFixed(3)
+      : +Math.hypot(sp[0] - A.st.x, sp[1] - A.st.y).toFixed(3);
+    let s;
+    const ends = hb && hb.id !== pending.a
+      ? { a: pending.a, b: hb.id, L0 }
+      : { a: pending.a, b: null, ax: sp[0], ay: sp[1], L0 };
+    if (tool === 'rope') s = mkRope(ends.a, ends.b, ends);
+    else if (tool === 'rod') s = mkRod(ends.a, ends.b, ends);
+    else s = mkSpring(ends.a, ends.b, ends);
     scene.objects.push(s); pending = null; afterStructure(); select(s.id); setTool('select'); return;
   }
   // ---- 选择工具 ----
@@ -815,7 +968,7 @@ cv.addEventListener('pointerdown', e => {
 cv.addEventListener('pointermove', e => {
   const [sx, sy] = evPos(e), wp = s2w(sx, sy); mouseW = wp;
   updateStatusMouse();
-  if (!drag) { if (pending && pending.type === 'spring') draw(); hoverCursor(sx, sy); return; }
+  if (!drag) { if (pending && LINK_KINDS.includes(pending.type)) draw(); hoverCursor(sx, sy); return; }
   const sp = snapPt(wp);
   if (drag.type === 'pan') {
     const v = scene.view; v.cx = drag.cx - (sx - drag.sx) / v.scale; v.cy = drag.cy + (sy - drag.sy) / v.scale;
@@ -852,7 +1005,7 @@ cv.addEventListener('pointermove', e => {
     drag.snapLast = sp; drag.moved = true; const o = drag.o;
     if (o.kind === 'ground') o.y = clean(o.y + dy);
     else if (o.kind === 'wall') { o.x1 = clean(o.x1 + dx); o.x2 = clean(o.x2 + dx); o.y1 = clean(o.y1 + dy); o.y2 = clean(o.y2 + dy); }
-    else if (o.kind === 'spring') { if (o.b == null) { o.ax = clean(o.ax + dx); o.ay = clean(o.ay + dy); } }
+    else if (isLink(o)) { if (o.b == null) { o.ax = clean(o.ax + dx); o.ay = clean(o.ay + dy); } }
     else { o.x = clean(o.x + dx); o.y = clean(o.y + dy); }
     liveEdit(); return;
   }
@@ -919,6 +1072,7 @@ document.addEventListener('keydown', e => {
   if (k === 'delete' || k === 'backspace') { deleteSel(); return; }
   if (k === 'escape') {
     $('#moreMenu')?.classList.remove('open');
+    hideContextMenu();
     closeMobilePanels();
     if (tool !== 'select') setTool('select');
     else if (selId != null) select(null);
@@ -937,14 +1091,14 @@ function undo() { const s = undoStack.pop(); if (!s) { toast('没有可撤销的
 /* ---------------- 复制/删除 ---------------- */
 function deleteSel() {
   const s = selected(); if (!s) return; pushUndo();
-  scene.objects = scene.objects.filter(o => o !== s && !(o.kind === 'spring' && (o.a === s.id || o.b === s.id)));
+  scene.objects = scene.objects.filter(o => o !== s && !(isLink(o) && (o.a === s.id || o.b === s.id)));
   selId = null; afterStructure(); buildPanel(); toast(`已删除 ${s.name}`);
 }
 function duplicateSel() {
   const s = selected(); if (!s) return; pushUndo();
   const c = JSON.parse(JSON.stringify(Object.assign({}, s, { st: null }))); c.id = nextId++; c.name = s.name + '副本';
   const off = 0.5;
-  if (isBody(c)) { c.x0 += off; c.y0 += off; } else if (c.kind === 'wall') { c.x1 += off; c.x2 += off; } else if (c.kind === 'ground') c.y += off; else if (c.kind !== 'spring') { c.x += off; c.y -= off; }
+  if (isBody(c)) { c.x0 += off; c.y0 += off; } else if (c.kind === 'wall') { c.x1 += off; c.x2 += off; } else if (c.kind === 'ground') c.y += off; else if (!isLink(c)) { c.x += off; c.y -= off; }
   scene.objects.push(c); if (isBody(c)) { if (sim.t > 0) resetSim(); initState(c); }
   afterStructure(); select(c.id); toast('已复制');
 }
@@ -1095,7 +1249,7 @@ function buildNonBodyPanel(P, o) {
     surfOpts(s, o);
     const s2 = section(pProps, '快捷');
     btn(s2, '在顶端放置滑块', () => placeOnIncline(o));
-  } else if (o.kind === 'spring') buildSpringPanel(pProps, o);
+  } else if (isLink(o)) buildLinkPanel(pProps, o);
 
   const act = section(pAct, '操作');
   const br = el('div', { class: 'btnrow' });
@@ -1251,19 +1405,33 @@ function regionSec(P, o) {
     s.appendChild(el('div', { class: 'hint' }, '可拖四角调整，拖内部移动。'));
   }
 }
-function buildSpringPanel(P, o) {
-  const s = section(P, o.rope ? '轻绳' : '弹簧');
-  chkRow(s, '轻绳模式（只拉不压）', () => o.rope, v => o.rope = v, { rebuild: true });
-  numRow(s, o.rope ? '绳长 L' : '原长 L₀', () => o.L0, v => o.L0 = v, 'm', { min: 0 });
-  numRow(s, o.rope ? '刚度' : '劲度 k', () => o.k, v => o.k = v, 'N/m', { min: 0 });
+function buildLinkPanel(P, o) {
+  const title = KIND_NAME[o.kind] || '约束';
+  const s = section(P, title);
+  if (o.kind === 'spring') {
+    numRow(s, '原长 L₀', () => o.L0, v => o.L0 = v, 'm', { min: 0 });
+    numRow(s, '劲度 k', () => o.k, v => o.k = v, 'N/m', { min: 0 });
+    s.appendChild(el('div', { class: 'hint' }, '理想弹簧：F = −k(L−L₀)，可拉可压。'));
+  } else if (o.kind === 'rope') {
+    numRow(s, '绳长 L', () => o.L0, v => o.L0 = v, 'm', { min: 0 });
+    numRow(s, '张力刚度', () => o.k, v => o.k = v, 'N/m', { min: 0 });
+    numRow(s, '质量 m', () => o.m || 0, v => o.m = Math.max(0, v), 'kg', { min: 0, step: 0.01 });
+    s.appendChild(el('div', { class: 'hint' }, '轻绳只拉不压：L&lt;L₀ 时张力为 0；刚度宜较大（≥1000）。质量默认 0。'));
+  } else if (o.kind === 'rod') {
+    numRow(s, '杆长 L₀', () => o.L0, v => o.L0 = v, 'm', { min: 0 });
+    numRow(s, '质量 m', () => o.m || 0, v => o.m = Math.max(0, v), 'kg', { min: 0, step: 0.01 });
+    s.appendChild(el('div', { class: 'hint' }, '青杆长度恒定（刚性约束，可压可拉，自身不变形）。质量默认 0，自重均分到两端。'));
+  }
   if (o.b == null) {
     numRow(s, '固定点 x', () => o.ax, v => o.ax = v, 'm');
     numRow(s, '固定点 y', () => o.ay, v => o.ay = v, 'm');
   }
   const A = byId(o.a), B = o.b != null ? byId(o.b) : null;
   s.appendChild(el('div', { class: 'hint' }, `连接：${A ? A.name : '?'} — ${B ? B.name : '固定点'}`));
-  btn(s, '原长 = 当前长度', () => { const e = springEnds(o); if (e) { pushUndo(); o.L0 = clean(Math.hypot(e.x2 - e.x1, e.y2 - e.y1)); liveEdit(); } });
-  if (o.rope) s.appendChild(el('div', { class: 'hint' }, '轻绳用硬弹簧近似，建议 k ≥ 1000 N/m。'));
+  btn(s, '长度 = 当前距离', () => {
+    const e = linkEnds(o);
+    if (e) { pushUndo(); o.L0 = clean(Math.hypot(e.x2 - e.x1, e.y2 - e.y1)); liveEdit(); }
+  });
 }
 
 function buildScenePanel(P) {
@@ -1342,7 +1510,9 @@ const ADD_CATALOG = [
     { tool: 'bfield_out', name: '磁场向外', desc: 'B ⊙' },
   ]},
   { cat: '约束', items: [
-    { tool: 'spring', name: '弹簧 / 绳', desc: '连接两点' },
+    { tool: 'spring', name: '弹簧', desc: '胡克定律 · 可拉可压' },
+    { tool: 'rope', name: '轻绳', desc: '只拉不压 · 可设质量' },
+    { tool: 'rod', name: '青杆', desc: '刚性定长 · 可设质量' },
   ]},
 ];
 
@@ -1358,8 +1528,9 @@ function refreshLeft() {
   const q = leftQuery;
 
   if (leftTab === 'objects') {
+    if (leftChip === 'spring') leftChip = 'link';
     const chips = el('div', { class: 'chips' });
-    [['all', '全部'], ['body', '物体'], ['field', '场'], ['surface', '表面'], ['spring', '约束']].forEach(([id, lab]) => {
+    [['all', '全部'], ['body', '物体'], ['field', '场'], ['surface', '表面'], ['link', '约束']].forEach(([id, lab]) => {
       const b = el('button', { type: 'button', class: 'chip' + (leftChip === id ? ' active' : '') }, lab);
       b.onclick = () => { leftChip = id; refreshLeft(); };
       chips.appendChild(b);
@@ -1370,7 +1541,7 @@ function refreshLeft() {
       ['物体', 'body', o => isBody(o)],
       ['场', 'field', o => o.kind === 'efield' || o.kind === 'bfield' || o.kind === 'pointCharge'],
       ['表面', 'surface', o => ['ground', 'wall', 'incline'].includes(o.kind)],
-      ['约束', 'spring', o => o.kind === 'spring'],
+      ['约束', 'link', o => isLink(o)],
     ];
     let any = false;
     for (const [title, chip, pred] of groups) {
@@ -1382,20 +1553,25 @@ function refreshLeft() {
       const ul = el('ul', { class: 'objlist' });
       for (const o of items) {
         const li = el('li', { class: o.id === selId ? 'sel' : '' });
-        const col = o.color || (o.kind === 'efield' ? '#b45f14' : o.kind === 'bfield' ? '#0f6e6a' : o.kind === 'spring' ? '#0f766e' : '#6b7280');
+        const col = o.color || (o.kind === 'efield' ? '#b45f14' : o.kind === 'bfield' ? '#0f6e6a' : isLink(o) ? (o.kind === 'rope' ? '#0284c7' : o.kind === 'rod' ? '#0f766e' : '#14b8a6') : '#6b7280');
         li.appendChild(el('span', { class: 'dot', style: `background:${col}` }));
         li.appendChild(el('span', {}, o.name));
         const kindLabel = o.kind === 'bfield' ? (o.dir < 0 ? 'B⊗' : 'B⊙')
           : o.kind === 'efield' ? 'E'
-          : o.kind === 'spring' ? (o.rope ? '绳' : '簧')
+          : isLink(o) ? (o.kind === 'rope' ? '绳' : o.kind === 'rod' ? '杆' : '簧')
           : KIND_NAME[o.kind];
         if (kindLabel && o.name !== kindLabel && !o.name.startsWith(KIND_NAME[o.kind] || '')) {
           li.appendChild(el('span', { class: 'ty' }, kindLabel));
-        } else if (o.kind === 'bfield' || o.kind === 'efield' || o.kind === 'spring') {
+        } else if (o.kind === 'bfield' || o.kind === 'efield' || isLink(o)) {
           li.appendChild(el('span', { class: 'ty' }, kindLabel));
         }
         li.dataset.id = String(o.id);
         li.addEventListener('click', () => { select(o.id); closeMobilePanels(); });
+        li.addEventListener('contextmenu', (ev) => {
+          ev.preventDefault();
+          select(o.id);
+          openContextMenu(ev.clientX, ev.clientY, o, 'list');
+        });
         ul.appendChild(li);
       }
       wrap.appendChild(ul);
@@ -1515,7 +1691,7 @@ let analysisRefMode = 'initial'; // 'initial' | 'current'
 function collectSpringsFor(b) {
   const out = [];
   for (const s of scene.objects) {
-    if (s.kind !== 'spring') continue;
+    if (!isLink(s)) continue;
     if (s.a !== b.id && s.b !== b.id) continue;
     let anchor;
     let otherBody = false;
@@ -1528,7 +1704,16 @@ function collectSpringsFor(b) {
       const o = byId(s.a); if (!o || !o.st) continue;
       anchor = { x: o.st.x, y: o.st.y }; otherBody = true;
     }
-    out.push({ k: s.k, L0: s.L0, rope: !!s.rope, anchor, otherBody });
+    out.push({
+      kind: s.kind,
+      k: s.k || 0,
+      L0: s.L0,
+      m: s.m || 0,
+      rope: s.kind === 'rope',
+      rod: s.kind === 'rod',
+      anchor,
+      otherBody,
+    });
   }
   return out;
 }
@@ -1790,7 +1975,8 @@ const PRESET_META = {
   accel: { cat: '电磁', tags: ['加速', '偏转'] },
   cycloid: { cat: '电磁', tags: ['摆线'] },
   springosc: { cat: '振动', tags: ['弹簧'] },
-  pendulum: { cat: '振动', tags: ['单摆'] },
+  pendulum: { cat: '振动', tags: ['单摆', '轻绳'] },
+  rodpendulum: { cat: '振动', tags: ['单摆', '青杆'] },
   coulomb: { cat: '电磁', tags: ['库仑'] },
   dipole: { cat: '电磁', tags: ['偶极', '场线'] },
 };
@@ -1861,10 +2047,15 @@ const PRESETS = {
     return sceneOf([mkGround(0, { smooth: true }), mkWall(-3, 0, -3, 1.5, { name: '墙' }), b,
       mkSpring(b.id, null, { ax: -3, ay: 0.25, k: 20, L0: 3 })]);
   } },
-  pendulum: { name: '单摆', make() {
+  pendulum: { name: '单摆（轻绳）', make() {
     nextId = 1;
     const b = mkBody('ball', { name: '摆球', m: 0.5, r: 0.15, x0: 1, y0: 2.268 });
-    return sceneOf([b, mkSpring(b.id, null, { name: '轻绳', ax: 0, ay: 4, L0: 2, k: 5000, rope: true })], {}, { cx: 0, cy: 2.5, scale: 90 });
+    return sceneOf([b, mkRope(b.id, null, { name: '轻绳', ax: 0, ay: 4, L0: 2, k: 5000 })], {}, { cx: 0, cy: 2.5, scale: 90 });
+  } },
+  rodpendulum: { name: '单摆（青杆）', make() {
+    nextId = 1;
+    const b = mkBody('ball', { name: '摆球', m: 0.5, r: 0.15, x0: 1, y0: 2.268 });
+    return sceneOf([b, mkRod(b.id, null, { name: '青杆', ax: 0, ay: 4, L0: 2, m: 0 })], {}, { cx: 0, cy: 2.5, scale: 90 });
   } },
   dipole: { name: '电偶极子场线', make() {
     nextId = 1;
@@ -1899,14 +2090,37 @@ function serialize() {
   return JSON.stringify({ app: 'physim', version: 1, settings: scene.settings, view: scene.view,
     objects: scene.objects.map(o => { const c = Object.assign({}, o); delete c.st; return c; }) });
 }
+function normalizeObject(raw) {
+  const o = Object.assign({}, raw, { st: null });
+  // 旧版 spring.rope → 独立 rope 种类
+  if (o.kind === 'spring' && o.rope) {
+    o.kind = 'rope';
+    o.name = o.name && o.name !== '弹簧' ? o.name : '轻绳';
+    if (o.m == null) o.m = 0;
+    delete o.rope;
+  }
+  if (o.kind === 'spring') {
+    if (o.m == null) o.m = 0;
+    delete o.rope;
+  }
+  if (o.kind === 'rope' || o.kind === 'rod') {
+    if (o.m == null) o.m = 0;
+    if (o.kind === 'rope' && (o.k == null || o.k <= 0)) o.k = 5000;
+  }
+  return o;
+}
 function loadScene(data, keepView) {
   if (!data || !Array.isArray(data.objects)) throw new Error('无效的场景文件');
   const oldView = scene.view;
-  scene = { settings: Object.assign(defaultSettings(), data.settings || {}), objects: data.objects.map(o => Object.assign({}, o, { st: null })),
-    view: keepView ? oldView : Object.assign({ cx: 0, cy: 2, scale: 60 }, data.view || {}) };
+  scene = {
+    settings: Object.assign(defaultSettings(), data.settings || {}),
+    objects: data.objects.map(normalizeObject),
+    view: keepView ? oldView : Object.assign({ cx: 0, cy: 2, scale: 60 }, data.view || {}),
+  };
   nextId = scene.objects.reduce((m, o) => Math.max(m, o.id || 0), 0) + 1;
   if (selId != null && !byId(selId)) selId = null;
   if (!keepView) selId = null;
+  if (leftChip === 'spring') leftChip = 'link';
   resetSim(); markFieldsDirty(); syncToolbar(); buildList(); buildPanel(); draw(); markDirty();
 }
 let saveT = 0;
@@ -2053,6 +2267,137 @@ function initToolbar() {
 
   document.addEventListener('keydown', e => { if (e.key === ' ' && e.target === document.body) e.preventDefault(); });
   refreshLeft();
+}
+
+/* =====================================================================
+ *  右键菜单
+ * ===================================================================== */
+let ctxMenuEl = null;
+let ctxTarget = null;
+
+function ensureContextMenu() {
+  if (ctxMenuEl) return ctxMenuEl;
+  ctxMenuEl = document.createElement('div');
+  ctxMenuEl.id = 'ctxMenu';
+  ctxMenuEl.className = 'ctx-menu';
+  ctxMenuEl.hidden = true;
+  document.body.appendChild(ctxMenuEl);
+  document.addEventListener('pointerdown', (e) => {
+    if (!ctxMenuEl || ctxMenuEl.hidden) return;
+    if (ctxMenuEl.contains(e.target)) return;
+    hideContextMenu();
+  }, true);
+  window.addEventListener('blur', hideContextMenu);
+  window.addEventListener('resize', hideContextMenu);
+  return ctxMenuEl;
+}
+
+function hideContextMenu() {
+  if (!ctxMenuEl) return;
+  ctxMenuEl.hidden = true;
+  ctxMenuEl.innerHTML = '';
+  ctxTarget = null;
+}
+
+function ctxItem(label, fn, opts = {}) {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.textContent = label;
+  if (opts.danger) b.classList.add('danger');
+  if (opts.disabled) b.disabled = true;
+  b.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    hideContextMenu();
+    fn();
+  });
+  return b;
+}
+function ctxSep() {
+  const d = document.createElement('div');
+  d.className = 'sep';
+  return d;
+}
+
+function openContextMenu(clientX, clientY, target, where = 'canvas') {
+  const menu = ensureContextMenu();
+  ctxTarget = target;
+  menu.innerHTML = '';
+
+  if (target) {
+    menu.appendChild(ctxItem(`选中「${target.name}」`, () => select(target.id)));
+    menu.appendChild(ctxItem('在检视栏打开', () => {
+      select(target.id);
+      $('#right')?.classList.add('open');
+      $('#main')?.classList.remove('noright');
+      syncPanelToggleButtons?.();
+    }));
+    menu.appendChild(ctxSep());
+    menu.appendChild(ctxItem('复制', () => { select(target.id); duplicateSel(); }));
+    menu.appendChild(ctxItem('删除', () => { select(target.id); deleteSel(); }, { danger: true }));
+    if (isBody(target)) {
+      menu.appendChild(ctxSep());
+      menu.appendChild(ctxItem(target.fixed ? '取消固定' : '固定不动', () => {
+        pushUndo();
+        target.fixed = !target.fixed;
+        liveEdit();
+        buildPanel();
+        toast(target.fixed ? '已固定' : '已取消固定');
+      }));
+      menu.appendChild(ctxItem('清除轨迹', () => {
+        if (target.st) { target.st.trail = [[target.st.x, target.st.y]]; draw(); }
+      }));
+      menu.appendChild(ctxItem('转到分析页', () => {
+        select(target.id);
+        propsTab = 'analysis';
+        buildPanel();
+      }));
+    }
+    if (isLink(target)) {
+      menu.appendChild(ctxSep());
+      menu.appendChild(ctxItem('长度 = 当前距离', () => {
+        const e = linkEnds(target);
+        if (e) {
+          pushUndo();
+          target.L0 = clean(Math.hypot(e.x2 - e.x1, e.y2 - e.y1));
+          liveEdit();
+          buildPanel();
+        }
+      }));
+    }
+    if (target.kind === 'pointCharge') {
+      menu.appendChild(ctxSep());
+      menu.appendChild(ctxItem('电荷取反', () => {
+        pushUndo();
+        target.q = -target.q;
+        target.color = target.q >= 0 ? '#e5484d' : '#2f6fed';
+        liveEdit();
+        buildPanel();
+      }));
+    }
+  } else if (where === 'canvas') {
+    menu.appendChild(ctxItem('取消选择', () => select(null)));
+    menu.appendChild(ctxItem('适配视图', () => fitView()));
+    menu.appendChild(ctxSep());
+    menu.appendChild(ctxItem('添加小球', () => setTool('ball')));
+    menu.appendChild(ctxItem('添加弹簧', () => setTool('spring')));
+    menu.appendChild(ctxItem('添加轻绳', () => setTool('rope')));
+    menu.appendChild(ctxItem('添加青杆', () => setTool('rod')));
+  } else {
+    hideContextMenu();
+    return;
+  }
+
+  menu.hidden = false;
+  // 先显示再量尺寸，避免贴边
+  const pad = 8;
+  const mw = menu.offsetWidth || 200;
+  const mh = menu.offsetHeight || 120;
+  let x = clientX, y = clientY;
+  if (x + mw > window.innerWidth - pad) x = window.innerWidth - mw - pad;
+  if (y + mh > window.innerHeight - pad) y = window.innerHeight - mh - pad;
+  menu.style.left = `${Math.max(pad, x)}px`;
+  menu.style.top = `${Math.max(pad, y)}px`;
 }
 
 /* =====================================================================
