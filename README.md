@@ -14,6 +14,14 @@ npm run build
 npm run test:analysis
 ```
 
+### 哔哩哔哩 Toy / 单文件 H5
+
+```bash
+npm run pack:toy
+```
+
+产物在 `publish/`：`index.html`（单文件）、`icon.png`（500×500）、`cover.jpg`（1200×900）、`Physics-toy.zip`。
+
 ## 功能要点
 
 - 搭建：质点 / 带电粒子 / 滑块、地面、挡板、斜面、匀强 E/B、**点电荷**、弹簧与轻绳
