@@ -24,9 +24,13 @@ export type BodySnapshot = {
 };
 
 export type SpringInfo = {
+  /** spring | rope | rod（旧数据可能只有 rope 布尔） */
+  kind?: 'spring' | 'rope' | 'rod';
   k: number;
   L0: number;
+  m?: number;
   rope: boolean;
+  rod?: boolean;
   /** 另一端固定点或对面物体位置 */
   anchor: Vec2;
   otherBody: boolean;
@@ -296,7 +300,12 @@ export function analyzeMotion(ctx: AnalysisContext): MotionAnalysis {
   if (b.q && (F.Ex || F.Ey)) forcesInModel.push('电场力 qE');
   if (b.q && F.Bz) forcesInModel.push('洛伦兹力 qv×B');
   if (Fext.x || Fext.y) forcesInModel.push('恒定外力 F');
-  if (springs.length) forcesInModel.push(springs.some(s => s.rope) ? '绳/弹簧约束' : '弹簧力');
+  if (springs.length) {
+    const kinds = new Set(springs.map(s => s.kind || (s.rope ? 'rope' : s.rod ? 'rod' : 'spring')));
+    if (kinds.has('rod')) forcesInModel.push('青杆约束');
+    if (kinds.has('rope')) forcesInModel.push('轻绳张力');
+    if (kinds.has('spring')) forcesInModel.push('弹簧力');
+  }
   if (drag) forcesInModel.push('线性阻力 −bv');
 
   const withModelNote = (report: MotionAnalysis): MotionAnalysis => {
@@ -410,13 +419,16 @@ export function analyzeMotion(ctx: AnalysisContext): MotionAnalysis {
     return analyzeProjectile(ctx, forcesInModel);
   }
 
+  const link0 = springs[0];
+  const linkKind = link0 ? (link0.kind || (link0.rope ? 'rope' : link0.rod ? 'rod' : 'spring')) : null;
+
   // —— 单弹簧水平/近似简谐 ——
-  if (hasSpring && springs.length === 1 && !springs[0].rope && !hasDrag) {
+  if (hasSpring && springs.length === 1 && linkKind === 'spring' && !hasDrag) {
     return analyzeSpring(ctx, forcesInModel);
   }
 
-  // —— 轻绳单摆 ——
-  if (hasSpring && springs.length === 1 && springs[0].rope && gOn) {
+  // —— 轻绳 / 青杆单摆 ——
+  if (hasSpring && springs.length === 1 && (linkKind === 'rope' || linkKind === 'rod') && gOn) {
     return analyzePendulum(ctx, forcesInModel);
   }
 
@@ -890,11 +902,17 @@ function analyzePendulum(ctx: AnalysisContext, forcesInModel: string[]): MotionA
   const ω0 = Math.sqrt(ctx.g / Math.max(s.L0, 1e-9));
   const T_small = (2 * Math.PI) / ω0;
 
+  const kind = s.kind || (s.rope ? 'rope' : s.rod ? 'rod' : 'spring');
+  const isRod = kind === 'rod';
   return {
     regimeId: 'pendulum',
-    title: '单摆（轻绳）',
-    summary: '轻绳约束 + 重力；大角度为椭圆积分，小角度近似简谐。',
-    assumptions: ['绳不可伸长（本引擎用硬弹簧近似）', '固定悬点', '平面摆'],
+    title: isRod ? '单摆（青杆）' : '单摆（轻绳）',
+    summary: isRod
+      ? '青杆定长约束 + 重力；可压可拉，杆本身不变形。'
+      : '轻绳约束 + 重力；大角度为椭圆积分，小角度近似简谐。',
+    assumptions: isRod
+      ? ['杆长恒定（刚性约束）', '固定悬点', '平面摆', s.m ? `杆质量 m=${s.m}` : '杆质量可忽略']
+      : ['绳不可伸长（硬弹簧近似张力）', '只拉不压', '固定悬点', '平面摆'],
     parametric: [
       {
         symbolic: '\\ddot{\\theta}+\\frac{g}{L}\\sin\\theta=0',
@@ -915,7 +933,9 @@ function analyzePendulum(ctx: AnalysisContext, forcesInModel: string[]): MotionA
       { name: '小角度周期', formula: 'T=2\\pi\\sqrt{L/g}', value: `${fmtTex(T_small)}${unitTex('s')}` },
       { name: '摆角 θ', formula: '\\theta=\\mathrm{atan2}(x-x_a,y_a-y)', value: `${fmtTex(theta / DEG, 2)}^\\circ` },
     ],
-    validity: '绳松弛（T=0）后变为抛体；刚度不足时会有弹性拉伸误差。',
+    validity: isRod
+      ? '青杆不可松弛；两端皆可动时为二体刚杆系统。'
+      : '绳松弛（T=0）后变为抛体；刚度不足时会有弹性拉伸误差。',
     forcesInModel,
   };
 }
