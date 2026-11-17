@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "build:h5": "tsc && vite build --config vite.h5.config.ts",
     "preview": "vite preview",
+    "pack:toy": "npm run build:h5 && python3 scripts/prepare-toy-assets.py && node scripts/pack-toy.mjs",
     "test:analysis": "node --experimental-strip-types src/analysis/motionAnalysis.selftest.ts",
     "test:fields": "node --experimental-strip-types src/engine/fields/fieldSystem.selftest.ts",
     "test:expr": "node --experimental-strip-types src/engine/forceExpr.selftest.ts",
@@ -17,7 +19,8 @@
     "@types/three": "^0.170.0",
     "playwright": "^1.49.1",
     "typescript": "~5.9.0",
-    "vite": "^6.3.5"
+    "vite": "^6.3.5",
+    "vite-plugin-singlefile": "^2.3.4"
   },
   "dependencies": {
     "@dimforge/rapier2d-compat": "^0.21.0",
