@@ -809,23 +809,22 @@ function draw() {
  * ===================================================================== */
 let tool = 'select', selId = null, drag = null, mouseW = [0, 0], spaceDown = false;
 function selected() { return selId != null ? byId(selId) : null; }
-function select(id) {
+function select(id, opts = {}) {
   const prev = selId;
   selId = id;
   if (prev !== id) {
-    // Cheap list highlight update; full rebuild only when structure changes
     document.querySelectorAll('.objlist li').forEach(li => {
       const lid = +li.dataset.id;
       li.classList.toggle('sel', lid === selId);
     });
-    buildPanel();
-  } else {
+    if (!opts.deferPanel) buildPanel();
+  } else if (!opts.deferPanel && opts.forcePanel) {
     buildPanel();
   }
   draw();
 }
 const TOOL_HINT = {
-  select: '选择：点击选中，拖动移动；拖绿色箭头端点设初速度；拖空白处平移，滚轮缩放',
+  select: '选择：拖动物体移动；青杆上拖会沿圆周（Shift 拖可改杆长）；拖绿色箭头设 v₀；空白处平移',
   pan: '平移：拖动画布移动视图，滚轮缩放', ball: '点击画布放置小球（按住 Shift 可连续放置）',
   particle: '点击画布放置带电粒子（按住 Shift 可连续放置）', box: '点击画布放置滑块（按住 Shift 可连续放置）',
   ground: '点击画布确定地面高度', wall: '按住拖动画出挡板/极板（线段）', incline: '点击放置斜面（点击处为底角顶点）',
@@ -895,10 +894,16 @@ cv.addEventListener('contextmenu', e => {
   openContextMenu(e.clientX, e.clientY, ho || null, 'canvas');
 });
 cv.addEventListener('pointerdown', e => {
-  cv.setPointerCapture(e.pointerId);
+  // 右键不 capture，交给 contextmenu；中键/左键才拖拽
+  if (e.button === 2) return;
+  e.preventDefault();
+  try { cv.setPointerCapture(e.pointerId); } catch { /* ignore */ }
   const [sx, sy] = evPos(e), wp = s2w(sx, sy); mouseW = wp;
-  if (e.button === 1 || tool === 'pan' || spaceDown) { drag = { type: 'pan', sx, sy, cx: scene.view.cx, cy: scene.view.cy }; cv.style.cursor = 'grabbing'; return; }
-  if (e.button === 2) return; // 右键留给 contextmenu
+  if (e.button === 1 || tool === 'pan' || spaceDown) {
+    drag = { type: 'pan', sx, sy, cx: scene.view.cx, cy: scene.view.cy };
+    cv.style.cursor = 'grabbing';
+    return;
+  }
   if (e.button !== 0) return;
   hideContextMenu();
   const sp = snapPt(wp);
@@ -957,18 +962,23 @@ cv.addEventListener('pointerdown', e => {
   }
   const hb = hitBody(sx, sy);
   if (hb) {
-    select(hb.id); pushUndo();
+    // 拖拽开始时不要同步重建右侧面板（MathQuill 很重），松手后再建
+    select(hb.id, { deferPanel: true }); pushUndo();
     drag = { type: 'body', b: hb, ox: wp[0] - hb.st.x, oy: wp[1] - hb.st.y, moved: false, sx, sy };
     return;
   }
   const ho = hitOther(sx, sy);
-  if (ho) { select(ho.id); pushUndo(); drag = { type: 'moveObj', o: ho, last: wp, snapLast: sp, moved: false }; return; }
+  if (ho) {
+    select(ho.id, { deferPanel: true }); pushUndo();
+    drag = { type: 'moveObj', o: ho, last: wp, snapLast: sp, moved: false }; return;
+  }
   drag = { type: 'pan', sx, sy, cx: scene.view.cx, cy: scene.view.cy, click: true };
 });
 cv.addEventListener('pointermove', e => {
   const [sx, sy] = evPos(e), wp = s2w(sx, sy); mouseW = wp;
   updateStatusMouse();
   if (!drag) { if (pending && LINK_KINDS.includes(pending.type)) draw(); hoverCursor(sx, sy); return; }
+  e.preventDefault();
   const sp = snapPt(wp);
   if (drag.type === 'pan') {
     const v = scene.view; v.cx = drag.cx - (sx - drag.sx) / v.scale; v.cy = drag.cy + (sy - drag.sy) / v.scale;
@@ -982,13 +992,17 @@ cv.addEventListener('pointermove', e => {
     if (e.shiftKey) { let v = Math.round(Math.hypot(vx, vy)), a = Math.round(Math.atan2(vy, vx) / DEG / 15) * 15 * DEG; vx = v * Math.cos(a); vy = v * Math.sin(a); }
     else { vx = Math.round(vx * 10) / 10; vy = Math.round(vy * 10) / 10; }
     b.vx0 = clean(vx); b.vy0 = clean(vy);
-    initChanged(); return;
+    syncInitialLive(b); return;
   }
   if (drag.type === 'body') {
     if (!drag.moved && Math.hypot(sx - drag.sx, sy - drag.sy) < 3) return;
     drag.moved = true;
     const b = drag.b, p = snapPt([wp[0] - drag.ox, wp[1] - drag.oy]);
-    b.x0 = p[0]; b.y0 = p[1]; initChanged(); return;
+    b.x0 = p[0]; b.y0 = p[1];
+    // Shift：拖动物体时同步拉长/缩短相连青杆；默认保持杆长，把位置投影到圆周上
+    if (e.shiftKey) stretchRodsToBody(b);
+    else projectBodyOntoRods(b);
+    syncInitialLive(b); return;
   }
   if (drag.type === 'fieldCorner') {
     const o = drag.o, i = drag.i; let x1 = o.x, y1 = o.y, x2 = o.x + o.w, y2 = o.y + o.h;
@@ -997,9 +1011,9 @@ cv.addEventListener('pointermove', e => {
     if (i === 0 || i === 1) y2 = sp[1]; else y1 = sp[1];
     o.x = Math.min(x1, x2); o.w = Math.abs(x2 - x1); o.y = Math.min(y1, y2); o.h = Math.abs(y2 - y1);
     if (x2 < x1) drag.i = [1, 0, 3, 2][drag.i]; if (y2 < y1) drag.i = [3, 2, 1, 0][drag.i];
-    liveEdit(); return;
+    liveEditLight(); return;
   }
-  if (drag.type === 'wallEnd') { const o = drag.o; if (drag.end === 1) { o.x1 = sp[0]; o.y1 = sp[1]; } else { o.x2 = sp[0]; o.y2 = sp[1]; } liveEdit(); return; }
+  if (drag.type === 'wallEnd') { const o = drag.o; if (drag.end === 1) { o.x1 = sp[0]; o.y1 = sp[1]; } else { o.x2 = sp[0]; o.y2 = sp[1]; } liveEditLight(); return; }
   if (drag.type === 'moveObj') {
     const dx = sp[0] - drag.snapLast[0], dy = sp[1] - drag.snapLast[1]; if (!dx && !dy) return;
     drag.snapLast = sp; drag.moved = true; const o = drag.o;
@@ -1007,12 +1021,13 @@ cv.addEventListener('pointermove', e => {
     else if (o.kind === 'wall') { o.x1 = clean(o.x1 + dx); o.x2 = clean(o.x2 + dx); o.y1 = clean(o.y1 + dy); o.y2 = clean(o.y2 + dy); }
     else if (isLink(o)) { if (o.b == null) { o.ax = clean(o.ax + dx); o.ay = clean(o.ay + dy); } }
     else { o.x = clean(o.x + dx); o.y = clean(o.y + dy); }
-    liveEdit(); return;
+    liveEditLight(); return;
   }
 });
 function finishDrag(e) {
   if (!drag) return;
   const d = drag; drag = null;
+  try { if (e && e.pointerId != null) cv.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
   if (d.type === 'pan') { cv.style.cursor = tool === 'pan' ? 'grab' : 'default'; if (d.click && tool === 'select') select(null); markDirty(); return; }
   if (d.type === 'create' && pending) {
     const p = pending; pending = null;
@@ -1032,7 +1047,10 @@ function finishDrag(e) {
   }
   if (d.type === 'body' && !d.moved) undoStack.pop();
   if (d.type === 'moveObj' && !d.moved) undoStack.pop();
-  markDirty(); buildPanel(); draw();
+  // 拖拽结束后再做一次完整同步（场线、面板）
+  if (d.type === 'body' || d.type === 'v0') initChanged();
+  else { markFieldsDirty(); markDirty(); draw(); }
+  buildPanel();
 }
 cv.addEventListener('pointerup', finishDrag);
 cv.addEventListener('pointercancel', finishDrag);
@@ -1052,12 +1070,70 @@ function hoverCursor(sx, sy) {
 function clean(v) { return +(+v).toFixed(6); }
 /** 初始条件被修改：回到 t=0 */
 function initChanged() {
-  const wasRunning = sim.t > 0;
+  const wasRunning = sim.t > 0 || sim.running;
   resetSim(wasRunning ? '初始条件已修改，已重置到 t=0' : null);
   markFieldsDirty(); refreshInputs(); markDirty(); draw();
 }
+/** 拖拽过程中的轻量同步：不重建场线/不 toast，避免拖一下就卡死或中断 */
+function syncInitialLive(b) {
+  if (sim.running || sim.t > 0) {
+    sim.t = 0; sim.running = false; updatePlayBtn();
+  }
+  if (b) {
+    if (!b.st) initState(b);
+    else {
+      b.st.x = b.x0; b.st.y = b.y0; b.st.vx = b.vx0; b.st.vy = b.vy0; b.st.ang = b.ang0 * DEG;
+      b.st.trail = [[b.x0, b.y0]]; b.st.hist = []; pushHist(b);
+    }
+  } else {
+    bodies().forEach(bb => {
+      if (!bb.st) initState(bb);
+      else { bb.st.x = bb.x0; bb.st.y = bb.y0; bb.st.vx = bb.vx0; bb.st.vy = bb.vy0; }
+    });
+  }
+  refreshInputs(); markDirty(); draw();
+}
+/** 青杆：编辑初态时把物体投影到定长圆周（保持杆不变形） */
+function projectBodyOntoRods(b) {
+  for (let iter = 0; iter < 4; iter++) {
+    for (const s of scene.objects) {
+      if (s.kind !== 'rod') continue;
+      let ox, oy, mine;
+      if (s.a === b.id) {
+        const other = s.b != null ? byId(s.b) : null;
+        ox = other ? other.x0 : s.ax; oy = other ? other.y0 : s.ay; mine = true;
+      } else if (s.b === b.id) {
+        const other = byId(s.a); if (!other) continue;
+        ox = other.x0; oy = other.y0; mine = true;
+      } else continue;
+      if (!mine) continue;
+      const dx = b.x0 - ox, dy = b.y0 - oy;
+      const L = Math.hypot(dx, dy) || 1e-9;
+      const f = s.L0 / L;
+      b.x0 = clean(ox + dx * f);
+      b.y0 = clean(oy + dy * f);
+    }
+  }
+}
+/** Shift 拖：用当前距离更新相连青杆长度 */
+function stretchRodsToBody(b) {
+  for (const s of scene.objects) {
+    if (s.kind !== 'rod') continue;
+    let ox, oy;
+    if (s.a === b.id) {
+      const other = s.b != null ? byId(s.b) : null;
+      ox = other ? other.x0 : s.ax; oy = other ? other.y0 : s.ay;
+    } else if (s.b === b.id) {
+      const other = byId(s.a); if (!other) continue;
+      ox = other.x0; oy = other.y0;
+    } else continue;
+    s.L0 = clean(Math.hypot(b.x0 - ox, b.y0 - oy));
+  }
+}
 /** 非初始参数修改：实时生效 */
 function liveEdit() { markFieldsDirty(); refreshInputs(); markDirty(); draw(); }
+/** 拖拽场/墙等时的轻量刷新 */
+function liveEditLight() { refreshInputs(); markDirty(); draw(); }
 function afterStructure() { ensureStates(); markFieldsDirty(); refreshLeft(); markDirty(); draw(); }
 
 /* ---------------- 键盘 ---------------- */
