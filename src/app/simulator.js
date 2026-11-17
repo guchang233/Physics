@@ -1272,6 +1272,8 @@ function draw() {
  *  交互
  * ===================================================================== */
 let tool = 'select', selId = null, selVec = null, drag = null, mouseW = [0, 0], spaceDown = false;
+const touchPoints = new Map();
+let pinch = null;
 function selected() { return selId != null ? byId(selId) : null; }
 function syncListSelection() {
   document.querySelectorAll('.objlist li').forEach(li => {
@@ -1364,6 +1366,61 @@ function hitOther(sx, sy) {
   return best;
 }
 
+function touchPair() {
+  if (touchPoints.size < 2) return null;
+  return [...touchPoints.values()].slice(0, 2);
+}
+function pinchDistance(a, b) {
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+function pinchMid(a, b) {
+  return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+}
+/** 第二根手指按下时，结束单指正在进行的拖拽，避免对象被双指手势带飞 */
+function abortDragForPinch() {
+  if (!drag) return;
+  if (drag.type === 'create') {
+    drag = null;
+    pending = null;
+    return;
+  }
+  if (drag.type === 'pan') {
+    drag = null;
+    cv.style.cursor = tool === 'pan' ? 'grab' : 'default';
+    markDirty();
+    return;
+  }
+  // 复用松手逻辑：未移动的操作回滚撤销栈，已移动的操作正常收尾
+  finishDrag({});
+}
+function startPinchFromTouches() {
+  const pair = touchPair();
+  if (!pair || pinch) return;
+  const [a, b] = pair;
+  const dist = pinchDistance(a, b);
+  if (dist < 12) return;
+  abortDragForPinch();
+  pending = null;
+  const mid = pinchMid(a, b);
+  pinch = { dist, scale: scene.view.scale, world: s2w(mid.x, mid.y) };
+  cv.style.cursor = 'grabbing';
+}
+function updatePinch() {
+  const pair = touchPair();
+  if (!pair || !pinch) return;
+  const [a, b] = pair;
+  const dist = pinchDistance(a, b);
+  if (dist < 1) return;
+  const mid = pinchMid(a, b);
+  const v = scene.view;
+  const s = Math.min(1e6, Math.max(0.5, pinch.scale * dist / pinch.dist));
+  v.scale = s;
+  // 让双指中点下的世界坐标保持不动，同时支持双指平移
+  v.cx = pinch.world[0] - (mid.x - W / 2) / s;
+  v.cy = pinch.world[1] + (mid.y - H / 2) / s;
+  draw(); markDirty();
+}
+
 cv.addEventListener('contextmenu', e => {
   e.preventDefault();
   const [sx, sy] = evPos(e);
@@ -1382,8 +1439,20 @@ cv.addEventListener('pointerdown', e => {
   // 右键不 capture，交给 contextmenu；中键/左键才拖拽
   if (e.button === 2) return;
   e.preventDefault();
-  try { cv.setPointerCapture(e.pointerId); } catch { /* ignore */ }
-  const [sx, sy] = evPos(e), wp = s2w(sx, sy); mouseW = wp;
+  const [sx, sy] = evPos(e);
+  if (e.pointerType === 'touch') {
+    // 第三根及以后的手指忽略，保证始终是干净的双指手势
+    if (pinch || touchPoints.size >= 2) return;
+    touchPoints.set(e.pointerId, { x: sx, y: sy });
+    try { cv.setPointerCapture(e.pointerId); } catch { /* ignore */ }
+    if (touchPoints.size === 2) {
+      startPinchFromTouches();
+      return;
+    }
+  } else {
+    try { cv.setPointerCapture(e.pointerId); } catch { /* ignore */ }
+  }
+  const wp = s2w(sx, sy); mouseW = wp;
   if (e.button === 1 || tool === 'pan' || spaceDown) {
     drag = { type: 'pan', sx, sy, cx: scene.view.cx, cy: scene.view.cy };
     cv.style.cursor = 'grabbing';
@@ -1466,7 +1535,14 @@ cv.addEventListener('pointerdown', e => {
   drag = { type: 'pan', sx, sy, cx: scene.view.cx, cy: scene.view.cy, click: true };
 });
 cv.addEventListener('pointermove', e => {
-  const [sx, sy] = evPos(e), wp = s2w(sx, sy); mouseW = wp;
+  const [sx, sy] = evPos(e);
+  if (e.pointerType === 'touch') {
+    if (!touchPoints.has(e.pointerId)) return;
+    touchPoints.set(e.pointerId, { x: sx, y: sy });
+    if (!pinch && touchPoints.size === 2) startPinchFromTouches();
+    if (pinch) { e.preventDefault(); updatePinch(); return; }
+  }
+  const wp = s2w(sx, sy); mouseW = wp;
   updateStatusMouse();
   if (!drag) { if (pending && LINK_KINDS.includes(pending.type)) draw(); hoverCursor(sx, sy); return; }
   e.preventDefault();
@@ -1575,8 +1651,37 @@ function finishDrag(e) {
   buildPanel();
   refreshLeft();
 }
-cv.addEventListener('pointerup', finishDrag);
-cv.addEventListener('pointercancel', finishDrag);
+function endPointer(e) {
+  if (e.pointerType === 'touch') {
+    const wasPinching = !!pinch;
+    touchPoints.delete(e.pointerId);
+    try { cv.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
+    if (wasPinching) {
+      pinch = null;
+      // 双指松开一根后，剩下那根可以继续单指平移
+      if (e.type !== 'pointercancel' && touchPoints.size === 1) {
+        const p = [...touchPoints.values()][0];
+        drag = { type: 'pan', sx: p.x, sy: p.y, cx: scene.view.cx, cy: scene.view.cy, click: false };
+        cv.style.cursor = 'grabbing';
+      } else {
+        drag = null;
+        cv.style.cursor = tool === 'pan' ? 'grab' : 'default';
+      }
+      markDirty();
+      return;
+    }
+  }
+  finishDrag(e);
+}
+cv.addEventListener('pointerup', endPointer);
+cv.addEventListener('pointercancel', endPointer);
+cv.addEventListener('gesturestart', e => e.preventDefault());
+function resetTouchGesture() {
+  touchPoints.clear();
+  pinch = null;
+}
+window.addEventListener('blur', resetTouchGesture);
+document.addEventListener('visibilitychange', () => { if (document.hidden) resetTouchGesture(); });
 cv.addEventListener('wheel', e => {
   e.preventDefault();
   const [sx, sy] = evPos(e), before = s2w(sx, sy), v = scene.view;
@@ -2587,14 +2692,22 @@ function syncPanelToggleButtons() {
   $('#bRight')?.classList.toggle('active', !main.classList.contains('noright'));
 }
 
+function setDockActive(dock) {
+  mobileDock = dock;
+  document.querySelectorAll('#mobile-dock button').forEach(b => b.classList.toggle('active', b.dataset.dock === dock));
+}
 function closeMobilePanels(resetDock = true) {
   $('#left')?.classList.remove('open');
   $('#right')?.classList.remove('open');
-  $('#panelScrim')?.classList.remove('show');
-  if (resetDock) {
-    mobileDock = 'stage';
-    document.querySelectorAll('#mobile-dock button').forEach(b => b.classList.toggle('active', b.dataset.dock === 'stage'));
-  }
+  $('#viewFlags')?.classList.remove('show');
+  $('#panelScrim')?.classList.remove('show', 'view');
+  if (resetDock) setDockActive('stage');
+}
+function openMobileView() {
+  closeMobilePanels(false);
+  $('#viewFlags')?.classList.add('show');
+  $('#panelScrim')?.classList.add('show', 'view');
+  setDockActive('view');
 }
 
 function openMobile(which) {
@@ -3225,8 +3338,12 @@ function initToolbar() {
   document.querySelectorAll('#mobile-dock [data-dock]').forEach(btn => {
     btn.addEventListener('click', () => {
       const dock = btn.dataset.dock;
-      mobileDock = dock;
-      document.querySelectorAll('#mobile-dock button').forEach(b => b.classList.toggle('active', b === btn));
+      if (dock === 'view') {
+        if (mobileDock === 'view' && $('#viewFlags')?.classList.contains('show')) closeMobilePanels();
+        else openMobileView();
+        return;
+      }
+      setDockActive(dock);
       if (dock === 'stage') closeMobilePanels();
       else if (dock === 'objects') openMobile('objects');
       else if (dock === 'add') openMobile('add');
