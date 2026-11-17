@@ -1231,9 +1231,9 @@ function textRow(parent, lab, get, set, o = {}) {
   return i;
 }
 function selectRow(parent, lab, get, set, options, o = {}) {
-  const r = el('div', { class: 'row' });
+  const r = el('div', { class: 'row' + (o.className ? ' ' + o.className : '') });
   r.appendChild(el('span', { class: 'lab' }, lab));
-  const s = el('select', { class: 'force-mode' });
+  const s = el('select', { class: 'force-select' });
   options.forEach(([val, text]) => s.appendChild(el('option', { value: val }, text)));
   s.value = get();
   s.addEventListener('change', () => {
@@ -1251,7 +1251,7 @@ function readRow(parent, pairs) { const g = el('div', { class: 'readout' }); pai
 
 
 function makeTabs(items, active, onPick, attrs = {}) {
-  const bar = el('div', { class: 'tabs', role: 'tablist' });
+  const bar = el('div', { class: attrs.className || 'tabs', role: 'tablist' });
   items.forEach(([id, label]) => {
     const b = el('button', { type: 'button', class: id === active ? 'active' : '', 'data-tab': id }, label);
     b.addEventListener('click', () => onPick(id));
@@ -1336,18 +1336,57 @@ function buildNonBodyPanel(P, o) {
 
 function buildAppliedForcePanel(P, b) {
   ensureForceFields(b);
-  const f = section(P, '外力 F');
-  selectRow(f, '模式', () => b.Fmode || 'const', v => { b.Fmode = v; b._Ferr = ''; }, [
+  const af = appliedForceOn(b);
+  const mode = b.Fmode || 'const';
+
+  const vis = section(P, '画布编辑', 'hl');
+  chkRow(vis, '显示受力箭头', () => !!scene.settings.showForce, v => {
+    scene.settings.showForce = v;
+    syncToolbar();
+    liveEdit();
+  });
+  vis.appendChild(el('div', { class: 'hint' }, '开启后拖紫色箭头末端设置 F；Shift 按 15° 吸附。'));
+
+  const live = section(P, '当前外力');
+  const card = el('div', { class: 'force-live-card' });
+  card.appendChild(el('div', { class: 'force-live-mag', id: 'r_force_mag' }, `${fmt(af.F, 3)} N`));
+  card.appendChild(el('div', { class: 'force-live-ang', id: 'r_force_ang' }, `${fmt(af.ang, 1)}°`));
+  card.appendChild(el('div', { class: 'force-live-mode', id: 'r_force_mode' }, mode === 'expr' ? '表达式' : mode === 'aim' ? '指向目标' : '恒定'));
+  card.appendChild(el('div', { class: 'force-live-err', id: 'r_force_err' }, b._Ferr || ''));
+  live.appendChild(card);
+
+  const f = section(P, '外力设置');
+  const modeBar = el('div', { class: 'force-mode-chips', role: 'group', 'aria-label': '外力模式' });
+  [
     ['const', '恒定'],
     ['expr', '表达式'],
     ['aim', '指向目标'],
-  ]);
+  ].forEach(([id, lab]) => {
+    const c = el('button', {
+      type: 'button',
+      class: 'force-chip' + (mode === id ? ' active' : ''),
+      'data-mode': id,
+    }, lab);
+    c.addEventListener('click', () => {
+      if (b.Fmode === id) return;
+      pushUndo();
+      b.Fmode = id;
+      b._Ferr = '';
+      if (id === 'expr' && !String(b.Fexpr || '').trim()) b.Fexpr = String(b.F || 0);
+      liveEdit();
+      buildPanel();
+    });
+    modeBar.appendChild(c);
+  });
+  f.appendChild(modeBar);
 
-  const mode = b.Fmode || 'const';
   if (mode === 'const') {
     numRow(f, '大小 F', () => b.F, v => b.F = v, 'N', { min: 0 });
     numRow(f, '方向角', () => b.Fang, v => b.Fang = v, '°');
-    f.appendChild(el('div', { class: 'hint' }, '开启顶栏「受力」后，可直接拖紫色箭头末端设置 F。Shift 拖动按 15° 吸附。'));
+    const br = el('div', { class: 'btnrow force-quick-angs' });
+    [[0, '→ 0°'], [90, '↑ 90°'], [180, '← 180°'], [-90, '↓ −90°']].forEach(([a, t]) =>
+      btn(br, t, () => { pushUndo(); b.Fang = a; liveEdit(); buildPanel(); }));
+    f.appendChild(br);
   } else if (mode === 'expr') {
     textRow(f, '大小 F(t,…)', () => b.Fexpr, v => { b.Fexpr = v; }, {
       placeholder: '如 10*sin(2*pi*t)', title: FORCE_EXPR_HELP,
@@ -1355,12 +1394,24 @@ function buildAppliedForcePanel(P, b) {
     textRow(f, '方向 θ(°)', () => b.FangExpr, v => { b.FangExpr = v; }, {
       placeholder: '如 90 或 atan2(1,0)*180/pi', title: FORCE_EXPR_HELP,
     });
-    f.appendChild(el('div', { class: 'hint' }, FORCE_EXPR_HELP));
-    f.appendChild(el('div', { class: 'hint' }, `当前求值：F=${fmt(b.F, 3)} N，θ=${fmt(b.Fang, 2)}°${b._Ferr ? ' · 错误：' + b._Ferr : ''}`));
+    f.appendChild(el('div', { class: 'hint force-expr-help' }, FORCE_EXPR_HELP));
+    const ex = el('div', { class: 'btnrow force-expr-presets' });
+    [
+      ['10', '0', '恒定 10N'],
+      ['10*sin(2*pi*t)', '0', '简谐 F'],
+      ['5', '90*t', '旋转力'],
+      ['m*g', '90', '等同重力'],
+    ].forEach(([Fe, ae, lab]) => {
+      btn(ex, lab, () => {
+        pushUndo();
+        b.Fexpr = Fe; b.FangExpr = ae;
+        liveEdit(); buildPanel();
+      });
+    });
+    f.appendChild(ex);
   } else {
-    // aim
-    textRow(f, '大小 F 表达式', () => b.Fexpr, v => { b.Fexpr = v; }, {
-      placeholder: '留空则用下方恒定值；如 20+5*sin(t)', title: FORCE_EXPR_HELP,
+    textRow(f, '大小表达式', () => b.Fexpr, v => { b.Fexpr = v; }, {
+      placeholder: '留空则用下方恒定值', title: FORCE_EXPR_HELP,
     });
     numRow(f, '大小 F（备用）', () => b.F, v => b.F = v, 'N', { min: 0 });
     const targets = [['', '世界坐标']].concat(
@@ -1370,29 +1421,26 @@ function buildAppliedForcePanel(P, b) {
     );
     selectRow(f, '指向', () => (b.FaimId == null ? '' : String(b.FaimId)), v => {
       b.FaimId = v === '' ? null : +v;
-    }, targets);
+    }, targets, { className: 'force-aim-select' });
     if (b.FaimId == null) {
       numRow(f, '目标 x', () => b.FaimX, v => b.FaimX = v, 'm');
       numRow(f, '目标 y', () => b.FaimY, v => b.FaimY = v, 'm');
+    } else {
+      const aim = resolveAimPoint(b);
+      f.appendChild(el('div', { class: 'hint' }, `当前目标：${aim.label}`));
     }
     f.appendChild(el('div', { class: 'hint' }, '力始终指向目标；大小可用表达式随时间/状态变化。'));
-    f.appendChild(el('div', { class: 'hint' }, `当前：F=${fmt(b.F, 3)} N，θ=${fmt(b.Fang, 2)}°${b._Ferr ? ' · ' + b._Ferr : ''}`));
   }
 
+  const act = section(P, '操作');
   const br = el('div', { class: 'btnrow' });
-  btn(br, scene.settings.showForce ? '受力显示已开' : '开启受力显示', () => {
-    scene.settings.showForce = true;
-    syncToolbar();
-    liveEdit();
-    buildPanel();
-    toast('拖紫色箭头末端可设置外力');
-  }, scene.settings.showForce ? 'active' : '');
   btn(br, '清零外力', () => {
     pushUndo();
-    b.F = 0; b.Fang = 0; b.Fmode = 'const'; b._Ferr = '';
+    b.F = 0; b.Fang = 0; b.Fmode = 'const'; b.Fexpr = ''; b.FangExpr = '0'; b._Ferr = '';
     liveEdit(); buildPanel();
   }, 'danger');
-  f.appendChild(br);
+  numRow(act, '箭头比例', () => scene.settings.FPx || 12, v => { scene.settings.FPx = v; liveEdit(); }, 'px/N', { min: 0.0001 });
+  act.appendChild(br);
 }
 
 let chartMode = 'v';
@@ -1400,13 +1448,14 @@ function buildBodyPanel(P, b) {
   const tabs = [
     ['init', '初态'],
     ['props', '属性'],
+    ['force', '受力'],
     ['live', '实时'],
     ['analysis', '分析'],
     ['chart', '图像'],
     ['actions', '操作'],
   ];
   if (!tabs.some(([id]) => id === propsTab)) propsTab = 'init';
-  P.appendChild(makeTabs(tabs, propsTab, id => { propsTab = id; buildPanel(); }));
+  P.appendChild(makeTabs(tabs, propsTab, id => { propsTab = id; buildPanel(); }, { className: 'tabs tabs-scroll' }));
   const panels = el('div', { class: 'tab-panels' });
 
   const pInit = panelBox('init', propsTab);
@@ -1440,12 +1489,16 @@ function buildBodyPanel(P, b) {
     } else numRow(p, '半径 r', () => b.r, v => b.r = v, 'm', { min: 0.0001 });
     numRow(p, '摩擦 μ', () => b.mu, v => b.mu = v, '', { step: 0.05, min: 0 });
     numRow(p, '恢复系数 e', () => b.e, v => b.e = Math.min(1, v), '', { step: 0.1, min: 0 });
-    buildAppliedForcePanel(pProps, b);
     const o = section(pProps, '行为');
     chkRow(o, '固定', () => b.fixed, v => b.fixed = v, { init: true });
     chkRow(o, '显示轨迹', () => b.trail, v => b.trail = v);
     chkRow(o, '参与碰撞', () => b.collide, v => b.collide = v);
+    o.appendChild(el('div', { class: 'hint' }, '外力请到「受力」标签页设置。'));
   }
+
+  const pForce = panelBox('force', propsTab);
+  pForce.classList.add('force-tab');
+  buildAppliedForcePanel(pForce, b);
 
   const pLive = panelBox('live', propsTab);
   {
@@ -1479,7 +1532,7 @@ function buildBodyPanel(P, b) {
     act.appendChild(br);
   }
 
-  [pInit, pProps, pLive, pAn, pCh, pAct].forEach(x => panels.appendChild(x));
+  [pInit, pProps, pForce, pLive, pAn, pCh, pAct].forEach(x => panels.appendChild(x));
   P.appendChild(panels);
   updateReadouts();
 }
@@ -1794,6 +1847,14 @@ function updateReadouts() {
   setTxt('r_a', sim.t > 0 ? `${fmt(Math.hypot(st.ax, st.ay))} m/s²` : '—');
   setTxt('r_ek', `${fmt(Ek)} J`); setTxt('r_p', `${fmt(b.m * v)} kg·m/s`); setTxt('r_ep', S.gOn ? `${fmt(Ep)} J（以 y=0 为零势面）` : '—'); setTxt('r_e', `${fmt(Ek + Ep)} J`);
   // Throttle MathQuill remount while running — force only when paused / tab switch
+  if (propsTab === 'force') {
+    const af = appliedForceOn(b);
+    const mode = b.Fmode || 'const';
+    setTxt('r_force_mag', `${fmt(af.F, 3)} N`);
+    setTxt('r_force_ang', `${fmt(af.ang, 1)}°`);
+    setTxt('r_force_mode', mode === 'expr' ? '表达式' : mode === 'aim' ? '指向目标' : '恒定');
+    setTxt('r_force_err', b._Ferr || '');
+  }
   if (propsTab === 'analysis') renderMotionAnalysis(b, !sim.running);
   if (propsTab === 'chart' && (!sim.running || (performance.now() / 200 | 0) % 2 === 0)) drawChart();
 }
