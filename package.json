@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "build:toy": "tsc && vite build --config vite.toy.config.ts",
+    "pack:toy": "npm run build:toy && node scripts/pack-toy.mjs",
     "preview": "vite preview",
     "test:analysis": "node --experimental-strip-types src/analysis/motionAnalysis.selftest.ts",
     "test:fields": "node --experimental-strip-types src/engine/fields/fieldSystem.selftest.ts",

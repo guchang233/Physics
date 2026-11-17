@@ -14,6 +14,20 @@ npm run build
 npm run test:analysis
 ```
 
+## 发布为哔哩哔哩 Toy
+
+```bash
+npm run pack:toy
+```
+
+入口 `index.html` 受平台 1MB 限制，因此该构建会把 JS、CSS、字体拆到 `assets/` 独立文件，只保留约 6KB 的 HTML。产物在 `publish/`：
+
+- `Physics-toy.zip`：上传包，压缩包根目录直接包含 `index.html` 和 `assets/`
+- `icon.png`：Toy 图标 500×500
+- `cover.jpg`：封面 1200×900
+
+Toy 构建会自动在 `<head>` 中注入官方 `toy-sdk.js`；本地 `npm run dev` 不注入，避免离线开发时请求外域。
+
 ## 功能要点
 
 - 搭建：质点 / 带电粒子 / 滑块、地面、挡板、斜面、匀强 E/B、**点电荷**、弹簧与轻绳
