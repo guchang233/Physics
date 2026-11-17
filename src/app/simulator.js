@@ -6,6 +6,8 @@ import {
   sourcesFromSceneObjects,
   StubContactWorld,
   createRapierContactWorld,
+  evalForceExpr,
+  FORCE_EXPR_HELP,
 } from '../engine/index.ts';
 
 
@@ -28,7 +30,7 @@ const KIND_NAME = { ball: '小球', particle: '带电粒子', box: '滑块', gro
 const PALETTE = ['#2f6fed', '#e5484d', '#1f9d55', '#f59e0b', '#8b5cf6', '#0ea5e9', '#ec4899', '#14b8a6'];
 
 function defaultSettings() {
-  return { gOn: true, g: 9.8, drag: 0, coulomb: false, kc: K_COULOMB, maxDt: 0.001, vPx: 20, snap: true, snapStep: 0.1,
+  return { gOn: true, g: 9.8, drag: 0, coulomb: false, kc: K_COULOMB, maxDt: 0.001, vPx: 20, FPx: 12, snap: true, snapStep: 0.1,
     showLabels: true, showGrid: true, showTrail: true, showVel: true, showForce: false, showAnalytic: true, showFieldLines: true, coulombLaw: 'coulomb3d', contactBackend: 'native', speed: 1 };
 }
 let scene = { settings: defaultSettings(), objects: [], view: { cx: 0, cy: 2, scale: 60 } };
@@ -41,7 +43,10 @@ function mkBody(kind, p = {}) {
   const n = bodies().length;
   const base = { id: nextId++, kind, name: KIND_NAME[kind] + (n + 1), color: PALETTE[n % PALETTE.length],
     m: 1, q: 0, r: 0.25, w: 0.6, h: 0.4, e: 0.6, mu: 0, x0: 0, y0: 0, vx0: 0, vy0: 0, ang0: 0,
-    F: 0, Fang: 0, fixed: false, trail: true, collide: true };
+    /* 外力：const 恒定 | expr 表达式 | aim 指向目标 */
+    F: 0, Fang: 0, Fmode: 'const', Fexpr: '', FangExpr: '0',
+    FaimId: null, FaimX: 0, FaimY: 0, _Ferr: '',
+    fixed: false, trail: true, collide: true };
   if (kind === 'particle') Object.assign(base, { m: 0.01, q: 0.01, r: 0.08, color: '#e5484d', collide: false, e: 1 });
   if (kind === 'box') Object.assign(base, { mu: 0.3, e: 0.2, color: '#f59e0b', m: 1 });
   const b = Object.assign(base, p);
@@ -193,6 +198,106 @@ function springEnds(s) {
   if (s.b != null && (!B || !B.st)) return null;
   return { A, B, x1: A.st.x, y1: A.st.y, x2: B ? B.st.x : s.ax, y2: B ? B.st.y : s.ay };
 }
+
+function ensureForceFields(b) {
+  if (b.Fmode == null) b.Fmode = 'const';
+  if (b.Fexpr == null) b.Fexpr = '';
+  if (b.FangExpr == null) b.FangExpr = '0';
+  if (b.FaimId === undefined) b.FaimId = null;
+  if (b.FaimX == null) b.FaimX = 0;
+  if (b.FaimY == null) b.FaimY = 0;
+  if (b._Ferr == null) b._Ferr = '';
+}
+
+function forceEvalCtx(b) {
+  const st = b.st || { x: b.x0, y: b.y0, vx: b.vx0 || 0, vy: b.vy0 || 0 };
+  return {
+    t: sim.t,
+    x: st.x, y: st.y,
+    vx: st.vx || 0, vy: st.vy || 0,
+    v: Math.hypot(st.vx || 0, st.vy || 0),
+    m: b.m, q: b.q || 0,
+    g: scene.settings.gOn ? scene.settings.g : 0,
+  };
+}
+
+function resolveAimPoint(b) {
+  ensureForceFields(b);
+  if (b.FaimId != null) {
+    const o = byId(b.FaimId);
+    if (o) {
+      if (isBody(o)) {
+        const st = o.st || { x: o.x0, y: o.y0 };
+        return { x: st.x, y: st.y, label: o.name };
+      }
+      if (o.kind === 'pointCharge') return { x: o.x, y: o.y, label: o.name };
+    }
+  }
+  return { x: b.FaimX || 0, y: b.FaimY || 0, label: '定点' };
+}
+
+/** 用户外力（恒定 / 表达式 / 指向目标）→ { fx, fy, F, ang, ok, err } */
+function appliedForceOn(b) {
+  ensureForceFields(b);
+  const ctx = forceEvalCtx(b);
+  const st = b.st || { x: b.x0, y: b.y0 };
+  let F = b.F || 0;
+  let ang = b.Fang || 0;
+  let err = '';
+
+  const magFrom = (constVal, expr, useExpr) => {
+    if (!useExpr) return { ok: true, value: constVal };
+    const r = evalForceExpr(expr, ctx);
+    if (!r.ok) return { ok: false, error: r.error, value: constVal };
+    return { ok: true, value: r.value };
+  };
+
+  if (b.Fmode === 'expr') {
+    const m = magFrom(F, b.Fexpr, true);
+    const a = magFrom(ang, b.FangExpr, true);
+    if (!m.ok) err = 'F: ' + m.error;
+    else if (!a.ok) err = 'θ: ' + a.error;
+    else { F = m.value; ang = a.value; }
+  } else if (b.Fmode === 'aim') {
+    // 大小：若填写了 Fexpr 则用表达式，否则用恒定 F；方向指向目标
+    const e = String(b.Fexpr || '').trim();
+    if (e) {
+      const r = evalForceExpr(e, ctx);
+      if (!r.ok) err = 'F: ' + r.error;
+      else F = r.value;
+    }
+    const aim = resolveAimPoint(b);
+    const dx = aim.x - st.x, dy = aim.y - st.y;
+    const L = Math.hypot(dx, dy);
+    if (L < 1e-12) {
+      b._Ferr = err || '目标与物体重合';
+      return { fx: 0, fy: 0, F: 0, ang: b.Fang || 0, ok: false, err: b._Ferr };
+    }
+    ang = Math.atan2(dy, dx) / DEG;
+    const fx = F * dx / L, fy = F * dy / L;
+    b.Fang = ang; // live readout
+    b._Ferr = err;
+    return { fx, fy, F, ang, ok: !err, err };
+  } else {
+    // const
+    F = b.F || 0;
+    ang = b.Fang || 0;
+  }
+
+  // expr path sets F,ang above; const too
+  if (b.Fmode === 'expr' && !err) {
+    b.F = F;
+    b.Fang = ang;
+  }
+  b._Ferr = err;
+  if (err && b.Fmode === 'expr') {
+    // keep last finite vector from stored F/Fang if expr failed mid-run
+    F = b.F || 0; ang = b.Fang || 0;
+  }
+  const fx = F * Math.cos(ang * DEG), fy = F * Math.sin(ang * DEG);
+  return { fx, fy, F, ang, ok: !err, err };
+}
+
 function computeForces(list, record) {
   const S = scene.settings, out = new Map();
   for (const b of list) {
@@ -204,7 +309,8 @@ function computeForces(list, record) {
       const F = fieldAtExcluding(b.st.x, b.st.y, b.id);
       if (F.Ex || F.Ey) add(b.q * F.Ex, b.q * F.Ey, 'F电', '#e08600');
     }
-    if (b.F) add(b.F * Math.cos(b.Fang * DEG), b.F * Math.sin(b.Fang * DEG), 'F', '#8b5cf6');
+    const af = appliedForceOn(b);
+    if (af.fx || af.fy) add(af.fx, af.fy, 'F', '#8b5cf6');
     if (S.drag) add(-S.drag * b.st.vx, -S.drag * b.st.vy, 'F阻', '#6b7385');
   }
   // 弹簧/轻绳
@@ -539,11 +645,62 @@ function drawVectors(b) {
     if (mx > 0) {
       const sc = 70 / mx;
       for (const p of parts) {
+        // 用户外力 F 用专用手柄绘制，避免与自动缩放叠画
+        if (p.label === 'F' && b === selected()) continue;
         const ex = x + p.fx * sc, ey = y - p.fy * sc; if (Math.hypot(p.fx, p.fy) * sc < 3) continue;
         arrow(x, y, ex, ey, p.color, 1.8, 8);
         label(`${p.label} ${fmt(Math.hypot(p.fx, p.fy), 2)}N`, ex + 4, ey + (p.fy > 0 ? -8 : 8), p.color, 'left', false);
       }
     }
+  }
+}
+
+/** 外力箭头末端手柄（开启「受力」且选中物体时） */
+function forceHandle(b) {
+  ensureForceFields(b);
+  const st = b.st || { x: b.x0, y: b.y0 };
+  const [x, y] = w2s(st.x, st.y);
+  const af = appliedForceOn(b);
+  const FPx = scene.settings.FPx || 12;
+  let fx = af.fx, fy = af.fy;
+  let zero = Math.hypot(fx, fy) < 1e-9;
+  // 零力时给出默认可拖方向（沿 +x）
+  if (zero) { fx = 1; fy = 0; }
+  let hx = x + fx * FPx, hy = y - fy * FPx;
+  const minL = bodyScreenR(b) + 16;
+  const L = Math.hypot(hx - x, hy - y);
+  if (L < minL) {
+    const ux = (hx - x) / (L || 1), uy = (hy - y) / (L || 1);
+    hx = x + ux * minL; hy = y + uy * minL;
+    zero = true;
+  }
+  return { x, y, hx, hy, zero, af, FPx };
+}
+function drawForceHandle(b) {
+  if (!scene.settings.showForce) return;
+  const H = forceHandle(b);
+  const ghost = H.zero;
+  if (!ghost) arrow(H.x, H.y, H.hx, H.hy, '#8b5cf6', 3, 12, null);
+  else {
+    ctx.save(); ctx.setLineDash([5, 4]);
+    arrow(H.x, H.y, H.hx, H.hy, '#8b5cf6', 2, 10, [5, 4]);
+    ctx.restore();
+  }
+  handleDot(H.hx, H.hy, '#8b5cf6', 7);
+  const mode = b.Fmode || 'const';
+  const modeLab = mode === 'expr' ? '表达式' : mode === 'aim' ? '指向' : '恒定';
+  const txt = ghost
+    ? `拖末端设置外力 F（${modeLab}）`
+    : `F=${fmt(H.af.F, 2)} N  ${fmt(H.af.ang, 1)}° · ${modeLab}`;
+  label(txt, H.hx + 12, H.hy - 12, '#8b5cf6');
+  if (b._Ferr) label(b._Ferr, H.hx + 12, H.hy + 6, '#e5484d');
+  if (mode === 'aim') {
+    const aim = resolveAimPoint(b);
+    const [ax, ay] = w2s(aim.x, aim.y);
+    ctx.save(); ctx.strokeStyle = 'rgba(139,92,246,.45)'; ctx.setLineDash([3, 3]); ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(H.x, H.y); ctx.lineTo(ax, ay); ctx.stroke();
+    ctx.fillStyle = '#8b5cf6'; ctx.beginPath(); ctx.arc(ax, ay, 3, 0, 7); ctx.fill();
+    ctx.restore();
   }
 }
 function forceParts(b) {
@@ -666,6 +823,7 @@ function draw() {
     drawAnalyticPath(s);
   }
   if (isBody(s) && tool === 'select' && !sim.running) drawV0(s);
+  if (isBody(s) && scene.settings.showForce) drawForceHandle(s);
   if (pending) {
     ctx.save(); ctx.strokeStyle = C['--accent']; ctx.setLineDash([5, 4]); ctx.lineWidth = 1.5;
     if (pending.type === 'rect') { const [a, b] = w2s(pending.x1, pending.y1), [c, d] = w2s(pending.x2, pending.y2); ctx.strokeRect(Math.min(a, c), Math.min(b, d), Math.abs(c - a), Math.abs(d - b)); label(`${fmt(Math.abs(pending.x2 - pending.x1), 2)} × ${fmt(Math.abs(pending.y2 - pending.y1), 2)} m`, Math.max(a, c) + 6, Math.max(b, d) + 10, C['--accent']); }
@@ -697,7 +855,7 @@ function select(id) {
   draw();
 }
 const TOOL_HINT = {
-  select: '选择：点击选中，拖动移动；拖绿色箭头端点设初速度；拖空白处平移，滚轮缩放',
+  select: '选择：拖动物体；绿箭头=v₀；开「受力」后紫箭头末端=外力 F；空白处平移',
   pan: '平移：拖动画布移动视图，滚轮缩放', ball: '点击画布放置小球（按住 Shift 可连续放置）',
   particle: '点击画布放置带电粒子（按住 Shift 可连续放置）', box: '点击画布放置滑块（按住 Shift 可连续放置）',
   ground: '点击画布确定地面高度', wall: '按住拖动画出挡板/极板（线段）', incline: '点击放置斜面（点击处为底角顶点）',
@@ -789,6 +947,16 @@ cv.addEventListener('pointerdown', e => {
   }
   // ---- 选择工具 ----
   const cur = selected();
+  if (isBody(cur) && scene.settings.showForce) {
+    const HF = forceHandle(cur);
+    if (Math.hypot(sx - HF.hx, sy - HF.hy) < 12) {
+      pushUndo();
+      // 拖末端 → 切回恒定模式，直接编辑 F / Fang
+      cur.Fmode = 'const';
+      drag = { type: 'F', b: cur };
+      return;
+    }
+  }
   if (isBody(cur)) {
     const H0 = v0Handle(cur);
     if (Math.hypot(sx - H0.hx, sy - H0.hy) < 11) { pushUndo(); drag = { type: 'v0', b: cur }; return; }
@@ -830,6 +998,25 @@ cv.addEventListener('pointermove', e => {
     else { vx = Math.round(vx * 10) / 10; vy = Math.round(vy * 10) / 10; }
     b.vx0 = clean(vx); b.vy0 = clean(vy);
     initChanged(); return;
+  }
+  if (drag.type === 'F') {
+    const b = drag.b, S = scene.settings;
+    const st = b.st || { x: b.x0, y: b.y0 };
+    const [x, y] = w2s(st.x, st.y);
+    const FPx = S.FPx || 12;
+    let fx = (sx - x) / FPx, fy = -(sy - y) / FPx;
+    if (e.shiftKey) {
+      const mag = Math.round(Math.hypot(fx, fy) * 10) / 10;
+      const a = Math.round(Math.atan2(fy, fx) / DEG / 15) * 15 * DEG;
+      fx = mag * Math.cos(a); fy = mag * Math.sin(a);
+    } else {
+      fx = Math.round(fx * 100) / 100; fy = Math.round(fy * 100) / 100;
+    }
+    b.Fmode = 'const';
+    b.F = clean(Math.hypot(fx, fy));
+    b.Fang = clean(Math.atan2(fy, fx) / DEG);
+    b._Ferr = '';
+    liveEdit(); return;
   }
   if (drag.type === 'body') {
     if (!drag.moved && Math.hypot(sx - drag.sx, sy - drag.sy) < 3) return;
@@ -893,6 +1080,10 @@ cv.addEventListener('wheel', e => {
 function hoverCursor(sx, sy) {
   if (tool !== 'select') return;
   const cur = selected();
+  if (isBody(cur) && scene.settings.showForce) {
+    const HF = forceHandle(cur);
+    if (Math.hypot(sx - HF.hx, sy - HF.hy) < 12) { cv.style.cursor = 'crosshair'; return; }
+  }
   if (isBody(cur)) { const H0 = v0Handle(cur); if (Math.hypot(sx - H0.hx, sy - H0.hy) < 11) { cv.style.cursor = 'crosshair'; return; } }
   cv.style.cursor = hitBody(sx, sy) || hitOther(sx, sy) ? 'move' : 'default';
 }
@@ -1018,6 +1209,43 @@ function chkRow(parent, lab, get, set, o = {}) {
   i.addEventListener('change', () => { pushUndo(); set(i.checked); o.init ? initChanged() : liveEdit(); if (o.rebuild) buildPanel(); });
   r.appendChild(i); r.appendChild(document.createTextNode(lab)); parent.appendChild(r); binds.push({ el: i, get }); return i;
 }
+function textRow(parent, lab, get, set, o = {}) {
+  const r = el('div', { class: 'row expr-row' });
+  r.appendChild(el('span', { class: 'lab' }, lab));
+  const i = el('input', { type: 'text', class: 'expr-input', spellcheck: 'false', autocomplete: 'off' });
+  if (o.placeholder) i.placeholder = o.placeholder;
+  if (o.title) i.title = o.title;
+  i.value = get() ?? '';
+  let pushed = false;
+  i.addEventListener('focus', () => { pushed = false; });
+  i.addEventListener('input', () => {
+    if (!pushed) { pushUndo(); pushed = true; }
+    set(i.value);
+    liveEdit();
+    if (o.after) o.after();
+  });
+  i.addEventListener('change', () => { i.value = get() ?? ''; if (o.rebuild) buildPanel(); });
+  r.appendChild(i);
+  parent.appendChild(r);
+  binds.push({ el: i, get: () => get() ?? '' });
+  return i;
+}
+function selectRow(parent, lab, get, set, options, o = {}) {
+  const r = el('div', { class: 'row' });
+  r.appendChild(el('span', { class: 'lab' }, lab));
+  const s = el('select', { class: 'force-mode' });
+  options.forEach(([val, text]) => s.appendChild(el('option', { value: val }, text)));
+  s.value = get();
+  s.addEventListener('change', () => {
+    pushUndo();
+    set(s.value);
+    liveEdit();
+    if (o.rebuild !== false) buildPanel();
+  });
+  r.appendChild(s);
+  parent.appendChild(r);
+  return s;
+}
 function btn(parent, html, fn, cls = '', title = '') { const b = el('button', { class: cls, title, onclick: fn }, html); parent.appendChild(b); return b; }
 function readRow(parent, pairs) { const g = el('div', { class: 'readout' }); pairs.forEach(([k, id]) => { g.appendChild(el('span', { class: 'k' }, k)); g.appendChild(el('span', { id })); }); parent.appendChild(g); return g; }
 
@@ -1106,6 +1334,67 @@ function buildNonBodyPanel(P, o) {
   P.appendChild(panels);
 }
 
+function buildAppliedForcePanel(P, b) {
+  ensureForceFields(b);
+  const f = section(P, '外力 F');
+  selectRow(f, '模式', () => b.Fmode || 'const', v => { b.Fmode = v; b._Ferr = ''; }, [
+    ['const', '恒定'],
+    ['expr', '表达式'],
+    ['aim', '指向目标'],
+  ]);
+
+  const mode = b.Fmode || 'const';
+  if (mode === 'const') {
+    numRow(f, '大小 F', () => b.F, v => b.F = v, 'N', { min: 0 });
+    numRow(f, '方向角', () => b.Fang, v => b.Fang = v, '°');
+    f.appendChild(el('div', { class: 'hint' }, '开启顶栏「受力」后，可直接拖紫色箭头末端设置 F。Shift 拖动按 15° 吸附。'));
+  } else if (mode === 'expr') {
+    textRow(f, '大小 F(t,…)', () => b.Fexpr, v => { b.Fexpr = v; }, {
+      placeholder: '如 10*sin(2*pi*t)', title: FORCE_EXPR_HELP,
+    });
+    textRow(f, '方向 θ(°)', () => b.FangExpr, v => { b.FangExpr = v; }, {
+      placeholder: '如 90 或 atan2(1,0)*180/pi', title: FORCE_EXPR_HELP,
+    });
+    f.appendChild(el('div', { class: 'hint' }, FORCE_EXPR_HELP));
+    f.appendChild(el('div', { class: 'hint' }, `当前求值：F=${fmt(b.F, 3)} N，θ=${fmt(b.Fang, 2)}°${b._Ferr ? ' · 错误：' + b._Ferr : ''}`));
+  } else {
+    // aim
+    textRow(f, '大小 F 表达式', () => b.Fexpr, v => { b.Fexpr = v; }, {
+      placeholder: '留空则用下方恒定值；如 20+5*sin(t)', title: FORCE_EXPR_HELP,
+    });
+    numRow(f, '大小 F（备用）', () => b.F, v => b.F = v, 'N', { min: 0 });
+    const targets = [['', '世界坐标']].concat(
+      scene.objects
+        .filter(o => o.id !== b.id && (isBody(o) || o.kind === 'pointCharge'))
+        .map(o => [String(o.id), o.name]),
+    );
+    selectRow(f, '指向', () => (b.FaimId == null ? '' : String(b.FaimId)), v => {
+      b.FaimId = v === '' ? null : +v;
+    }, targets);
+    if (b.FaimId == null) {
+      numRow(f, '目标 x', () => b.FaimX, v => b.FaimX = v, 'm');
+      numRow(f, '目标 y', () => b.FaimY, v => b.FaimY = v, 'm');
+    }
+    f.appendChild(el('div', { class: 'hint' }, '力始终指向目标；大小可用表达式随时间/状态变化。'));
+    f.appendChild(el('div', { class: 'hint' }, `当前：F=${fmt(b.F, 3)} N，θ=${fmt(b.Fang, 2)}°${b._Ferr ? ' · ' + b._Ferr : ''}`));
+  }
+
+  const br = el('div', { class: 'btnrow' });
+  btn(br, scene.settings.showForce ? '受力显示已开' : '开启受力显示', () => {
+    scene.settings.showForce = true;
+    syncToolbar();
+    liveEdit();
+    buildPanel();
+    toast('拖紫色箭头末端可设置外力');
+  }, scene.settings.showForce ? 'active' : '');
+  btn(br, '清零外力', () => {
+    pushUndo();
+    b.F = 0; b.Fang = 0; b.Fmode = 'const'; b._Ferr = '';
+    liveEdit(); buildPanel();
+  }, 'danger');
+  f.appendChild(br);
+}
+
 let chartMode = 'v';
 function buildBodyPanel(P, b) {
   const tabs = [
@@ -1151,9 +1440,7 @@ function buildBodyPanel(P, b) {
     } else numRow(p, '半径 r', () => b.r, v => b.r = v, 'm', { min: 0.0001 });
     numRow(p, '摩擦 μ', () => b.mu, v => b.mu = v, '', { step: 0.05, min: 0 });
     numRow(p, '恢复系数 e', () => b.e, v => b.e = Math.min(1, v), '', { step: 0.1, min: 0 });
-    const f = section(pProps, '恒定外力');
-    numRow(f, '大小 F', () => b.F, v => b.F = v, 'N', { min: 0 });
-    numRow(f, '方向角', () => b.Fang, v => b.Fang = v, '°');
+    buildAppliedForcePanel(pProps, b);
     const o = section(pProps, '行为');
     chkRow(o, '固定', () => b.fixed, v => b.fixed = v, { init: true });
     chkRow(o, '显示轨迹', () => b.trail, v => b.trail = v);
@@ -1300,6 +1587,7 @@ function buildScenePanel(P) {
   {
     const d = section(pDisp, '显示与精度');
     numRow(d, '速度箭头比例', () => S.vPx, v => S.vPx = v, 'px/(m/s)', { min: 0.0001 });
+    numRow(d, '外力箭头比例', () => S.FPx || 12, v => S.FPx = v, 'px/N', { min: 0.0001 });
     numRow(d, '积分步长', () => S.maxDt, v => S.maxDt = v, 's', { min: 1e-9 });
     chkRow(d, '吸附网格', () => S.snap, v => S.snap = v);
     numRow(d, '吸附步长', () => S.snapStep, v => S.snapStep = v, 'm', { min: 1e-6 });
@@ -1605,7 +1893,7 @@ function buildAnalysisContext(b) {
     field,
     modelField: model ? model.field : undefined,
     modelFieldNote: model ? model.note : undefined,
-    Fext: { x: b.F * Math.cos(b.Fang * DEG), y: b.F * Math.sin(b.Fang * DEG) },
+    Fext: (() => { const af = appliedForceOn(b); return { x: af.fx, y: af.fy }; })(),
     springs: collectSpringsFor(b),
     pointCharges: collectPointChargesForAnalysis(b.id),
     coulombLaw: scene.settings.coulombLaw || 'coulomb3d',
@@ -1902,8 +2190,15 @@ function serialize() {
 function loadScene(data, keepView) {
   if (!data || !Array.isArray(data.objects)) throw new Error('无效的场景文件');
   const oldView = scene.view;
-  scene = { settings: Object.assign(defaultSettings(), data.settings || {}), objects: data.objects.map(o => Object.assign({}, o, { st: null })),
-    view: keepView ? oldView : Object.assign({ cx: 0, cy: 2, scale: 60 }, data.view || {}) };
+  scene = {
+    settings: Object.assign(defaultSettings(), data.settings || {}),
+    objects: data.objects.map(o => {
+      const c = Object.assign({}, o, { st: null });
+      if (isBody(c)) ensureForceFields(c);
+      return c;
+    }),
+    view: keepView ? oldView : Object.assign({ cx: 0, cy: 2, scale: 60 }, data.view || {}),
+  };
   nextId = scene.objects.reduce((m, o) => Math.max(m, o.id || 0), 0) + 1;
   if (selId != null && !byId(selId)) selId = null;
   if (!keepView) selId = null;

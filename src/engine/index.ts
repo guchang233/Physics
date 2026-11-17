@@ -13,3 +13,4 @@ export * from './fields/sources.ts';
 export * from './fields/fieldLines.ts';
 export * from './fields/fieldSystem.ts';
 export * from './rapier/contactWorld.ts';
+export * from './forceExpr.ts';
