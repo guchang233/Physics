@@ -11,7 +11,7 @@
     <header id="topbar">
       <div class="brand">物理<em>模拟器</em></div>
 
-      <div class="top-cluster">
+      <div class="top-cluster phone-hide">
         <div class="seg">
           <button type="button" data-tool="select" class="active" title="选择 (V)">选择</button>
           <button type="button" data-tool="pan" title="平移 (H)">平移</button>
@@ -39,7 +39,7 @@
         <input type="number" id="numG" value="9.8" step="0.1" title="g" aria-label="重力加速度" style="width:52px">
       </div>
 
-      <div class="top-cluster hide-narrow desktop-only">
+      <div class="top-cluster hide-narrow desktop-only" id="viewFlags">
         <label class="chk"><input type="checkbox" id="chkGrid" checked>网格</label>
         <label class="chk"><input type="checkbox" id="chkTrail" checked>轨迹</label>
         <label class="chk"><input type="checkbox" id="chkVel" checked>速度</label>

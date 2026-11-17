@@ -256,12 +256,25 @@
 }
 
 @media (max-width: 820px) {
-  .dsk-key {
-    min-height: 36px;
-    height: 36px;
-    font-size: 14px;
+  /* 关着的检视栏不能被键盘的 display:flex 重新撑开 */
+  #right.with-keypad:not(.open) { display: none; }
+  #right.open.with-keypad { display: flex; }
+
+  .dsk-body {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    padding-bottom: 12px;
   }
-  .dsk-wrap {
-    max-width: none;
+  .dsk-wrap { max-width: none; }
+  .dsk-grid {
+    grid-template-columns: repeat(20, minmax(34px, 1fr));
+    width: max-content;
+    min-width: 100%;
+  }
+  .dsk-key {
+    min-width: 34px;
+    min-height: 42px;
+    height: 42px;
+    font-size: 15px;
   }
 }

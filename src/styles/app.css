@@ -839,25 +839,82 @@ kbd {
     --mobile-h: 58px;
     --top-h: 52px;
     --gutter: 8px;
+    --phone-flags-h: 42px;
   }
   #app {
     padding: 8px;
     gap: 8px;
     padding-bottom: max(8px, env(safe-area-inset-bottom, 0px));
   }
-  #main { grid-template-columns: 1fr; }
+  #main {
+    grid-template-columns: 1fr;
+    padding-bottom: calc(var(--phone-flags-h) + 6px);
+  }
+  #topbar {
+    gap: 2px;
+    padding: 0 8px;
+    /* backdrop-filter 会变成 fixed 的包含块，开关条就会钉在顶栏里 */
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    background: var(--glass-strong);
+  }
+  .brand { display: none; }
+  .top-cluster.phone-hide,
+  #bUndo { display: none; }
+  .top-cluster {
+    padding: 0 2px;
+    gap: 4px;
+    border-right: none;
+  }
+  .top-cluster.transport button {
+    padding: 6px 10px;
+    min-height: 36px;
+    font-size: 14px;
+  }
+  .top-cluster.transport select { width: 64px; min-height: 36px; font-size: 14px; }
+
+  /* 显示开关从顶栏挪到画布底部，可横向滑动 */
+  #viewFlags {
+    display: flex !important;
+    position: fixed;
+    z-index: 32;
+    left: 8px;
+    right: 8px;
+    bottom: calc(var(--gutter) + var(--mobile-h) + var(--gutter) + env(safe-area-inset-bottom, 0px));
+    height: var(--phone-flags-h);
+    margin: 0;
+    padding: 0 10px;
+    gap: 12px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    background: var(--glass);
+    border: 1px solid var(--hairline);
+    border-radius: 16px;
+    box-shadow: var(--shadow-soft);
+    align-items: center;
+  }
+  #viewFlags::-webkit-scrollbar { display: none; }
+  #viewFlags .chk {
+    flex: none;
+    font-size: 13px;
+    min-height: 32px;
+  }
+
   #left, #right {
     display: none; position: fixed; z-index: 40;
-    top: calc(var(--gutter) + var(--top-h) + var(--gutter));
-    bottom: calc(var(--gutter) + var(--mobile-h) + var(--gutter) + env(safe-area-inset-bottom, 0px));
-    width: min(calc(100vw - 16px), 400px);
-    max-width: calc(100vw - 16px);
+    top: calc(var(--gutter) + var(--top-h) + 6px);
+    bottom: calc(var(--gutter) + var(--mobile-h) + 6px + env(safe-area-inset-bottom, 0px));
+    left: 8px;
+    right: 8px;
+    width: auto;
+    max-width: none;
     border: 1px solid var(--hairline);
+    border-radius: 20px;
     box-shadow: var(--shadow);
   }
-  #left.open, #right.open { display: flex; }
-  #left.open { left: 8px; right: auto; }
-  #right.open { right: 8px; left: auto; width: min(calc(100vw - 16px), 420px); }
+  #left.open, #right.open { display: flex; left: 8px; right: 8px; width: auto; }
   #mobile-dock {
     display: grid;
     margin-bottom: env(safe-area-inset-bottom, 0px);
@@ -865,7 +922,6 @@ kbd {
   .desktop-only { display: none !important; }
   #toolhint { display: none; }
   #status { font-size: 11px; border-radius: 16px; }
-  .top-cluster.transport select { width: 56px; }
   .panel-scrim {
     top: 0; bottom: 0;
   }
@@ -954,11 +1010,6 @@ kbd {
 }
 
 @media (max-width: 420px) {
-  #right.open, #left.open {
-    left: 8px;
-    right: 8px;
-    width: auto;
-  }
   .force-chip {
     min-height: 42px;
     font-size: 12.5px;
