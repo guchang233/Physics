@@ -8,6 +8,8 @@ import {
   createRapierContactWorld,
   evalForceExpr,
   FORCE_EXPR_HELP,
+  rewriteExpr,
+  orderExprNodes,
 } from '../engine/index.ts';
 
 
@@ -88,7 +90,9 @@ function initState(b) {
 }
 function resetSim(msg) {
   sim.t = 0; sim.running = false;
+  resolveExprs();
   bodies().forEach(initState);
+  resolveExprs();
   updatePlayBtn();
   if (msg) toast(msg);
 }
@@ -245,6 +249,237 @@ function forceEvalCtx(b) {
   };
 }
 
+const EXPR_DERIVED = {
+  v: ['vx', 'vy'],
+  v0: ['vx0', 'vy0'],
+  Fx: ['F', 'Fang'],
+  Fy: ['F', 'Fang'],
+};
+
+function exprNames() {
+  return scene.objects.map(o => ({ id: o.id, name: o.name || '' }));
+}
+function slotIdOf(owner, key) {
+  return owner === scene.settings ? `set:${key}` : `${owner.id}:${key}`;
+}
+function clearExpr(owner, keys) {
+  if (!owner || !owner.expr) return;
+  for (const k of keys) delete owner.expr[k];
+}
+function readQuantity(id, field) {
+  if (field === 't') return sim.t;
+  if (field === 'g') return scene.settings.gOn ? scene.settings.g : 0;
+  const o = byId(id);
+  if (!o) return NaN;
+  const st = o.st;
+  switch (field) {
+    case 'x': return st ? st.x : (o.x0 ?? o.x ?? 0);
+    case 'y': return st ? st.y : (o.y0 ?? o.y ?? 0);
+    case 'vx': return st ? (st.vx || 0) : (o.vx0 || 0);
+    case 'vy': return st ? (st.vy || 0) : (o.vy0 || 0);
+    case 'v': return Math.hypot(readQuantity(id, 'vx'), readQuantity(id, 'vy'));
+    case 'ax': return isBody(o) ? (st ? (st.ax || 0) : 0) : (o.ax || 0);
+    case 'ay': return isBody(o) ? (st ? (st.ay || 0) : 0) : (o.ay || 0);
+    case 'x0': return o.x0 ?? o.x ?? 0;
+    case 'y0': return o.y0 ?? o.y ?? 0;
+    case 'vx0': return o.vx0 || 0;
+    case 'vy0': return o.vy0 || 0;
+    case 'v0': return Math.hypot(o.vx0 || 0, o.vy0 || 0);
+    case 'ang0': return o.ang0 || 0;
+    case 'F': return o.F || 0;
+    case 'Fang': return o.Fang || 0;
+    case 'Fx': return (o.F || 0) * Math.cos((o.Fang || 0) * DEG);
+    case 'Fy': return (o.F || 0) * Math.sin((o.Fang || 0) * DEG);
+    case 'm': return o.m || 0;
+    case 'q': return o.q || 0;
+    case 'r': return o.r || 0;
+    case 'w': return o.w || 0;
+    case 'h': return o.h || 0;
+    case 'mu': return o.mu || 0;
+    case 'e': return o.e ?? 0;
+    case 'k': return o.k || 0;
+    case 'L0': return o.L0 || 0;
+    case 'L': {
+      if (isLink(o)) {
+        const e = linkEnds(o);
+        return e ? Math.hypot(e.x2 - e.x1, e.y2 - e.y1) : (o.L0 || 0);
+      }
+      return o.L || 0;
+    }
+    case 'ang': return o.ang || 0;
+    case 'E': return o.E || 0;
+    case 'B': return o.B || 0;
+    case 'softRadius': return o.softRadius || 0;
+    case 'FaimX': return o.FaimX || 0;
+    case 'FaimY': return o.FaimY || 0;
+    default: return o[field] ?? 0;
+  }
+}
+function holdState(owner, key, value) {
+  if (!owner.st) return;
+  owner.st[key] = value;
+  if (!owner._hold) owner._hold = {};
+  owner._hold[key] = value;
+}
+function applySlot(owner, key, value) {
+  if (!Number.isFinite(value)) return;
+  if (owner === scene.settings) {
+    if (key === 'maxDt') value = Math.max(1e-9, value);
+    if (key === 'drag' || key === 'kc' || key === 'vPx' || key === 'FPx' || key === 'snapStep') value = Math.max(1e-9, value);
+    owner[key] = value;
+    return;
+  }
+  switch (key) {
+    case 'x':
+      if (isBody(owner)) { holdState(owner, 'x', value); if (sim.t === 0) owner.x0 = value; return; }
+      owner.x = value; return;
+    case 'y':
+      if (isBody(owner)) { holdState(owner, 'y', value); if (sim.t === 0) owner.y0 = value; return; }
+      owner.y = value; return;
+    case 'vx': holdState(owner, 'vx', value); if (sim.t === 0) owner.vx0 = value; return;
+    case 'vy': holdState(owner, 'vy', value); if (sim.t === 0) owner.vy0 = value; return;
+    case 'v': {
+      const ang = Math.atan2(readQuantity(owner.id, 'vy'), readQuantity(owner.id, 'vx'));
+      applySlot(owner, 'vx', value * Math.cos(ang));
+      applySlot(owner, 'vy', value * Math.sin(ang));
+      return;
+    }
+    case 'vang': {
+      const m = Math.hypot(readQuantity(owner.id, 'vx'), readQuantity(owner.id, 'vy'));
+      applySlot(owner, 'vx', m * Math.cos(value * DEG));
+      applySlot(owner, 'vy', m * Math.sin(value * DEG));
+      return;
+    }
+    case 'v0': {
+      const ang = Math.atan2(owner.vy0 || 0, owner.vx0 || 0);
+      owner.vx0 = value * Math.cos(ang);
+      owner.vy0 = value * Math.sin(ang);
+      if (sim.t === 0 && owner.st) { owner.st.vx = owner.vx0; owner.st.vy = owner.vy0; }
+      return;
+    }
+    case 'v0ang': {
+      const m = Math.hypot(owner.vx0 || 0, owner.vy0 || 0);
+      owner.vx0 = m * Math.cos(value * DEG);
+      owner.vy0 = m * Math.sin(value * DEG);
+      if (sim.t === 0 && owner.st) { owner.st.vx = owner.vx0; owner.st.vy = owner.vy0; }
+      return;
+    }
+    case 'x0': owner.x0 = value; if (sim.t === 0 && owner.st) owner.st.x = value; return;
+    case 'y0': owner.y0 = value; if (sim.t === 0 && owner.st) owner.st.y = value; return;
+    case 'vx0': owner.vx0 = value; if (sim.t === 0 && owner.st) owner.st.vx = value; return;
+    case 'vy0': owner.vy0 = value; if (sim.t === 0 && owner.st) owner.st.vy = value; return;
+    case 'ang0': owner.ang0 = value; if (sim.t === 0 && owner.st) owner.st.ang = value * DEG; return;
+    case 'm': owner.m = isBody(owner) ? Math.max(1e-40, value) : Math.max(0, value); return;
+    case 'q':
+      owner.q = value;
+      if (owner.kind === 'pointCharge') owner.color = value >= 0 ? '#e5484d' : '#2f6fed';
+      return;
+    case 'r': owner.r = Math.max(1e-4, value); return;
+    case 'w': owner.w = Math.max(0, value); return;
+    case 'h': owner.h = Math.max(0, value); return;
+    case 'mu': owner.mu = Math.max(0, value); return;
+    case 'e': owner.e = Math.min(1, Math.max(0, value)); return;
+    case 'F': owner.F = value; return;
+    case 'Fang': owner.Fang = value; return;
+    case 'k': owner.k = Math.max(0, value); return;
+    case 'L0': owner.L0 = Math.max(0, value); return;
+    case 'L': owner.L = Math.max(0.01, value); return;
+    case 'ang':
+      owner.ang = owner.kind === 'incline' ? Math.min(85, Math.max(0, value)) : value;
+      return;
+    case 'E': owner.E = Math.max(0, value); return;
+    case 'B': owner.B = Math.max(0, value); return;
+    case 'softRadius': owner.softRadius = Math.max(1e-4, value); return;
+    default: owner[key] = value;
+  }
+}
+function collectExprSlots() {
+  const slots = [];
+  const push = (owner, key, src) => {
+    const s = String(src || '').trim();
+    if (!s) return;
+    slots.push({ owner, key, src: s, id: slotIdOf(owner, key) });
+  };
+  for (const o of scene.objects) {
+    const bag = o.expr || {};
+    const keys = new Set(Object.keys(bag));
+    if (isBody(o) && (o.Fmode === 'expr' || o.Fmode === 'aim')) keys.add('F');
+    if (isBody(o) && o.Fmode === 'expr') keys.add('Fang');
+    for (const key of keys) {
+      if (isBody(o) && key === 'F' && (o.Fmode === 'expr' || o.Fmode === 'aim') && String(o.Fexpr || '').trim()) {
+        push(o, 'F', o.Fexpr);
+        continue;
+      }
+      if (isBody(o) && key === 'Fang' && o.Fmode === 'expr') {
+        push(o, 'Fang', o.FangExpr || '0');
+        continue;
+      }
+      if (bag[key]) push(o, key, bag[key]);
+    }
+  }
+  const sb = scene.settings.expr || {};
+  for (const key of Object.keys(sb)) push(scene.settings, key, sb[key]);
+  return slots;
+}
+function resolveExprs() {
+  if (resolveExprs.busy) return;
+  resolveExprs.busy = true;
+  try {
+    for (const b of bodies()) b._hold = null;
+    const slots = collectExprSlots();
+    const bySlot = new Map(slots.map(s => [s.id, s]));
+    const names = exprNames();
+    const nodes = slots.map(s => {
+      const refs = rewriteExpr(s.src, names).refs || [];
+      const deps = [];
+      for (const r of refs) {
+        const fields = EXPR_DERIVED[r.field] || [r.field];
+        for (const f of fields) {
+          const id = `${r.id}:${f}`;
+          if (bySlot.has(id)) deps.push(id);
+        }
+      }
+      return { id: s.id, deps };
+    });
+    const { order, cyclic } = orderExprNodes(nodes);
+    const cyc = new Set(cyclic);
+    for (const s of slots) {
+      if (!s.owner._exprErr) s.owner._exprErr = {};
+      if (cyc.has(s.id)) s.owner._exprErr[s.key] = '循环引用';
+    }
+    const ref = (id, field) => readQuantity(id, field);
+    for (const id of order) {
+      const s = bySlot.get(id);
+      const ctx = isBody(s.owner) ? forceEvalCtx(s.owner) : {
+        t: sim.t,
+        x: s.owner.x || s.owner.x0 || 0,
+        y: s.owner.y || s.owner.y0 || 0,
+        vx: 0, vy: 0, v: 0,
+        m: s.owner.m || 0,
+        q: s.owner.q || 0,
+        g: scene.settings.gOn ? scene.settings.g : 0,
+      };
+      const r = evalForceExpr(s.src, ctx, { names, ref });
+      if (!s.owner._exprErr) s.owner._exprErr = {};
+      if (!r.ok) { s.owner._exprErr[s.key] = r.error; continue; }
+      s.owner._exprErr[s.key] = '';
+      applySlot(s.owner, s.key, r.value);
+    }
+  } finally {
+    resolveExprs.busy = false;
+  }
+}
+function reapplyHolds() {
+  for (const b of bodies()) {
+    const h = b._hold;
+    if (!h || !b.st) continue;
+    if ('x' in h) b.st.x = h.x;
+    if ('y' in h) b.st.y = h.y;
+    if ('vx' in h) b.st.vx = h.vx;
+    if ('vy' in h) b.st.vy = h.vy;
+  }
+}
+
 function resolveAimPoint(b) {
   ensureForceFields(b);
   if (b.FaimId != null) {
@@ -263,32 +498,15 @@ function resolveAimPoint(b) {
 /** 用户外力（恒定 / 表达式 / 指向目标）→ { fx, fy, F, ang, ok, err } */
 function appliedForceOn(b) {
   ensureForceFields(b);
-  const ctx = forceEvalCtx(b);
+  resolveExprs();
   const st = b.st || { x: b.x0, y: b.y0 };
   let F = b.F || 0;
   let ang = b.Fang || 0;
-  let err = '';
+  const bag = b._exprErr || {};
+  let err = bag.F || bag.Fang || '';
+  if (b.Fmode === 'expr' && !String(b.Fexpr || '').trim()) err = err || '表达式为空';
 
-  const magFrom = (constVal, expr, useExpr) => {
-    if (!useExpr) return { ok: true, value: constVal };
-    const r = evalForceExpr(expr, ctx);
-    if (!r.ok) return { ok: false, error: r.error, value: constVal };
-    return { ok: true, value: r.value };
-  };
-
-  if (b.Fmode === 'expr') {
-    const m = magFrom(F, b.Fexpr, true);
-    const a = magFrom(ang, b.FangExpr, true);
-    if (!m.ok) err = 'F: ' + m.error;
-    else if (!a.ok) err = 'θ: ' + a.error;
-    else { F = m.value; ang = a.value; }
-  } else if (b.Fmode === 'aim') {
-    const e = String(b.Fexpr || '').trim();
-    if (e) {
-      const r = evalForceExpr(e, ctx);
-      if (!r.ok) err = 'F: ' + r.error;
-      else F = r.value;
-    }
+  if (b.Fmode === 'aim') {
     const aim = resolveAimPoint(b);
     const dx = aim.x - st.x, dy = aim.y - st.y;
     const L = Math.hypot(dx, dy);
@@ -301,19 +519,9 @@ function appliedForceOn(b) {
     b.Fang = ang;
     b._Ferr = err;
     return { fx, fy, F, ang, ok: !err, err };
-  } else {
-    F = b.F || 0;
-    ang = b.Fang || 0;
   }
 
-  if (b.Fmode === 'expr' && !err) {
-    b.F = F;
-    b.Fang = ang;
-  }
   b._Ferr = err;
-  if (err && b.Fmode === 'expr') {
-    F = b.F || 0; ang = b.Fang || 0;
-  }
   const fx = F * Math.cos(ang * DEG), fy = F * Math.sin(ang * DEG);
   return { fx, fy, F, ang, ok: !err, err };
 }
@@ -407,6 +615,7 @@ function applyRodConstraints(h, recordMap) {
 
 /* ---------------- 单个子步 ---------------- */
 function substep(h, segs) {
+  resolveExprs();
   const S = scene.settings;
   const movers = bodies().filter(b => !b.fixed);
   const F = computeForces(movers, false);
@@ -436,6 +645,7 @@ function substep(h, segs) {
   for (let i = 0; i < bl.length; i++) for (let j = i + 1; j < bl.length; j++) collidePair(bl[i], bl[j]);
   // 接触后再投影一次，稳住杆长
   applyRodConstraints(h, null);
+  reapplyHolds();
   // 轨迹
   for (const b of movers) {
     const tr = b.st.trail, last = tr[tr.length - 1];
@@ -1007,6 +1217,7 @@ function drawAnalyticPath(b) {
 let pending = null; // 正在创建的矩形/线段/弹簧
 function draw() {
   if (!W) return;
+  resolveExprs();
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
   ctx.fillStyle = C['--canvas']; ctx.fillRect(0, 0, W, H);
   if (scene.settings.showGrid) drawGrid();
@@ -1261,6 +1472,8 @@ cv.addEventListener('pointermove', e => {
     else { vx = Math.round(vx * 10) / 10; vy = Math.round(vy * 10) / 10; }
     vx = clean(vx); vy = clean(vy);
     drag.moved = true;
+    if (drag.type === 'v0') clearExpr(b, ['vx0', 'vy0', 'v0', 'v0ang']);
+    else clearExpr(b, ['vx', 'vy', 'v', 'vang']);
     if (drag.type === 'v0' || sim.t === 0) { b.vx0 = vx; b.vy0 = vy; }
     if (drag.type === 'v' && b.st) { b.st.vx = vx; b.st.vy = vy; }
     if (drag.type === 'v0') syncInitialLive(b);
@@ -1281,6 +1494,7 @@ cv.addEventListener('pointermove', e => {
       fx = Math.round(fx * 100) / 100; fy = Math.round(fy * 100) / 100;
     }
     drag.moved = true;
+    clearExpr(b, ['F', 'Fang']);
     b.Fmode = 'const';
     b.F = clean(Math.hypot(fx, fy));
     b.Fang = clean(Math.atan2(fy, fx) / DEG);
@@ -1464,17 +1678,20 @@ function undo() { const s = undoStack.pop(); if (!s) { toast('没有可撤销的
 function clearVectorValue(b, key) {
   if (key === 'v0') {
     b.vx0 = 0; b.vy0 = 0;
+    clearExpr(b, ['vx0', 'vy0', 'v0', 'v0ang']);
     if (b.st && sim.t === 0) { b.st.vx = 0; b.st.vy = 0; }
     initChanged();
     return '已清除初速度';
   }
   if (key === 'v') {
-    if (sim.t === 0) { b.vx0 = 0; b.vy0 = 0; initChanged(); }
+    clearExpr(b, ['vx', 'vy', 'v', 'vang']);
+    if (sim.t === 0) { b.vx0 = 0; b.vy0 = 0; clearExpr(b, ['vx0', 'vy0', 'v0', 'v0ang']); initChanged(); }
     else if (b.st) { b.st.vx = 0; b.st.vy = 0; draw(); }
     return '已清除速度';
   }
   if (key === 'F') {
     b.F = 0; b.Fang = 0; b.Fmode = 'const'; b.Fexpr = ''; b.FangExpr = '0'; b._Ferr = '';
+    clearExpr(b, ['F', 'Fang']);
     liveEdit();
     return '已清除外力';
   }
@@ -1556,18 +1773,75 @@ function fmtIn(v) { if (typeof v !== 'number') return v; if (!isFinite(v)) retur
 function refreshInputs() { binds.forEach(b => { if (document.activeElement !== b.el) { if (b.el.type === 'checkbox') b.el.checked = !!b.get(); else b.el.value = fmtIn(b.get()); } }); }
 function section(parent, title, cls = '', extra) { const s = el('div', { class: 'sec ' + cls }); const h = el('h4', {}, title); if (extra) h.appendChild(extra); s.appendChild(h); parent.appendChild(s); return s; }
 function numRow(parent, lab, get, set, unit = '', o = {}) {
-  const r = el('div', { class: 'row' }); r.appendChild(el('span', { class: 'lab' }, lab));
-  const i = el('input', { type: 'number', step: o.step || 'any' }); if (o.min != null) i.min = o.min; if (o.title) r.title = o.title;
-  i.value = fmtIn(get()); let pushed = false;
-  i.addEventListener('focus', () => pushed = false);
-  i.addEventListener('input', () => {
-    let v = parseFloat(i.value); if (!isFinite(v)) return; if (o.min != null && v < o.min) return;
-    if (!pushed) { pushUndo(); pushed = true; }
-    set(v); o.init ? initChanged() : liveEdit(); if (o.after) o.after();
-  });
-  i.addEventListener('change', () => { i.value = fmtIn(get()); });
-  r.appendChild(i); r.appendChild(el('span', { class: 'unit' }, unit)); parent.appendChild(r);
-  binds.push({ el: i, get }); return i;
+  const owner = o.slot && o.slot[0];
+  const key = o.slot && o.slot[1];
+  const formula = owner && owner.expr && owner.expr[key] != null && String(owner.expr[key]).trim() !== ''
+    ? String(owner.expr[key]) : '';
+  const r = el('div', { class: 'row' + (formula ? ' is-expr' : '') });
+  r.appendChild(el('span', { class: 'lab' }, lab));
+  if (o.title) r.title = o.title;
+  let pushed = false;
+  let input;
+  if (owner && formula) {
+    input = el('input', { type: 'text', class: 'expr-input', spellcheck: 'false', autocomplete: 'off', title: FORCE_EXPR_HELP });
+    input.placeholder = '如 小球2.vx';
+    input.value = formula;
+    input.addEventListener('focus', () => { pushed = false; });
+    input.addEventListener('input', () => {
+      if (!owner.expr) owner.expr = {};
+      if (!pushed) { pushUndo(); pushed = true; }
+      const text = input.value;
+      if (!String(text).trim()) delete owner.expr[key];
+      else owner.expr[key] = text;
+      resolveExprs();
+      const err = owner._exprErr && owner._exprErr[key];
+      if (errEl) errEl.textContent = err || '';
+      if (valEl) valEl.textContent = err ? '' : `= ${fmt(Number(get()), 3)} ${unit}`.trim();
+      o.init ? initChanged() : liveEdit();
+      if (o.after) o.after();
+    });
+  } else {
+    input = el('input', { type: 'number', step: o.step || 'any' });
+    if (o.min != null) input.min = o.min;
+    input.value = fmtIn(get());
+    input.addEventListener('focus', () => pushed = false);
+    input.addEventListener('input', () => {
+      let v = parseFloat(input.value); if (!isFinite(v)) return; if (o.min != null && v < o.min) return;
+      if (!pushed) { pushUndo(); pushed = true; }
+      if (owner && owner.expr) delete owner.expr[key];
+      set(v); o.init ? initChanged() : liveEdit(); if (o.after) o.after();
+    });
+    input.addEventListener('change', () => { input.value = fmtIn(get()); });
+  }
+  r.appendChild(input);
+  if (owner) {
+    const fx = el('button', {
+      type: 'button',
+      class: 'expr-toggle' + (formula ? ' on' : ''),
+      title: formula ? '改回数字' : '改成公式，可引用其他物体',
+    }, 'ƒ');
+    fx.addEventListener('click', () => {
+      pushUndo();
+      if (!owner.expr) owner.expr = {};
+      if (formula) delete owner.expr[key];
+      else owner.expr[key] = fmtIn(get()) || '0';
+      resolveExprs();
+      buildPanel();
+    });
+    r.appendChild(fx);
+  }
+  r.appendChild(el('span', { class: 'unit' }, unit));
+  parent.appendChild(r);
+  let errEl = null;
+  let valEl = null;
+  if (formula) {
+    valEl = el('div', { class: 'hint expr-val' }, `= ${fmt(Number(get()), 3)} ${unit}`.trim());
+    errEl = el('div', { class: 'hint expr-err' }, (owner._exprErr && owner._exprErr[key]) || '');
+    parent.appendChild(valEl);
+    parent.appendChild(errEl);
+  }
+  binds.push({ el: input, get: () => (formula ? (owner.expr && owner.expr[key]) ?? '' : get()) });
+  return input;
 }
 function chkRow(parent, lab, get, set, o = {}) {
   const r = el('label', { class: 'chk', style: 'margin:4px 10px 4px 0' }); const i = el('input', { type: 'checkbox' }); i.checked = !!get();
@@ -1670,32 +1944,32 @@ function buildVectorInspector(P, b, key) {
     const live = key === 'v';
     const g = vectorScreen(b, key);
     const s = section(P, live ? '瞬时速度' : '初速度', 'hl');
-    if (live && sim.running) {
-      readRow(s, [['速率', 'r_vec_mag'], ['方向', 'r_vec_ang'], ['vx', 'r_vec_x'], ['vy', 'r_vec_y']]);
-      s.appendChild(el('div', { class: 'hint' }, '播放中为只读。暂停后可改，或在画布上拖箭头。'));
-    } else {
-      const getVx = () => live && b.st && sim.t > 0 ? b.st.vx : b.vx0;
-      const getVy = () => live && b.st && sim.t > 0 ? b.st.vy : b.vy0;
-      const setComp = (axis, v) => {
-        if (live && b.st && sim.t > 0) b.st[axis] = v;
-        else { if (axis === 'vx') b.vx0 = v; else b.vy0 = v; }
-      };
-      const mag = () => Math.hypot(getVx(), getVy());
-      const ang = () => (getVx() || getVy()) ? Math.atan2(getVy(), getVx()) / DEG : 0;
-      numRow(s, '速率', mag, v => {
-        const a = ang() * DEG;
-        setComp('vx', clean(v * Math.cos(a)));
-        setComp('vy', clean(v * Math.sin(a)));
-      }, 'm/s', { min: 0, init: !(live && sim.t > 0) });
-      numRow(s, '方向', ang, a => {
-        const m = mag();
-        setComp('vx', clean(m * Math.cos(a * DEG)));
-        setComp('vy', clean(m * Math.sin(a * DEG)));
-      }, '°', { init: !(live && sim.t > 0) });
-      numRow(s, 'vx', getVx, v => setComp('vx', v), 'm/s', { init: !(live && sim.t > 0) });
-      numRow(s, 'vy', getVy, v => setComp('vy', v), 'm/s', { init: !(live && sim.t > 0) });
-      s.appendChild(el('div', { class: 'hint' }, '拖画布上的箭头末端可改大小和方向。删除会把这个矢量清零，物体还在。'));
-    }
+    const getVx = () => live && b.st && sim.t > 0 ? b.st.vx : b.vx0;
+    const getVy = () => live && b.st && sim.t > 0 ? b.st.vy : b.vy0;
+    const setComp = (axis, v) => {
+      if (live && b.st && sim.t > 0) b.st[axis] = v;
+      else { if (axis === 'vx') b.vx0 = v; else b.vy0 = v; }
+    };
+    const mag = () => Math.hypot(getVx(), getVy());
+    const ang = () => (getVx() || getVy()) ? Math.atan2(getVy(), getVx()) / DEG : 0;
+    const initFlag = !(live && sim.t > 0);
+    const kMag = live && sim.t > 0 ? 'v' : 'v0';
+    const kAng = live && sim.t > 0 ? 'vang' : 'v0ang';
+    const kVx = live && sim.t > 0 ? 'vx' : 'vx0';
+    const kVy = live && sim.t > 0 ? 'vy' : 'vy0';
+    numRow(s, '速率', mag, v => {
+      const a = ang() * DEG;
+      setComp('vx', clean(v * Math.cos(a)));
+      setComp('vy', clean(v * Math.sin(a)));
+    }, 'm/s', { min: 0, init: initFlag, slot: [b, kMag] });
+    numRow(s, '方向', ang, a => {
+      const m = mag();
+      setComp('vx', clean(m * Math.cos(a * DEG)));
+      setComp('vy', clean(m * Math.sin(a * DEG)));
+    }, '°', { init: initFlag, slot: [b, kAng] });
+    numRow(s, 'vx', getVx, v => setComp('vx', v), 'm/s', { init: initFlag, slot: [b, kVx] });
+    numRow(s, 'vy', getVy, v => setComp('vy', v), 'm/s', { init: initFlag, slot: [b, kVy] });
+    s.appendChild(el('div', { class: 'hint' }, '点 ƒ 写成公式，可引用其他物体，例如 小球2.vx。播放中公式会每一步重算，并压过积分结果。'));
     if (g) s.appendChild(el('div', { class: 'hint' }, `当前 ${fmt(g.mag, 3)} ${meta.unit}`));
   } else if (key === 'F') {
     const wrap = el('div', { class: 'force-tab' });
@@ -1738,21 +2012,21 @@ function buildNonBodyPanel(P, o) {
   else if (o.kind === 'efield') buildEPanel(pProps, o);
   else if (o.kind === 'bfield') buildBPanel(pProps, o);
   else if (o.kind === 'ground') {
-    const s = section(pProps, '几何'); numRow(s, '高度 y', () => o.y, v => o.y = v, 'm'); surfOpts(s, o);
+    const s = section(pProps, '几何'); numRow(s, '高度 y', () => o.y, v => o.y = v, 'm', { slot: [o, 'y'] }); surfOpts(s, o);
   } else if (o.kind === 'wall') {
     const s = section(pProps, '端点');
-    numRow(s, '起点 x₁', () => o.x1, v => o.x1 = v, 'm');
-    numRow(s, '起点 y₁', () => o.y1, v => o.y1 = v, 'm');
-    numRow(s, '终点 x₂', () => o.x2, v => o.x2 = v, 'm');
-    numRow(s, '终点 y₂', () => o.y2, v => o.y2 = v, 'm');
+    numRow(s, '起点 x₁', () => o.x1, v => o.x1 = v, 'm', { slot: [o, 'x1'] });
+    numRow(s, '起点 y₁', () => o.y1, v => o.y1 = v, 'm', { slot: [o, 'y1'] });
+    numRow(s, '终点 x₂', () => o.x2, v => o.x2 = v, 'm', { slot: [o, 'x2'] });
+    numRow(s, '终点 y₂', () => o.y2, v => o.y2 = v, 'm', { slot: [o, 'y2'] });
     s.appendChild(el('div', { class: 'hint' }, '可拖动两端控制点。'));
     surfOpts(s, o);
   } else if (o.kind === 'incline') {
     const s = section(pProps, '几何');
-    numRow(s, '底角 x', () => o.x, v => o.x = v, 'm');
-    numRow(s, '底角 y', () => o.y, v => o.y = v, 'm');
-    numRow(s, '底边 L', () => o.L, v => o.L = v, 'm', { min: 0.01 });
-    numRow(s, '倾角 θ', () => o.ang, v => o.ang = Math.min(85, v), '°', { min: 0 });
+    numRow(s, '底角 x', () => o.x, v => o.x = v, 'm', { slot: [o, 'x'] });
+    numRow(s, '底角 y', () => o.y, v => o.y = v, 'm', { slot: [o, 'y'] });
+    numRow(s, '底边 L', () => o.L, v => o.L = v, 'm', { min: 0.01, slot: [o, 'L'] });
+    numRow(s, '倾角 θ', () => o.ang, v => o.ang = Math.min(85, v), '°', { min: 0, slot: [o, 'ang'] });
     const br = el('div', { class: 'btnrow' });
     [30, 37, 45, 53, 60].forEach(a => btn(br, a + '°', () => { pushUndo(); o.ang = a; liveEdit(); }));
     btn(br, o.dir > 0 ? '朝右' : '朝左', () => { pushUndo(); o.dir *= -1; liveEdit(); buildPanel(); });
@@ -1820,15 +2094,16 @@ function buildAppliedForcePanel(P, b) {
   f.appendChild(modeBar);
 
   if (mode === 'const') {
-    numRow(f, '大小 F', () => b.F, v => b.F = v, 'N', { min: 0 });
-    numRow(f, '方向角', () => b.Fang, v => b.Fang = v, '°');
+    numRow(f, '大小 F', () => b.F, v => b.F = v, 'N', { min: 0, slot: [b, 'F'] });
+    numRow(f, '方向角', () => b.Fang, v => b.Fang = v, '°', { slot: [b, 'Fang'] });
+    f.appendChild(el('div', { class: 'hint' }, '点 ƒ 后可写 小球2.vx、小球2.F 这类引用。'));
     const br = el('div', { class: 'btnrow force-quick-angs' });
     [[0, '→ 0°'], [90, '↑ 90°'], [180, '← 180°'], [-90, '↓ −90°']].forEach(([a, t]) =>
       btn(br, t, () => { pushUndo(); b.Fang = a; liveEdit(); buildPanel(); }));
     f.appendChild(br);
   } else if (mode === 'expr') {
     textRow(f, '大小 F(t,…)', () => b.Fexpr, v => { b.Fexpr = v; }, {
-      placeholder: '如 10*sin(2*pi*t)', title: FORCE_EXPR_HELP,
+      placeholder: '如 小球2.v*2 或 10*sin(2*pi*t)', title: FORCE_EXPR_HELP,
     });
     textRow(f, '方向 θ(°)', () => b.FangExpr, v => { b.FangExpr = v; }, {
       placeholder: '如 90 或 atan2(1,0)*180/pi', title: FORCE_EXPR_HELP,
@@ -1852,7 +2127,7 @@ function buildAppliedForcePanel(P, b) {
     textRow(f, '大小表达式', () => b.Fexpr, v => { b.Fexpr = v; }, {
       placeholder: '留空则用下方恒定值', title: FORCE_EXPR_HELP,
     });
-    numRow(f, '大小 F（备用）', () => b.F, v => b.F = v, 'N', { min: 0 });
+    numRow(f, '大小 F（备用）', () => b.F, v => b.F = v, 'N', { min: 0, slot: [b, 'F'] });
     const targets = [['', '世界坐标']].concat(
       scene.objects
         .filter(o => o.id !== b.id && (isBody(o) || o.kind === 'pointCharge'))
@@ -1862,8 +2137,8 @@ function buildAppliedForcePanel(P, b) {
       b.FaimId = v === '' ? null : +v;
     }, targets, { className: 'force-aim-select' });
     if (b.FaimId == null) {
-      numRow(f, '目标 x', () => b.FaimX, v => b.FaimX = v, 'm');
-      numRow(f, '目标 y', () => b.FaimY, v => b.FaimY = v, 'm');
+      numRow(f, '目标 x', () => b.FaimX, v => b.FaimX = v, 'm', { slot: [b, 'FaimX'] });
+      numRow(f, '目标 y', () => b.FaimY, v => b.FaimY = v, 'm', { slot: [b, 'FaimY'] });
     } else {
       const aim = resolveAimPoint(b);
       f.appendChild(el('div', { class: 'hint' }, `当前目标：${aim.label}`));
@@ -1876,9 +2151,10 @@ function buildAppliedForcePanel(P, b) {
   btn(br, '清零外力', () => {
     pushUndo();
     b.F = 0; b.Fang = 0; b.Fmode = 'const'; b.Fexpr = ''; b.FangExpr = '0'; b._Ferr = '';
+    clearExpr(b, ['F', 'Fang']);
     liveEdit(); buildPanel();
   }, 'danger');
-  numRow(act, '箭头比例', () => scene.settings.FPx || 12, v => { scene.settings.FPx = v; liveEdit(); }, 'px/N', { min: 0.0001 });
+  numRow(act, '箭头比例', () => scene.settings.FPx || 12, v => { scene.settings.FPx = v; liveEdit(); }, 'px/N', { min: 0.0001, slot: [scene.settings, 'FPx'] });
   act.appendChild(br);
 }
 
@@ -1900,34 +2176,34 @@ function buildBodyPanel(P, b) {
   const pInit = panelBox('init', propsTab);
   {
     const s = section(pInit, '初始条件 t = 0', 'hl');
-    numRow(s, '位置 x₀', () => b.x0, v => b.x0 = v, 'm', { init: true });
-    numRow(s, '位置 y₀', () => b.y0, v => b.y0 = v, 'm', { init: true });
+    numRow(s, '位置 x₀', () => b.x0, v => b.x0 = v, 'm', { init: true, slot: [b, 'x0'] });
+    numRow(s, '位置 y₀', () => b.y0, v => b.y0 = v, 'm', { init: true, slot: [b, 'y0'] });
     const vmag = () => Math.hypot(b.vx0, b.vy0);
     const vang = () => (b.vx0 || b.vy0) ? Math.atan2(b.vy0, b.vx0) / DEG : (b._lastAng || 0);
-    numRow(s, '速率 v₀', vmag, v => { const a = vang() * DEG; b.vx0 = clean(v * Math.cos(a)); b.vy0 = clean(v * Math.sin(a)); }, 'm/s', { init: true, min: 0 });
-    numRow(s, '方向 θ', vang, a => { b._lastAng = a; const v = vmag(); b.vx0 = clean(v * Math.cos(a * DEG)); b.vy0 = clean(v * Math.sin(a * DEG)); }, '°', { init: true, title: '相对 +x，逆时针为正' });
+    numRow(s, '速率 v₀', vmag, v => { const a = vang() * DEG; b.vx0 = clean(v * Math.cos(a)); b.vy0 = clean(v * Math.sin(a)); }, 'm/s', { init: true, min: 0, slot: [b, 'v0'] });
+    numRow(s, '方向 θ', vang, a => { b._lastAng = a; const v = vmag(); b.vx0 = clean(v * Math.cos(a * DEG)); b.vy0 = clean(v * Math.sin(a * DEG)); }, '°', { init: true, title: '相对 +x，逆时针为正', slot: [b, 'v0ang'] });
     const br = el('div', { class: 'btnrow' });
     [[0, '0°'], [45, '45°'], [90, '90°'], [135, '135°'], [180, '180°'], [-90, '-90°']].forEach(([a, t]) =>
       btn(br, t, () => { pushUndo(); b._lastAng = a; const v = vmag() || 1; b.vx0 = clean(v * Math.cos(a * DEG)); b.vy0 = clean(v * Math.sin(a * DEG)); initChanged(); }));
     btn(br, '清零', () => { pushUndo(); b.vx0 = 0; b.vy0 = 0; initChanged(); }, 'danger');
     s.appendChild(br);
-    numRow(s, '分量 vx₀', () => b.vx0, v => b.vx0 = v, 'm/s', { init: true });
-    numRow(s, '分量 vy₀', () => b.vy0, v => b.vy0 = v, 'm/s', { init: true });
-    s.appendChild(el('div', { class: 'hint' }, '也可拖动画布上的速度手柄；运行中修改初态会回到 t = 0。'));
+    numRow(s, '分量 vx₀', () => b.vx0, v => b.vx0 = v, 'm/s', { init: true, slot: [b, 'vx0'] });
+    numRow(s, '分量 vy₀', () => b.vy0, v => b.vy0 = v, 'm/s', { init: true, slot: [b, 'vy0'] });
+    s.appendChild(el('div', { class: 'hint' }, '每个数旁边的 ƒ 可改成公式，例如 vx₀ = 小球2.vx。拖箭头会取消该公式。'));
   }
 
   const pProps = panelBox('props', propsTab);
   {
     const p = section(pProps, '物理量');
-    numRow(p, '质量 m', () => b.m, v => b.m = v, 'kg', { min: 1e-40, title: '如 9.1e-31' });
-    numRow(p, '电荷 q', () => b.q, v => b.q = v, 'C', { title: '如 -1.6e-19' });
+    numRow(p, '质量 m', () => b.m, v => b.m = v, 'kg', { min: 1e-40, title: '如 9.1e-31', slot: [b, 'm'] });
+    numRow(p, '电荷 q', () => b.q, v => b.q = v, 'C', { title: '如 -1.6e-19', slot: [b, 'q'] });
     if (b.kind === 'box') {
-      numRow(p, '宽 w', () => b.w, v => b.w = v, 'm', { min: 0.001 });
-      numRow(p, '高 h', () => b.h, v => b.h = v, 'm', { min: 0.001 });
-      numRow(p, '倾角', () => b.ang0, v => b.ang0 = v, '°', { init: true });
-    } else numRow(p, '半径 r', () => b.r, v => b.r = v, 'm', { min: 0.0001 });
-    numRow(p, '摩擦 μ', () => b.mu, v => b.mu = v, '', { step: 0.05, min: 0 });
-    numRow(p, '恢复系数 e', () => b.e, v => b.e = Math.min(1, v), '', { step: 0.1, min: 0 });
+      numRow(p, '宽 w', () => b.w, v => b.w = v, 'm', { min: 0.001, slot: [b, 'w'] });
+      numRow(p, '高 h', () => b.h, v => b.h = v, 'm', { min: 0.001, slot: [b, 'h'] });
+      numRow(p, '倾角', () => b.ang0, v => b.ang0 = v, '°', { init: true, slot: [b, 'ang0'] });
+    } else numRow(p, '半径 r', () => b.r, v => b.r = v, 'm', { min: 0.0001, slot: [b, 'r'] });
+    numRow(p, '摩擦 μ', () => b.mu, v => b.mu = v, '', { step: 0.05, min: 0, slot: [b, 'mu'] });
+    numRow(p, '恢复系数 e', () => b.e, v => b.e = Math.min(1, v), '', { step: 0.1, min: 0, slot: [b, 'e'] });
     const o = section(pProps, '行为');
     chkRow(o, '固定', () => b.fixed, v => b.fixed = v, { init: true });
     chkRow(o, '显示轨迹', () => b.trail, v => b.trail = v);
@@ -1980,10 +2256,10 @@ function buildBodyPanel(P, b) {
 
 function buildPointChargePanel(P, o) {
   const s = section(P, '点电荷');
-  numRow(s, '位置 x', () => o.x, v => o.x = v, 'm');
-  numRow(s, '位置 y', () => o.y, v => o.y = v, 'm');
-  numRow(s, '电荷 q', () => o.q, v => { o.q = v; o.color = v >= 0 ? '#e5484d' : '#2f6fed'; }, 'C', { title: '如 1e-6；负号表示负电' });
-  numRow(s, '软化半径', () => o.softRadius, v => o.softRadius = v, 'm', { min: 1e-4 });
+  numRow(s, '位置 x', () => o.x, v => o.x = v, 'm', { slot: [o, 'x'] });
+  numRow(s, '位置 y', () => o.y, v => o.y = v, 'm', { slot: [o, 'y'] });
+  numRow(s, '电荷 q', () => o.q, v => { o.q = v; o.color = v >= 0 ? '#e5484d' : '#2f6fed'; }, 'C', { title: '如 1e-6；负号表示负电', slot: [o, 'q'] });
+  numRow(s, '软化半径', () => o.softRadius, v => o.softRadius = v, 'm', { min: 1e-4, slot: [o, 'softRadius'] });
   const br = el('div', { class: 'btnrow' });
   btn(br, '+1 μC', () => { pushUndo(); o.q = 1e-6; o.color = '#e5484d'; liveEdit(); buildPanel(); });
   btn(br, '−1 μC', () => { pushUndo(); o.q = -1e-6; o.color = '#2f6fed'; liveEdit(); buildPanel(); });
@@ -1995,8 +2271,8 @@ function buildPointChargePanel(P, o) {
 }
 function buildEPanel(P, o) {
   const s = section(P, '匀强电场');
-  numRow(s, '场强 E', () => o.E, v => o.E = v, 'V/m', { min: 0 });
-  numRow(s, '方向角', () => o.ang, v => o.ang = v, '°');
+  numRow(s, '场强 E', () => o.E, v => o.E = v, 'V/m', { min: 0, slot: [o, 'E'] });
+  numRow(s, '方向角', () => o.ang, v => o.ang = v, '°', { slot: [o, 'ang'] });
   const br = el('div', { class: 'btnrow' });
   [[90, '上'], [-90, '下'], [180, '左'], [0, '右']].forEach(([a, t]) => btn(br, t, () => { pushUndo(); o.ang = a; liveEdit(); }));
   s.appendChild(br);
@@ -2012,7 +2288,7 @@ function buildEPanel(P, o) {
 
 function buildBPanel(P, o) {
   const s = section(P, '匀强磁场');
-  numRow(s, '磁感应强度 B', () => o.B, v => o.B = v, 'T', { min: 0 });
+  numRow(s, '磁感应强度 B', () => o.B, v => o.B = v, 'T', { min: 0, slot: [o, 'B'] });
   const br = el('div', { class: 'btnrow' });
   btn(br, '向里 ⊗', () => { pushUndo(); o.dir = -1; liveEdit(); buildPanel(); }, o.dir < 0 ? 'active' : '');
   btn(br, '向外 ⊙', () => { pushUndo(); o.dir = 1; liveEdit(); buildPanel(); }, o.dir > 0 ? 'active' : '');
@@ -2025,10 +2301,10 @@ function regionSec(P, o) {
   const s = section(P, '作用区域');
   chkRow(s, '全空间', () => o.all, v => o.all = v, { rebuild: true });
   if (!o.all) {
-    numRow(s, '左下角 x', () => o.x, v => o.x = v, 'm');
-    numRow(s, '左下角 y', () => o.y, v => o.y = v, 'm');
-    numRow(s, '宽度', () => o.w, v => o.w = v, 'm', { min: 0 });
-    numRow(s, '高度', () => o.h, v => o.h = v, 'm', { min: 0 });
+    numRow(s, '左下角 x', () => o.x, v => o.x = v, 'm', { slot: [o, 'x'] });
+    numRow(s, '左下角 y', () => o.y, v => o.y = v, 'm', { slot: [o, 'y'] });
+    numRow(s, '宽度', () => o.w, v => o.w = v, 'm', { min: 0, slot: [o, 'w'] });
+    numRow(s, '高度', () => o.h, v => o.h = v, 'm', { min: 0, slot: [o, 'h'] });
     s.appendChild(el('div', { class: 'hint' }, '可拖四角调整，拖内部移动。'));
   }
 }
@@ -2036,22 +2312,22 @@ function buildLinkPanel(P, o) {
   const title = KIND_NAME[o.kind] || '约束';
   const s = section(P, title);
   if (o.kind === 'spring') {
-    numRow(s, '原长 L₀', () => o.L0, v => o.L0 = v, 'm', { min: 0 });
-    numRow(s, '劲度 k', () => o.k, v => o.k = v, 'N/m', { min: 0 });
+    numRow(s, '原长 L₀', () => o.L0, v => o.L0 = v, 'm', { min: 0, slot: [o, 'L0'] });
+    numRow(s, '劲度 k', () => o.k, v => o.k = v, 'N/m', { min: 0, slot: [o, 'k'] });
     s.appendChild(el('div', { class: 'hint' }, '理想弹簧：F = −k(L−L₀)，可拉可压。'));
   } else if (o.kind === 'rope') {
-    numRow(s, '绳长 L', () => o.L0, v => o.L0 = v, 'm', { min: 0 });
-    numRow(s, '张力刚度', () => o.k, v => o.k = v, 'N/m', { min: 0 });
-    numRow(s, '质量 m', () => o.m || 0, v => o.m = Math.max(0, v), 'kg', { min: 0, step: 0.01 });
+    numRow(s, '绳长 L', () => o.L0, v => o.L0 = v, 'm', { min: 0, slot: [o, 'L0'] });
+    numRow(s, '张力刚度', () => o.k, v => o.k = v, 'N/m', { min: 0, slot: [o, 'k'] });
+    numRow(s, '质量 m', () => o.m || 0, v => o.m = Math.max(0, v), 'kg', { min: 0, step: 0.01, slot: [o, 'm'] });
     s.appendChild(el('div', { class: 'hint' }, '轻绳只拉不压：L&lt;L₀ 时张力为 0；刚度宜较大（≥1000）。质量默认 0。'));
   } else if (o.kind === 'rod') {
-    numRow(s, '杆长 L₀', () => o.L0, v => o.L0 = v, 'm', { min: 0 });
-    numRow(s, '质量 m', () => o.m || 0, v => o.m = Math.max(0, v), 'kg', { min: 0, step: 0.01 });
+    numRow(s, '杆长 L₀', () => o.L0, v => o.L0 = v, 'm', { min: 0, slot: [o, 'L0'] });
+    numRow(s, '质量 m', () => o.m || 0, v => o.m = Math.max(0, v), 'kg', { min: 0, step: 0.01, slot: [o, 'm'] });
     s.appendChild(el('div', { class: 'hint' }, '青杆长度恒定（刚性约束，可压可拉，自身不变形）。质量默认 0，自重均分到两端。'));
   }
   if (o.b == null) {
-    numRow(s, '固定点 x', () => o.ax, v => o.ax = v, 'm');
-    numRow(s, '固定点 y', () => o.ay, v => o.ay = v, 'm');
+    numRow(s, '固定点 x', () => o.ax, v => o.ax = v, 'm', { slot: [o, 'ax'] });
+    numRow(s, '固定点 y', () => o.ay, v => o.ay = v, 'm', { slot: [o, 'ay'] });
   }
   const A = byId(o.a), B = o.b != null ? byId(o.b) : null;
   s.appendChild(el('div', { class: 'hint' }, `连接：${A ? A.name : '?'} — ${B ? B.name : '固定点'}`));
@@ -2076,14 +2352,14 @@ function buildScenePanel(P) {
   {
     const s = section(pScene, '全局物理');
     chkRow(s, '开启重力', () => S.gOn, v => { S.gOn = v; syncToolbar(); });
-    numRow(s, '重力加速度 g', () => S.g, v => { S.g = v; syncToolbar(); }, 'm/s²');
+    numRow(s, '重力加速度 g', () => S.g, v => { S.g = v; syncToolbar(); }, 'm/s²', { slot: [S, 'g'] });
     const br = el('div', { class: 'btnrow' });
     btn(br, 'g = 9.8', () => { S.g = 9.8; syncToolbar(); liveEdit(); });
     btn(br, 'g = 10', () => { S.g = 10; syncToolbar(); liveEdit(); });
     s.appendChild(br);
-    numRow(s, '空气阻力', () => S.drag, v => S.drag = v, 'N·s/m', { min: 0 });
+    numRow(s, '空气阻力', () => S.drag, v => S.drag = v, 'N·s/m', { min: 0, slot: [S, 'drag'] });
     chkRow(s, '带电体发射库仑场', () => S.coulomb, v => { S.coulomb = v; markFieldsDirty(); });
-    numRow(s, '静电力常量 k', () => S.kc, v => { S.kc = v; markFieldsDirty(); }, 'N·m²/C²');
+    numRow(s, '静电力常量 k', () => S.kc, v => { S.kc = v; markFieldsDirty(); }, 'N·m²/C²', { slot: [S, 'kc'] });
     const lawRow = el('div', { class: 'btnrow' });
     btn(lawRow, '力律 1/r²', () => { S.coulombLaw = 'coulomb3d'; markFieldsDirty(); liveEdit(); buildPanel(); }, S.coulombLaw !== 'coulomb2d' ? 'active' : '');
     btn(lawRow, '力律 1/r', () => { S.coulombLaw = 'coulomb2d'; markFieldsDirty(); liveEdit(); buildPanel(); }, S.coulombLaw === 'coulomb2d' ? 'active' : '');
@@ -2094,11 +2370,11 @@ function buildScenePanel(P) {
   const pDisp = panelBox('display', propsTab);
   {
     const d = section(pDisp, '显示与精度');
-    numRow(d, '速度箭头比例', () => S.vPx, v => S.vPx = v, 'px/(m/s)', { min: 0.0001 });
-    numRow(d, '外力箭头比例', () => S.FPx || 12, v => S.FPx = v, 'px/N', { min: 0.0001 });
-    numRow(d, '积分步长', () => S.maxDt, v => S.maxDt = v, 's', { min: 1e-9 });
+    numRow(d, '速度箭头比例', () => S.vPx, v => S.vPx = v, 'px/(m/s)', { min: 0.0001, slot: [S, 'vPx'] });
+    numRow(d, '外力箭头比例', () => S.FPx || 12, v => S.FPx = v, 'px/N', { min: 0.0001, slot: [S, 'FPx'] });
+    numRow(d, '积分步长', () => S.maxDt, v => S.maxDt = v, 's', { min: 1e-9, slot: [S, 'maxDt'] });
     chkRow(d, '吸附网格', () => S.snap, v => S.snap = v);
-    numRow(d, '吸附步长', () => S.snapStep, v => S.snapStep = v, 'm', { min: 1e-6 });
+    numRow(d, '吸附步长', () => S.snapStep, v => S.snapStep = v, 'm', { min: 1e-6, slot: [S, 'snapStep'] });
     chkRow(d, '显示名称', () => S.showLabels, v => S.showLabels = v);
     const view = el('div', { class: 'btnrow' });
     btn(view, '适配视图', fitView);
@@ -2111,7 +2387,7 @@ function buildScenePanel(P) {
     const h = section(pHelp, '流程');
     h.appendChild(el('div', { class: 'hint' }, `
       1. 在左侧「添加」放入物体与场；<br>
-      2. 在「初态」或画布上设置 v₀；<br>
+      2. 数值旁的 ƒ 可改成公式，例如小球1的外力写 小球2.vx；<br>
       3. 播放观察，于「分析」查看参数方程；<br>
       4. 当前：${bodies().length} 个物体，${scene.objects.length - bodies().length} 个场/表面/约束。`));
   }
@@ -2760,7 +3036,11 @@ function loadPreset(key) {
  * ===================================================================== */
 function serialize() {
   return JSON.stringify({ app: 'physim', version: 1, settings: scene.settings, view: scene.view,
-    objects: scene.objects.map(o => { const c = Object.assign({}, o); delete c.st; return c; }) });
+    objects: scene.objects.map(o => {
+      const c = Object.assign({}, o);
+      delete c.st; delete c._exprErr; delete c._hold; delete c._Ferr;
+      return c;
+    }) });
 }
 function normalizeObject(raw) {
   const o = Object.assign({}, raw, { st: null });

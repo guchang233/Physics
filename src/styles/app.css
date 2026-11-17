@@ -278,6 +278,22 @@ body.dark .seg button.active {
   -webkit-user-select: none;
 }
 
+.expr-toggle {
+  flex: none;
+  width: 28px;
+  min-height: 28px;
+  padding: 0;
+  border-radius: 8px;
+  border: 1px solid var(--stroke);
+  background: var(--panel2);
+  color: var(--muted);
+  font-family: Georgia, serif;
+  font-style: italic;
+}
+.expr-toggle.on { color: var(--accent); border-color: var(--accent); background: var(--select); }
+.expr-val { margin: -2px 0 2px 96px; }
+.expr-err { margin: 0 0 6px 96px; color: #e5484d; min-height: 0; }
+.expr-err:empty { display: none; }
 .expr-row .expr-input,
 input.expr-input {
   flex: 1;

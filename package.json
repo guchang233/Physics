@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "test:analysis": "node --experimental-strip-types src/analysis/motionAnalysis.selftest.ts",
     "test:fields": "node --experimental-strip-types src/engine/fields/fieldSystem.selftest.ts",
-    "test": "npm run test:analysis && npm run test:fields"
+    "test:expr": "node --experimental-strip-types src/engine/forceExpr.selftest.ts",
+    "test": "npm run test:analysis && npm run test:fields && npm run test:expr"
   },
   "devDependencies": {
     "@types/jquery": "^4.0.1",
