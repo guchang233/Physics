@@ -801,31 +801,40 @@ function fieldScreenRect(f) {
   if (f.all) return [0, 0, W, H];
   const [a, b] = w2s(f.x, f.y + f.h), [c, d] = w2s(f.x + f.w, f.y); return [a, b, c - a, d - b];
 }
+function drawCrossMark(sx, sy, size = 6.5) {
+  ctx.beginPath();
+  ctx.moveTo(sx - size, sy - size); ctx.lineTo(sx + size, sy + size);
+  ctx.moveTo(sx + size, sy - size); ctx.lineTo(sx - size, sy + size);
+  ctx.stroke();
+}
+function drawDotMark(sx, sy) {
+  ctx.beginPath();
+  ctx.arc(sx, sy, 2.6, 0, Math.PI * 2);
+  ctx.fill();
+}
 function drawField(f) {
   const [x, y, w, h] = fieldScreenRect(f), sel = f === selected();
   const isE = f.kind === 'efield', line = isE ? C['--efield-line'] : C['--bfield-line'];
   ctx.save();
   ctx.fillStyle = isE ? C['--efield'] : C['--bfield']; ctx.fillRect(x, y, w, h);
   ctx.beginPath(); ctx.rect(x, y, w, h); ctx.clip();
-  if (isE) {
-    // 电场线：沿 E 方向的平行箭头
-    const a = f.ang * DEG, ux = Math.cos(a), uy = -Math.sin(a), sp = 46;
-    const cx = x + w / 2, cy = y + h / 2, R = Math.hypot(w, h) / 2 + sp;
-    ctx.globalAlpha = 0.55;
-    for (let k = -R; k <= R; k += sp) {
-      const px = cx - uy * k, py = cy + ux * k;
-      ctx.strokeStyle = line; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(px - ux * R, py - uy * R); ctx.lineTo(px + ux * R, py + uy * R); ctx.stroke();
-      for (let m = -R; m <= R; m += 90) arrow(px + ux * (m - 1), py + uy * (m - 1), px + ux * (m + 7), py + uy * (m + 7), line, 1, 8);
-    }
-  } else {
-    const v = scene.view, sp = niceStep(42 / v.scale);
-    const [wx0, wy1] = s2w(x, y), [wx1, wy0] = s2w(x + w, y + h);
-    ctx.strokeStyle = line; ctx.fillStyle = line; ctx.lineWidth = 1.2; ctx.globalAlpha = 0.7;
-    for (let gx = Math.ceil(wx0 / sp) * sp; gx <= wx1; gx += sp) for (let gy = Math.ceil(wy0 / sp) * sp; gy <= wy1; gy += sp) {
-      const [sx, sy] = w2s(gx, gy), r = 5;
-      ctx.beginPath(); ctx.arc(sx, sy, r, 0, 7); ctx.stroke();
-      if (f.dir < 0) { ctx.beginPath(); ctx.moveTo(sx - 3.3, sy - 3.3); ctx.lineTo(sx + 3.3, sy + 3.3); ctx.moveTo(sx + 3.3, sy - 3.3); ctx.lineTo(sx - 3.3, sy + 3.3); ctx.stroke(); }
-      else { ctx.beginPath(); ctx.arc(sx, sy, 1.6, 0, 7); ctx.fill(); }
+  // 屏幕上等距、偏疏：磁场只画叉或点，电场只留一支短箭头表示方向
+  const sp = 108;
+  const pad = 22;
+  const cx = x + w / 2, cy = y + h / 2;
+  const startX = cx - Math.floor((cx - (x + pad)) / sp) * sp;
+  const startY = cy - Math.floor((cy - (y + pad)) / sp) * sp;
+  ctx.strokeStyle = line; ctx.fillStyle = line; ctx.lineWidth = 1.7; ctx.lineCap = 'round';
+  ctx.globalAlpha = 0.9;
+  for (let sx = startX; sx <= x + w - pad; sx += sp) {
+    for (let sy = startY; sy <= y + h - pad; sy += sp) {
+      if (!isE) {
+        if (f.dir < 0) drawCrossMark(sx, sy);
+        else drawDotMark(sx, sy);
+      } else {
+        const a = f.ang * DEG, ux = Math.cos(a), uy = -Math.sin(a), len = 16;
+        arrow(sx - ux * len, sy - uy * len, sx + ux * len, sy + uy * len, line, 1.6, 7);
+      }
     }
   }
   ctx.restore();
@@ -1088,11 +1097,14 @@ function drawSelectableVectors() {
 function hitVector(sx, sy) {
   let best = null, bestD = 14;
   for (const b of bodies()) {
+    const bodyR = bodyScreenR(b) + 3;
     for (const key of visibleVectorKeys(b)) {
       const g = vectorScreen(b, key);
       if (!g) continue;
+      // 点在物体身上时交给物体拖拽，避免箭头从质心伸出时把拖动吃掉
+      if (Math.hypot(sx - g.x, sy - g.y) <= bodyR) continue;
       let hx = g.hx, hy = g.hy;
-      if (g.zero && key === 'v0') { hx = g.x + bodyScreenR(b) + 14; hy = g.y; }
+      if (g.zero && key === 'v0') { hx = g.x + bodyR + 11; hy = g.y; }
       const dt = Math.hypot(sx - hx, sy - hy);
       if (dt < bestD) { best = { b, key, tip: true }; bestD = dt; }
       if (!g.zero && Math.hypot(g.hx - g.x, g.hy - g.y) > 10) {
@@ -1217,7 +1229,7 @@ function drawAnalyticPath(b) {
 let pending = null; // 正在创建的矩形/线段/弹簧
 function draw() {
   if (!W) return;
-  resolveExprs();
+  if (!drag) resolveExprs();
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
   ctx.fillStyle = C['--canvas']; ctx.fillRect(0, 0, W, H);
   if (scene.settings.showGrid) drawGrid();
@@ -1419,6 +1431,7 @@ cv.addEventListener('pointerdown', e => {
     scene.objects.push(s); pending = null; afterStructure(); select(s.id); setTool('select'); return;
   }
   // ---- 选择工具 ----
+  const cur = selected();
   const hv = hitVector(sx, sy);
   if (hv) {
     selectVector(hv.b.id, hv.key, { deferPanel: true });

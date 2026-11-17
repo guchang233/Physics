@@ -18,7 +18,7 @@ export class FieldSystem2 {
   private cachedLines: { x: number; y: number }[][] = [];
   private lineOpts = {
     enabled: true,
-    linesPerUnitCharge: 8,
+    linesPerUnitCharge: 4,
     step: 0.04,
     maxSteps: 500,
     bounds: { x0: -20, y0: -20, x1: 20, y1: 20 },

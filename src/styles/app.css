@@ -162,10 +162,34 @@ button, .btn {
   font: inherit; color: var(--text); background: transparent;
   border: 1px solid transparent; border-radius: 999px;
   padding: 5px 11px; cursor: pointer;
-  display: inline-flex; align-items: center; gap: 4px;
+  display: inline-flex; align-items: center; justify-content: center; gap: 4px;
   white-space: nowrap; line-height: 1.2; min-height: 30px;
+  text-align: center;
   transition: background .15s ease, color .15s ease, transform .12s ease;
 }
+
+/* 细滚动条，轨道透明，避免默认灰槽穿帮 */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(15, 23, 42, 0.28) transparent;
+}
+body.dark {
+  scrollbar-color: rgba(255, 255, 255, 0.32) transparent;
+}
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  background: rgba(15, 23, 42, 0.22);
+  border-radius: 99px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+body.dark *::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.28);
+  background-clip: padding-box;
+  border: 3px solid transparent;
+}
+*::-webkit-scrollbar-corner { background: transparent; }
 button:hover { background: var(--select); }
 button:active { transform: scale(0.98); }
 button.active {
@@ -450,7 +474,7 @@ body.dark .tabs button.active {
   font-weight: 600;
 }
 
-.side-body { flex: 1; overflow: auto; min-height: 0; }
+.side-body { flex: 1; overflow: auto; min-height: 0; scrollbar-gutter: stable; }
 .side-body.pad { padding: 0 0 14px; }
 
 .objgroup {
@@ -497,7 +521,8 @@ body.dark .tabs button.active {
 
 .add-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 12px; }
 .add-grid button {
-  justify-content: flex-start;
+  justify-content: center;
+  text-align: center;
   border: none;
   background: var(--select);
   border-radius: 14px;
@@ -708,7 +733,9 @@ body.dark .math-kb-key:hover { background: rgba(255, 255, 255, 0.14); }
   box-shadow: var(--shadow-soft);
   font-size: 11.5px; font-variant-numeric: tabular-nums; font-family: var(--mono);
   overflow-x: auto; white-space: nowrap; height: var(--status-h);
+  scrollbar-width: none;
 }
+#status::-webkit-scrollbar { display: none; }
 #status .k { color: var(--muted); margin-right: 4px; font-family: var(--font); }
 #status .sep { width: 1px; height: 12px; background: var(--stroke); flex: none; }
 
