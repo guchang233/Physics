@@ -454,7 +454,17 @@ body.dark .tabs button.active {
   color: var(--text);
   font-weight: 550;
 }
+.objlist li.vec-item {
+  margin-left: 16px;
+  padding: 7px 10px;
+  font-size: 12.5px;
+}
 .objlist .dot { width: 8px; height: 8px; border-radius: 50%; box-shadow: 0 0 0 2px rgba(255,255,255,0.7); }
+.vec-title { font-weight: 650; font-size: 15px; letter-spacing: -0.02em; }
+.vec-parent .linkish {
+  border: none; background: transparent; color: var(--accent);
+  padding: 0 2px; min-height: 0; font-weight: 600;
+}
 .objlist .ty { color: var(--faint); font-size: 11px; font-family: var(--mono); }
 .empty-hint { padding: 20px 16px; color: var(--muted); font-size: 12.5px; line-height: 1.65; }
 

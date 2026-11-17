@@ -738,74 +738,160 @@ function drawBody(b) {
   }
   if (S.showLabels) label(b.name, x, y + bodyScreenR(b) + 13, C['--muted'], 'center', false);
 }
-function drawVectors(b) {
-  const st = b.st, [x, y] = w2s(st.x, st.y), S = scene.settings;
-  if (S.showVel && (sim.t > 0 || b !== selected())) {
-    const vx = st.vx * S.vPx, vy = -st.vy * S.vPx;
-    if (Math.hypot(vx, vy) > 2) { arrow(x, y, x + vx, y + vy, '#1f9d55', 2.2); label(`v=${fmt(Math.hypot(st.vx, st.vy), 2)}`, x + vx + 6, y + vy - 8, '#1f9d55', 'left', false); }
+/** 可单独选取的矢量：初速度、瞬时速度、外力，以及受力图里的分力。零矢量不画箭头。 */
+function vectorMeta(key) {
+  if (key === 'v0') return { key, name: '初速度', color: '#1f9d55', editable: true, unit: 'm/s' };
+  if (key === 'v') return { key, name: '速度', color: '#1f9d55', editable: true, unit: 'm/s' };
+  if (key === 'F') return { key, name: '外力', color: '#8b5cf6', editable: true, unit: 'N' };
+  const label = String(key).startsWith('part:') ? key.slice(5) : key;
+  return { key, name: label, color: '#64748b', editable: false, unit: 'N', part: true };
+}
+function vectorScreen(b, key) {
+  const st = b.st || { x: b.x0, y: b.y0, vx: b.vx0 || 0, vy: b.vy0 || 0 };
+  if (key === 'v0') {
+    const [x, y] = w2s(b.x0, b.y0);
+    const S = scene.settings;
+    const vx = b.vx0 || 0, vy = b.vy0 || 0;
+    const mag = Math.hypot(vx, vy);
+    return { x, y, hx: x + vx * S.vPx, hy: y - vy * S.vPx, mag, zero: mag < 1e-9, color: '#1f9d55', ang: Math.atan2(vy, vx) / DEG };
   }
-  if (S.showForce) {
-    const parts = forceParts(b); let mx = 0; parts.forEach(p => mx = Math.max(mx, Math.hypot(p.fx, p.fy)));
-    if (mx > 0) {
-      const sc = 70 / mx;
-      for (const p of parts) {
-        // 用户外力 F 用专用手柄绘制，避免与自动缩放叠画
-        if (p.label === 'F' && b === selected()) continue;
-        const ex = x + p.fx * sc, ey = y - p.fy * sc; if (Math.hypot(p.fx, p.fy) * sc < 3) continue;
-        arrow(x, y, ex, ey, p.color, 1.8, 8);
-        label(`${p.label} ${fmt(Math.hypot(p.fx, p.fy), 2)}N`, ex + 4, ey + (p.fy > 0 ? -8 : 8), p.color, 'left', false);
-      }
+  if (key === 'v') {
+    const [x, y] = w2s(st.x, st.y);
+    const S = scene.settings;
+    const vx = st.vx || 0, vy = st.vy || 0;
+    const mag = Math.hypot(vx, vy);
+    return { x, y, hx: x + vx * S.vPx, hy: y - vy * S.vPx, mag, zero: mag < 1e-9, color: '#1f9d55', ang: Math.atan2(vy, vx) / DEG };
+  }
+  if (key === 'F') {
+    ensureForceFields(b);
+    const [x, y] = w2s(st.x, st.y);
+    const af = appliedForceOn(b);
+    const FPx = scene.settings.FPx || 12;
+    const mag = Math.hypot(af.fx, af.fy);
+    return { x, y, hx: x + af.fx * FPx, hy: y - af.fy * FPx, mag, zero: mag < 1e-6, color: '#8b5cf6', ang: af.ang, af };
+  }
+  if (String(key).startsWith('part:')) {
+    const label = key.slice(5);
+    const parts = forceParts(b);
+    const p = parts.find(q => q.label === label);
+    if (!p) return null;
+    let mx = 0;
+    parts.forEach(q => { mx = Math.max(mx, Math.hypot(q.fx, q.fy)); });
+    const sc = mx > 0 ? 70 / mx : 1;
+    const [x, y] = w2s(st.x, st.y);
+    const mag = Math.hypot(p.fx, p.fy);
+    return { x, y, hx: x + p.fx * sc, hy: y - p.fy * sc, mag, zero: mag < 1e-6, color: p.color, ang: Math.atan2(p.fy, p.fx) / DEG, part: p };
+  }
+  return null;
+}
+function vectorIsSelected(b, key) {
+  return !!(selVec && selVec.bodyId === b.id && selVec.key === key);
+}
+function visibleVectorKeys(b) {
+  const keys = [];
+  const bodyOn = selId === b.id && !selVec;
+  const g0 = vectorScreen(b, 'v0');
+  if (!sim.running && g0 && (!g0.zero || bodyOn || vectorIsSelected(b, 'v0'))) keys.push('v0');
+  // t = 0 时速度就是初速度，避免两支箭头叠在一起
+  if (scene.settings.showVel && (sim.t > 0 || !keys.includes('v0'))) {
+    const gv = vectorScreen(b, 'v');
+    if (gv && !gv.zero) keys.push('v');
+  }
+  const gF = vectorScreen(b, 'F');
+  if (gF && !gF.zero && (scene.settings.showForce || vectorIsSelected(b, 'F'))) keys.push('F');
+  if (scene.settings.showForce && b.st) {
+    for (const p of forceParts(b)) {
+      if (p.label === 'F') continue;
+      if (Math.hypot(p.fx, p.fy) < 1e-6) continue;
+      keys.push('part:' + p.label);
     }
   }
+  return keys;
 }
-
-/** 外力箭头末端手柄（开启「受力」且选中物体时） */
-function forceHandle(b) {
-  ensureForceFields(b);
-  const st = b.st || { x: b.x0, y: b.y0 };
-  const [x, y] = w2s(st.x, st.y);
-  const af = appliedForceOn(b);
-  const FPx = scene.settings.FPx || 12;
-  let fx = af.fx, fy = af.fy;
-  let zero = Math.hypot(fx, fy) < 1e-9;
-  // 零力时给出默认可拖方向（沿 +x）
-  if (zero) { fx = 1; fy = 0; }
-  let hx = x + fx * FPx, hy = y - fy * FPx;
-  const minL = bodyScreenR(b) + 16;
-  const L = Math.hypot(hx - x, hy - y);
-  if (L < minL) {
-    const ux = (hx - x) / (L || 1), uy = (hy - y) / (L || 1);
-    hx = x + ux * minL; hy = y + uy * minL;
-    zero = true;
+function listVectors(b) {
+  const items = [
+    { key: 'v0', name: '初速度', color: '#1f9d55' },
+    { key: 'v', name: '速度', color: '#1f9d55' },
+    { key: 'F', name: '外力', color: '#8b5cf6' },
+  ];
+  if (scene.settings.showForce && b.st) {
+    for (const p of forceParts(b)) {
+      if (p.label === 'F') continue;
+      if (Math.hypot(p.fx, p.fy) < 1e-4) continue;
+      items.push({ key: 'part:' + p.label, name: p.label, color: p.color });
+    }
   }
-  return { x, y, hx, hy, zero, af, FPx };
+  return items;
 }
-function drawForceHandle(b) {
-  if (!scene.settings.showForce) return;
-  const H = forceHandle(b);
-  const ghost = H.zero;
-  if (!ghost) arrow(H.x, H.y, H.hx, H.hy, '#8b5cf6', 3, 12, null);
-  else {
+function drawOneVector(b, key) {
+  const g = vectorScreen(b, key);
+  if (!g) return;
+  const sel = vectorIsSelected(b, key);
+  const meta = vectorMeta(key);
+  if (g.zero) {
+    if (key !== 'v0') return;
+    const minL = bodyScreenR(b) + 14;
+    const hx = g.x + minL, hy = g.y;
     ctx.save(); ctx.setLineDash([5, 4]);
-    arrow(H.x, H.y, H.hx, H.hy, '#8b5cf6', 2, 10, [5, 4]);
+    arrow(g.x, g.y, hx, hy, g.color, 2, 10, [5, 4]);
     ctx.restore();
+    handleDot(hx, hy, g.color, sel ? 8 : 7);
+    label(sel ? '拖动设置 v₀' : '拖动设置 v₀', hx + 12, hy - 12, g.color);
+    if (sel) drawVecSelection(hx, hy);
+    return;
   }
-  handleDot(H.hx, H.hy, '#8b5cf6', 7);
-  const mode = b.Fmode || 'const';
-  const modeLab = mode === 'expr' ? '表达式' : mode === 'aim' ? '指向' : '恒定';
-  const txt = ghost
-    ? `拖末端设置外力 F（${modeLab}）`
-    : `F=${fmt(H.af.F, 2)} N  ${fmt(H.af.ang, 1)}° · ${modeLab}`;
-  label(txt, H.hx + 12, H.hy - 12, '#8b5cf6');
-  if (b._Ferr) label(b._Ferr, H.hx + 12, H.hy + 6, '#e5484d');
-  if (mode === 'aim') {
+  const len = Math.hypot(g.hx - g.x, g.hy - g.y);
+  if (len < 2 && !sel) return;
+  arrow(g.x, g.y, g.hx, g.hy, g.color, sel ? 3 : 2.2, sel ? 12 : 8);
+  if (key === 'v0' || key === 'F' || key === 'v' || sel) handleDot(g.hx, g.hy, g.color, sel ? 8 : 6);
+  const txt = key === 'F'
+    ? `F=${fmt(g.mag, 2)} N  ${fmt(g.ang, 1)}°`
+    : key === 'v0' ? `v₀=${fmt(g.mag, 2)} m/s  ${fmt(g.ang, 1)}°`
+    : key === 'v' ? `v=${fmt(g.mag, 2)}`
+    : `${meta.name} ${fmt(g.mag, 2)}N`;
+  label(txt, g.hx + 10, g.hy - 10, g.color, 'left', false);
+  if (sel) drawVecSelection(g.hx, g.hy);
+  if (key === 'F' && (b.Fmode === 'aim') && sel) {
     const aim = resolveAimPoint(b);
     const [ax, ay] = w2s(aim.x, aim.y);
     ctx.save(); ctx.strokeStyle = 'rgba(139,92,246,.45)'; ctx.setLineDash([3, 3]); ctx.lineWidth = 1;
-    ctx.beginPath(); ctx.moveTo(H.x, H.y); ctx.lineTo(ax, ay); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(g.x, g.y); ctx.lineTo(ax, ay); ctx.stroke();
     ctx.fillStyle = '#8b5cf6'; ctx.beginPath(); ctx.arc(ax, ay, 3, 0, 7); ctx.fill();
     ctx.restore();
   }
+}
+function drawVecSelection(hx, hy) {
+  ctx.save();
+  ctx.strokeStyle = C['--accent'];
+  ctx.lineWidth = 2;
+  ctx.setLineDash([4, 3]);
+  ctx.beginPath();
+  ctx.arc(hx, hy, 12, 0, 7);
+  ctx.stroke();
+  ctx.restore();
+}
+function drawSelectableVectors() {
+  for (const b of bodies()) {
+    for (const key of visibleVectorKeys(b)) drawOneVector(b, key);
+  }
+}
+function hitVector(sx, sy) {
+  let best = null, bestD = 14;
+  for (const b of bodies()) {
+    for (const key of visibleVectorKeys(b)) {
+      const g = vectorScreen(b, key);
+      if (!g) continue;
+      let hx = g.hx, hy = g.hy;
+      if (g.zero && key === 'v0') { hx = g.x + bodyScreenR(b) + 14; hy = g.y; }
+      const dt = Math.hypot(sx - hx, sy - hy);
+      if (dt < bestD) { best = { b, key, tip: true }; bestD = dt; }
+      if (!g.zero && Math.hypot(g.hx - g.x, g.hy - g.y) > 10) {
+        const ds = distSeg(sx, sy, g.x, g.y, g.hx, g.hy);
+        if (ds < 8 && ds < bestD) { best = { b, key, tip: false }; bestD = ds; }
+      }
+    }
+  }
+  return best;
 }
 function forceParts(b) {
   const fmap = computeForces([b], true);
@@ -933,14 +1019,16 @@ function draw() {
   objs.filter(isLink).forEach(drawLink);
   ensureStates();
   bodies().forEach(drawBody);
-  bodies().forEach(drawVectors);
+  drawSelectableVectors();
   const s = selected();
+  if (isBody(s) && !sim.running && sim.t > 0 && (!selVec || (selVec.bodyId === s.id && selVec.key === 'v0'))) {
+    const [gx, gy] = w2s(s.x0, s.y0);
+    drawBodyShape(s, gx, gy, s.ang0 * DEG, true);
+  }
   // Analytic overlay is relatively expensive — refresh every other frame while running
-  if (isBody(s) && scene.settings.showAnalytic && (!sim.running || ((performance.now() / 32) | 0) % 2 === 0)) {
+  if (isBody(s) && !selVec && scene.settings.showAnalytic && (!sim.running || ((performance.now() / 32) | 0) % 2 === 0)) {
     drawAnalyticPath(s);
   }
-  if (isBody(s) && tool === 'select' && !sim.running) drawV0(s);
-  if (isBody(s) && scene.settings.showForce) drawForceHandle(s);
   if (pending) {
     ctx.save(); ctx.strokeStyle = C['--accent']; ctx.setLineDash([5, 4]); ctx.lineWidth = 1.5;
     if (pending.type === 'rect') { const [a, b] = w2s(pending.x1, pending.y1), [c, d] = w2s(pending.x2, pending.y2); ctx.strokeRect(Math.min(a, c), Math.min(b, d), Math.abs(c - a), Math.abs(d - b)); label(`${fmt(Math.abs(pending.x2 - pending.x1), 2)} × ${fmt(Math.abs(pending.y2 - pending.y1), 2)} m`, Math.max(a, c) + 6, Math.max(b, d) + 10, C['--accent']); }
@@ -960,24 +1048,39 @@ function draw() {
 /* =====================================================================
  *  交互
  * ===================================================================== */
-let tool = 'select', selId = null, drag = null, mouseW = [0, 0], spaceDown = false;
+let tool = 'select', selId = null, selVec = null, drag = null, mouseW = [0, 0], spaceDown = false;
 function selected() { return selId != null ? byId(selId) : null; }
+function syncListSelection() {
+  document.querySelectorAll('.objlist li').forEach(li => {
+    if (li.classList.contains('vec-item')) {
+      const on = selVec && li.dataset.vecBody === String(selVec.bodyId) && li.dataset.vecKey === selVec.key;
+      li.classList.toggle('sel', !!on);
+    } else {
+      const lid = +li.dataset.id;
+      li.classList.toggle('sel', !selVec && lid === selId);
+    }
+  });
+}
 function select(id, opts = {}) {
   const prev = selId;
+  const prevVec = selVec ? selVec.bodyId + '\0' + selVec.key : '';
+  if (!opts.keepVec) selVec = null;
   selId = id;
-  if (prev !== id) {
-    document.querySelectorAll('.objlist li').forEach(li => {
-      const lid = +li.dataset.id;
-      li.classList.toggle('sel', lid === selId);
-    });
-    if (!opts.deferPanel) buildPanel();
-  } else if (!opts.deferPanel && opts.forcePanel) {
-    buildPanel();
-  }
+  const vecKey = selVec ? selVec.bodyId + '\0' + selVec.key : '';
+  syncListSelection();
+  if ((prev !== id || prevVec !== vecKey) && !opts.deferPanel) buildPanel();
+  else if (!opts.deferPanel && opts.forcePanel) buildPanel();
   draw();
 }
+function selectVector(bodyId, key, opts = {}) {
+  const prevVec = selVec ? selVec.bodyId + '\0' + selVec.key : '';
+  const nextVec = bodyId + '\0' + key;
+  selVec = { bodyId, key };
+  const changed = selId !== bodyId || prevVec !== nextVec;
+  select(bodyId, Object.assign({ keepVec: true, forcePanel: changed }, opts));
+}
 const TOOL_HINT = {
-  select: '选择：拖动物体；青杆上拖沿圆周（Shift 改杆长）；绿箭头=v₀；开「受力」后紫箭头末端=外力 F；空白处平移',
+  select: '选择：点物体，或点速度/力箭头把它当作独立元素；拖箭头末端改大小方向；空白处平移',
   pan: '平移：拖动画布移动视图，滚轮缩放', ball: '点击画布放置小球（按住 Shift 可连续放置）',
   particle: '点击画布放置带电粒子（按住 Shift 可连续放置）', box: '点击画布放置滑块（按住 Shift 可连续放置）',
   ground: '点击画布确定地面高度', wall: '按住拖动画出挡板/极板（线段）', incline: '点击放置斜面（点击处为底角顶点）',
@@ -1041,6 +1144,12 @@ function hitOther(sx, sy) {
 cv.addEventListener('contextmenu', e => {
   e.preventDefault();
   const [sx, sy] = evPos(e);
+  const hv = tool === 'select' ? hitVector(sx, sy) : null;
+  if (hv) {
+    selectVector(hv.b.id, hv.key);
+    openVectorMenu(e.clientX, e.clientY, hv.b, hv.key);
+    return;
+  }
   const hb = hitBody(sx, sy);
   const ho = hb || hitOther(sx, sy);
   if (ho) select(ho.id);
@@ -1099,20 +1208,15 @@ cv.addEventListener('pointerdown', e => {
     scene.objects.push(s); pending = null; afterStructure(); select(s.id); setTool('select'); return;
   }
   // ---- 选择工具 ----
-  const cur = selected();
-  if (isBody(cur) && scene.settings.showForce) {
-    const HF = forceHandle(cur);
-    if (Math.hypot(sx - HF.hx, sy - HF.hy) < 12) {
+  const hv = hitVector(sx, sy);
+  if (hv) {
+    selectVector(hv.b.id, hv.key, { deferPanel: true });
+    const meta = vectorMeta(hv.key);
+    if (meta.editable) {
       pushUndo();
-      // 拖末端 → 切回恒定模式，直接编辑 F / Fang
-      cur.Fmode = 'const';
-      drag = { type: 'F', b: cur };
-      return;
+      drag = { type: hv.key === 'F' ? 'F' : hv.key === 'v' ? 'v' : 'v0', b: hv.b, moved: false };
     }
-  }
-  if (isBody(cur)) {
-    const H0 = v0Handle(cur);
-    if (Math.hypot(sx - H0.hx, sy - H0.hy) < 11) { pushUndo(); drag = { type: 'v0', b: cur }; return; }
+    return;
   }
   if (cur && (cur.kind === 'efield' || cur.kind === 'bfield') && !cur.all) {
     const hs = rectHandles(cur);
@@ -1149,13 +1253,19 @@ cv.addEventListener('pointermove', e => {
     draw(); return;
   }
   if (drag.type === 'create') { pending.x2 = sp[0]; pending.y2 = sp[1]; draw(); return; }
-  if (drag.type === 'v0') {
-    const b = drag.b, S = scene.settings, [x, y] = w2s(b.x0, b.y0);
-    let vx = (sx - x) / S.vPx, vy = -(sy - y) / S.vPx;
-    if (e.shiftKey) { let v = Math.round(Math.hypot(vx, vy)), a = Math.round(Math.atan2(vy, vx) / DEG / 15) * 15 * DEG; vx = v * Math.cos(a); vy = v * Math.sin(a); }
+  if (drag.type === 'v0' || drag.type === 'v') {
+    const b = drag.b, S = scene.settings;
+    const origin = drag.type === 'v0' ? w2s(b.x0, b.y0) : w2s(b.st.x, b.st.y);
+    let vx = (sx - origin[0]) / S.vPx, vy = -(sy - origin[1]) / S.vPx;
+    if (e.shiftKey) { const v = Math.round(Math.hypot(vx, vy)), a = Math.round(Math.atan2(vy, vx) / DEG / 15) * 15 * DEG; vx = v * Math.cos(a); vy = v * Math.sin(a); }
     else { vx = Math.round(vx * 10) / 10; vy = Math.round(vy * 10) / 10; }
-    b.vx0 = clean(vx); b.vy0 = clean(vy);
-    syncInitialLive(b); return;
+    vx = clean(vx); vy = clean(vy);
+    drag.moved = true;
+    if (drag.type === 'v0' || sim.t === 0) { b.vx0 = vx; b.vy0 = vy; }
+    if (drag.type === 'v' && b.st) { b.st.vx = vx; b.st.vy = vy; }
+    if (drag.type === 'v0') syncInitialLive(b);
+    else { refreshInputs(); markDirty(); draw(); }
+    return;
   }
   if (drag.type === 'F') {
     const b = drag.b, S = scene.settings;
@@ -1170,6 +1280,7 @@ cv.addEventListener('pointermove', e => {
     } else {
       fx = Math.round(fx * 100) / 100; fy = Math.round(fy * 100) / 100;
     }
+    drag.moved = true;
     b.Fmode = 'const';
     b.F = clean(Math.hypot(fx, fy));
     b.Fang = clean(Math.atan2(fy, fx) / DEG);
@@ -1229,10 +1340,13 @@ function finishDrag(e) {
   }
   if (d.type === 'body' && !d.moved) undoStack.pop();
   if (d.type === 'moveObj' && !d.moved) undoStack.pop();
+  if ((d.type === 'v0' || d.type === 'v' || d.type === 'F') && !d.moved) undoStack.pop();
   // 拖拽结束后再做一次完整同步（场线、面板）
-  if (d.type === 'body' || d.type === 'v0') initChanged();
+  if ((d.type === 'body' || d.type === 'v0') && d.moved !== false) initChanged();
+  else if (d.type === 'v' && d.moved && sim.t === 0) initChanged();
   else { markFieldsDirty(); markDirty(); draw(); }
   buildPanel();
+  refreshLeft();
 }
 cv.addEventListener('pointerup', finishDrag);
 cv.addEventListener('pointercancel', finishDrag);
@@ -1245,12 +1359,7 @@ cv.addEventListener('wheel', e => {
 }, { passive: false });
 function hoverCursor(sx, sy) {
   if (tool !== 'select') return;
-  const cur = selected();
-  if (isBody(cur) && scene.settings.showForce) {
-    const HF = forceHandle(cur);
-    if (Math.hypot(sx - HF.hx, sy - HF.hy) < 12) { cv.style.cursor = 'crosshair'; return; }
-  }
-  if (isBody(cur)) { const H0 = v0Handle(cur); if (Math.hypot(sx - H0.hx, sy - H0.hy) < 11) { cv.style.cursor = 'crosshair'; return; } }
+  if (hitVector(sx, sy)) { cv.style.cursor = 'crosshair'; return; }
   cv.style.cursor = hitBody(sx, sy) || hitOther(sx, sy) ? 'move' : 'default';
 }
 function clean(v) { return +(+v).toFixed(6); }
@@ -1337,6 +1446,7 @@ document.addEventListener('keydown', e => {
     hideContextMenu();
     closeMobilePanels();
     if (tool !== 'select') setTool('select');
+    else if (selVec) { selVec = null; syncListSelection(); buildPanel(); draw(); }
     else if (selId != null) select(null);
     return;
   }
@@ -1351,10 +1461,40 @@ function pushUndo() { undoStack.push(serialize()); if (undoStack.length > 80) un
 function undo() { const s = undoStack.pop(); if (!s) { toast('没有可撤销的操作'); return; } loadScene(JSON.parse(s), true); toast('已撤销'); }
 
 /* ---------------- 复制/删除 ---------------- */
+function clearVectorValue(b, key) {
+  if (key === 'v0') {
+    b.vx0 = 0; b.vy0 = 0;
+    if (b.st && sim.t === 0) { b.st.vx = 0; b.st.vy = 0; }
+    initChanged();
+    return '已清除初速度';
+  }
+  if (key === 'v') {
+    if (sim.t === 0) { b.vx0 = 0; b.vy0 = 0; initChanged(); }
+    else if (b.st) { b.st.vx = 0; b.st.vy = 0; draw(); }
+    return '已清除速度';
+  }
+  if (key === 'F') {
+    b.F = 0; b.Fang = 0; b.Fmode = 'const'; b.Fexpr = ''; b.FangExpr = '0'; b._Ferr = '';
+    liveEdit();
+    return '已清除外力';
+  }
+  return '';
+}
 function deleteSel() {
+  if (selVec) {
+    const b = byId(selVec.bodyId);
+    const meta = vectorMeta(selVec.key);
+    if (!b) { selVec = null; return; }
+    if (!meta.editable) { toast('这是计算得到的力，不能删除'); return; }
+    pushUndo();
+    const msg = clearVectorValue(b, selVec.key);
+    buildPanel(); refreshLeft(); draw();
+    toast(msg || '已清除');
+    return;
+  }
   const s = selected(); if (!s) return; pushUndo();
   scene.objects = scene.objects.filter(o => o !== s && !(isLink(o) && (o.a === s.id || o.b === s.id)));
-  selId = null; afterStructure(); buildPanel(); toast(`已删除 ${s.name}`);
+  selId = null; selVec = null; afterStructure(); buildPanel(); toast(`已删除 ${s.name}`);
 }
 function duplicateSel() {
   const s = selected(); if (!s) return; pushUndo();
@@ -1495,6 +1635,7 @@ function buildPanel() {
   const P = $('#props'); P.innerHTML = '';
   const o = selected();
   if (!o) return buildScenePanel(P);
+  if (isBody(o) && selVec && selVec.bodyId === o.id) return buildVectorInspector(P, o, selVec.key);
 
   const head = el('div', { class: 'insp-head' });
   const nm = el('input', { type: 'text', value: o.name, 'aria-label': '名称' });
@@ -1511,6 +1652,78 @@ function buildPanel() {
 
   if (isBody(o)) buildBodyPanel(P, o);
   else buildNonBodyPanel(P, o);
+}
+
+function buildVectorInspector(P, b, key) {
+  const meta = vectorMeta(key);
+  const head = el('div', { class: 'insp-head' });
+  head.appendChild(el('div', { class: 'vec-title' }, meta.name));
+  P.appendChild(head);
+  const metaRow = el('div', { class: 'insp-meta vec-parent' });
+  metaRow.appendChild(document.createTextNode('属于 '));
+  const jump = el('button', { type: 'button', class: 'linkish' }, b.name);
+  jump.addEventListener('click', () => { selVec = null; select(b.id, { forcePanel: true }); refreshLeft(); });
+  metaRow.appendChild(jump);
+  P.appendChild(metaRow);
+
+  if (key === 'v0' || key === 'v') {
+    const live = key === 'v';
+    const g = vectorScreen(b, key);
+    const s = section(P, live ? '瞬时速度' : '初速度', 'hl');
+    if (live && sim.running) {
+      readRow(s, [['速率', 'r_vec_mag'], ['方向', 'r_vec_ang'], ['vx', 'r_vec_x'], ['vy', 'r_vec_y']]);
+      s.appendChild(el('div', { class: 'hint' }, '播放中为只读。暂停后可改，或在画布上拖箭头。'));
+    } else {
+      const getVx = () => live && b.st && sim.t > 0 ? b.st.vx : b.vx0;
+      const getVy = () => live && b.st && sim.t > 0 ? b.st.vy : b.vy0;
+      const setComp = (axis, v) => {
+        if (live && b.st && sim.t > 0) b.st[axis] = v;
+        else { if (axis === 'vx') b.vx0 = v; else b.vy0 = v; }
+      };
+      const mag = () => Math.hypot(getVx(), getVy());
+      const ang = () => (getVx() || getVy()) ? Math.atan2(getVy(), getVx()) / DEG : 0;
+      numRow(s, '速率', mag, v => {
+        const a = ang() * DEG;
+        setComp('vx', clean(v * Math.cos(a)));
+        setComp('vy', clean(v * Math.sin(a)));
+      }, 'm/s', { min: 0, init: !(live && sim.t > 0) });
+      numRow(s, '方向', ang, a => {
+        const m = mag();
+        setComp('vx', clean(m * Math.cos(a * DEG)));
+        setComp('vy', clean(m * Math.sin(a * DEG)));
+      }, '°', { init: !(live && sim.t > 0) });
+      numRow(s, 'vx', getVx, v => setComp('vx', v), 'm/s', { init: !(live && sim.t > 0) });
+      numRow(s, 'vy', getVy, v => setComp('vy', v), 'm/s', { init: !(live && sim.t > 0) });
+      s.appendChild(el('div', { class: 'hint' }, '拖画布上的箭头末端可改大小和方向。删除会把这个矢量清零，物体还在。'));
+    }
+    if (g) s.appendChild(el('div', { class: 'hint' }, `当前 ${fmt(g.mag, 3)} ${meta.unit}`));
+  } else if (key === 'F') {
+    const wrap = el('div', { class: 'force-tab' });
+    buildAppliedForcePanel(wrap, b);
+    P.appendChild(wrap);
+  } else {
+    const g = vectorScreen(b, key);
+    const s = section(P, '计算力', 'hl');
+    if (g && g.part) {
+      readRow(s, [['大小', 'r_vec_mag'], ['方向', 'r_vec_ang'], ['Fx', 'r_vec_x'], ['Fy', 'r_vec_y']]);
+      const set = () => {
+        const p = g.part;
+        const mag = Math.hypot(p.fx, p.fy);
+        setTxt('r_vec_mag', `${fmt(mag, 3)} N`);
+        setTxt('r_vec_ang', `${fmt(Math.atan2(p.fy, p.fx) / DEG, 1)}°`);
+        setTxt('r_vec_x', `${fmt(p.fx, 3)} N`);
+        setTxt('r_vec_y', `${fmt(p.fy, 3)} N`);
+      };
+      set();
+    }
+    s.appendChild(el('div', { class: 'hint' }, '由当前受力计算得到，不能单独删除。改物体或场景后会跟着变。'));
+  }
+
+  const act = section(P, '操作');
+  const br = el('div', { class: 'btnrow' });
+  if (meta.editable) btn(br, '删除矢量', deleteSel, 'danger');
+  btn(br, '打开所属物体', () => { selVec = null; select(b.id, { forcePanel: true }); refreshLeft(); });
+  act.appendChild(br);
 }
 
 function buildNonBodyPanel(P, o) {
@@ -1968,7 +2181,7 @@ function refreshLeft() {
       wrap.appendChild(el('div', { class: 'objgroup' }, `${title} · ${items.length}`));
       const ul = el('ul', { class: 'objlist' });
       for (const o of items) {
-        const li = el('li', { class: o.id === selId ? 'sel' : '' });
+        const li = el('li', { class: (!selVec && o.id === selId) ? 'sel' : '' });
         const col = o.color || (o.kind === 'efield' ? '#b45f14' : o.kind === 'bfield' ? '#0f6e6a' : isLink(o) ? (o.kind === 'rope' ? '#0284c7' : o.kind === 'rod' ? '#0f766e' : '#14b8a6') : '#6b7280');
         li.appendChild(el('span', { class: 'dot', style: `background:${col}` }));
         li.appendChild(el('span', {}, o.name));
@@ -1989,6 +2202,30 @@ function refreshLeft() {
           openContextMenu(ev.clientX, ev.clientY, o, 'list');
         });
         ul.appendChild(li);
+        if (isBody(o) && (leftChip === 'all' || leftChip === 'body')) {
+          const bodyMatch = matchQuery(o.name, q) || matchQuery(KIND_NAME[o.kind] || '', q);
+          for (const v of listVectors(o)) {
+            if (q && !bodyMatch && !matchQuery(v.name, q)) continue;
+            const vi = el('li', { class: 'vec-item' + (selVec && selVec.bodyId === o.id && selVec.key === v.key ? ' sel' : '') });
+            vi.dataset.vecBody = String(o.id);
+            vi.dataset.vecKey = v.key;
+            vi.appendChild(el('span', { class: 'dot', style: `background:${v.color}` }));
+            vi.appendChild(el('span', {}, v.name));
+            vi.appendChild(el('span', { class: 'ty' }, '矢量'));
+            vi.addEventListener('click', (ev) => {
+              ev.stopPropagation();
+              selectVector(o.id, v.key);
+              closeMobilePanels();
+            });
+            vi.addEventListener('contextmenu', (ev) => {
+              ev.preventDefault();
+              ev.stopPropagation();
+              selectVector(o.id, v.key);
+              openVectorMenu(ev.clientX, ev.clientY, o, v.key);
+            });
+            ul.appendChild(vi);
+          }
+        }
       }
       wrap.appendChild(ul);
     }
@@ -2098,6 +2335,20 @@ function updateReadouts() {
   setTxt('r_a', sim.t > 0 ? `${fmt(Math.hypot(st.ax, st.ay))} m/s²` : '—');
   setTxt('r_ek', `${fmt(Ek)} J`); setTxt('r_p', `${fmt(b.m * v)} kg·m/s`); setTxt('r_ep', S.gOn ? `${fmt(Ep)} J（以 y=0 为零势面）` : '—'); setTxt('r_e', `${fmt(Ek + Ep)} J`);
   // Throttle MathQuill remount while running — force only when paused / tab switch
+  if (selVec && selVec.bodyId === b.id) {
+    const g = vectorScreen(b, selVec.key);
+    if (g) {
+      setTxt('r_vec_mag', `${fmt(g.mag, 3)} ${vectorMeta(selVec.key).unit}`);
+      setTxt('r_vec_ang', `${fmt(g.ang || 0, 1)}°`);
+      if (g.part) {
+        setTxt('r_vec_x', `${fmt(g.part.fx, 3)} N`);
+        setTxt('r_vec_y', `${fmt(g.part.fy, 3)} N`);
+      } else if (selVec.key === 'v') {
+        setTxt('r_vec_x', `${fmt(b.st.vx, 3)} m/s`);
+        setTxt('r_vec_y', `${fmt(b.st.vy, 3)} m/s`);
+      }
+    }
+  }
   if (propsTab === 'force') {
     const af = appliedForceOn(b);
     const mode = b.Fmode || 'const';
@@ -2544,7 +2795,8 @@ function loadScene(data, keepView) {
   };
   nextId = scene.objects.reduce((m, o) => Math.max(m, o.id || 0), 0) + 1;
   if (selId != null && !byId(selId)) selId = null;
-  if (!keepView) selId = null;
+  if (selVec && !byId(selVec.bodyId)) selVec = null;
+  if (!keepView) { selId = null; selVec = null; }
   if (leftChip === 'spring') leftChip = 'link';
   resetSim(); markFieldsDirty(); syncToolbar(); buildList(); buildPanel(); draw(); markDirty();
 }
@@ -2744,6 +2996,24 @@ function ctxSep() {
   return d;
 }
 
+function openVectorMenu(clientX, clientY, body, key) {
+  const menu = ensureContextMenu();
+  const meta = vectorMeta(key);
+  menu.innerHTML = '';
+  menu.appendChild(ctxItem(`选中「${meta.name}」`, () => selectVector(body.id, key)));
+  menu.appendChild(ctxItem('在检视栏打开', () => {
+    selectVector(body.id, key);
+    $('#right')?.classList.add('open');
+    $('#main')?.classList.remove('noright');
+    syncPanelToggleButtons?.();
+  }));
+  menu.appendChild(ctxItem(`转到「${body.name}」`, () => { selVec = null; select(body.id, { forcePanel: true }); refreshLeft(); }));
+  if (meta.editable) {
+    menu.appendChild(ctxSep());
+    menu.appendChild(ctxItem('删除', () => { selectVector(body.id, key); deleteSel(); }, { danger: true }));
+  }
+  placeContextMenu(menu, clientX, clientY);
+}
 function openContextMenu(clientX, clientY, target, where = 'canvas') {
   const menu = ensureContextMenu();
   ctxTarget = target;
@@ -2813,8 +3083,10 @@ function openContextMenu(clientX, clientY, target, where = 'canvas') {
     return;
   }
 
+  placeContextMenu(menu, clientX, clientY);
+}
+function placeContextMenu(menu, clientX, clientY) {
   menu.hidden = false;
-  // 先显示再量尺寸，避免贴边
   const pad = 8;
   const mw = menu.offsetWidth || 200;
   const mh = menu.offsetHeight || 120;
