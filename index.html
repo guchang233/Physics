@@ -76,13 +76,10 @@
             <div class="pop-sep"></div>
             <div class="pop-title">画布</div>
             <label class="chk"><input type="checkbox" id="chkGrid" checked>网格</label>
-            <label class="chk"><input type="checkbox" id="chkTrail" checked>已走轨迹</label>
-            <label class="chk" title="用同一引擎向前积分，暂停时显示"><input type="checkbox" id="chkPredict" checked>预测轨迹</label>
-            <label class="chk" title="每隔 Δt 在轨迹上打一个点"><input type="checkbox" id="chkStrobe" checked>频闪点</label>
-            <label class="chk"><input type="checkbox" id="chkVel" checked>速度矢量</label>
-            <label class="chk"><input type="checkbox" id="chkForce">受力分析</label>
-            <label class="chk" title="运动分析给出的闭式解（仅选中物体）"><input type="checkbox" id="chkAnalytic" checked>解析解</label>
-            <label class="chk" title="电场线"><input type="checkbox" id="chkFieldLines" checked>电场线</label>
+            <div class="pop-sep"></div>
+            <div class="pop-title">显示（全部物体）</div>
+            <div id="viewQuick"></div>
+            <button type="button" class="pop-more" id="bMoreDisplay">更多显示项与设置…</button>
           </div>
         </div>
         <div class="zoom-ctl desktop-only">
@@ -102,6 +99,11 @@
       <nav id="toolstrip" aria-label="工具"></nav>
       <aside id="left">
         <div class="side-head">
+          <div class="left-tabs" id="leftTabs" role="tablist">
+            <button type="button" data-left-tab="objects" class="active" role="tab">图层</button>
+            <button type="button" data-left-tab="vars" role="tab">变量<span class="lt-n"></span></button>
+            <button type="button" data-left-tab="display" role="tab">显示<span class="lt-n"></span></button>
+          </div>
           <div class="side-title"><span id="leftTitle">图层</span><span class="side-count" id="layerCount"></span></div>
           <div class="search-wrap">
             <input type="search" id="qLeft" placeholder="搜索图层…  /" autocomplete="off">

@@ -46,8 +46,8 @@ const results = await page.evaluate(() => {
   // 2. 数值预测与实际运行逐步一致
   for (const k of P.presetKeys()) {
     P.loadPreset(k);
-    const sc = P.scene(); sc.settings.predictT = 1;
-    const pred = P.predict(); runSteps(Math.round(1 / sc.settings.maxDt));
+    const sc = P.scene();
+    const pred = P.predict(1); runSteps(Math.round(1 / sc.settings.maxDt));
     let err = 0;
     for (const o of sc.objects) { if (!o.st || o.fixed) continue; const a = pred.get(o.id), e = a[a.length - 1]; err = Math.max(err, Math.hypot(e[0] - o.st.x, e[1] - o.st.y)); }
     check(`${k}: 预测 = 实际`, err < 1e-12, `max|Δr| = ${err.toExponential(2)}`);

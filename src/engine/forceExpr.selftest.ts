@@ -1,4 +1,4 @@
-import { evalForceExpr, orderExprNodes, rewriteExpr, validateForceExpr } from './forceExpr.ts';
+import { evalForceExpr, orderExprNodes, rewriteExpr, validateForceExpr, validateVarName, findUnknownNames } from './forceExpr.ts';
 
 function assert(cond: unknown, msg: string) {
   if (!cond) throw new Error(msg);
@@ -43,5 +43,33 @@ const cyc = orderExprNodes([
 assert(cyc.cyclic.length === 2 && cyc.order.length === 0, 'cycle');
 const self = orderExprNodes([{ id: '1:F', deps: ['1:F'] }]);
 assert(self.cyclic.length === 1 && self.order.length === 0, 'self cycle');
+
+// 全局变量
+{
+  const vars = ['a', 'k1', 'ω'];
+  const r = rewriteExpr('a*atan(a) + k1 + ω*t + 小球2.vx', names, vars);
+  assert(r.code === '__ref(-1,"a")*atan(__ref(-1,"a")) + __ref(-1,"k1") + __ref(-1,"ω")*t + __ref(2,"vx")', r.code);
+  assert(r.refs.filter(x => x.id === -1).map(x => x.field).join(',') === 'a,a,k1,ω', 'var refs');
+  assert(rewriteExpr('atan(1)+aa', names, vars).code === 'atan(1)+aa', 'no partial match');
+  assert(validateForceExpr('aa+1', names, vars)?.includes('未知符号'), 'unknown ascii');
+  assert(validateForceExpr('β+1', names, vars)?.includes('β'), 'unknown greek');
+  const ev = evalForceExpr('2*a + ω', ctx, { names, vars, ref: (id, f) => (id === -1 ? ({ a: 3, ω: 0.5 } as any)[f] : 0) });
+  assert(ev.ok && Math.abs(ev.value - 6.5) < 1e-12, 'eval vars ' + JSON.stringify(ev));
+  assert(validateVarName('a', []) === null && validateVarName('ω_1', []) === null, 'valid names');
+  assert(validateVarName('t', []) !== null && validateVarName('sin', []) !== null && validateVarName('1a', []) !== null && validateVarName('a', ['a']) !== null && validateVarName('new', []) !== null, 'invalid names');
+}
+
+assert(findUnknownNames('v0*cos(θ) + a + 小球2.vx + sin(t)', names, ['a']).join(',') === 'v0,θ', findUnknownNames('v0*cos(θ) + a + 小球2.vx + sin(t)', names, ['a']).join(','));
+assert(findUnknownNames('vx + g*t', names, []).length === 0, 'builtins not unknown');
+
+// 显示项本地量：优先于同名全局变量
+{
+  const loc = ['ax', 'ay', 'a', 'Ek'];
+  const c2 = Object.assign({}, ctx, { ax: 1, ay: -2, a: 7, Ek: 4 }) as any;
+  const r1 = evalForceExpr('a + Ek + k1', c2, { names, vars: ['a', 'k1'], locals: loc, ref: (id, f) => (id === -1 && f === 'k1' ? 10 : NaN) });
+  assert(r1.ok && r1.value === 21, 'locals ' + JSON.stringify(r1));
+  assert(validateForceExpr('ax', names, []) !== null, 'ax not allowed without locals');
+  assert(findUnknownNames('ax + zz', names, [], loc).join(',') === 'zz', 'locals not unknown');
+}
 
 console.log('forceExpr selftest OK');
