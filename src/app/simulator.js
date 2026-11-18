@@ -44,7 +44,7 @@ function defaultSettings() {
     /* 轨迹显示 */
     showPredict: true, predictT: 3, strobe: 0.1 };
 }
-let scene = { settings: defaultSettings(), objects: [], view: { cx: 0, cy: 2, scale: 60 } };
+let scene = { settings: defaultSettings(), objects: [], groups: [], view: { cx: 0, cy: 2, scale: 60 } };
 
 function isBody(o) { return o && BODY_KINDS.includes(o.kind); }
 function bodies() { return scene.objects.filter(isBody); }
@@ -57,7 +57,7 @@ function mkBody(kind, p = {}) {
     /* 外力：const 恒定 | expr 表达式 | aim 指向目标 */
     F: 0, Fang: 0, Fmode: 'const', Fexpr: '', FangExpr: '0',
     FaimId: null, FaimX: 0, FaimY: 0, _Ferr: '',
-    fixed: false, trail: true, collide: true };
+    fixed: false, trail: true, collide: true, rotate: true, omega0: 0 };
   if (kind === 'particle') Object.assign(base, { m: 0.01, q: 0.01, r: 0.08, color: '#c8553d', collide: false, e: 1 });
   if (kind === 'box') Object.assign(base, { mu: 0.3, e: 0.2, color: '#d08a3c', m: 1 });
   const b = Object.assign(base, p);
@@ -91,7 +91,7 @@ const BODY_COMMON = [
   num('mus', '静摩擦因数', 'μₛ', '', { group: '接触', min: 0, def: null, step: 0.05,
     title: '最大静摩擦 fₘ = μₛN。留空等于 μ', check: (o, v) => v < (o.mu || 0) - 1e-12 ? `不能小于动摩擦因数 μ = ${o.mu}` : '' }),
   num('e', '恢复系数', 'e', '', { group: '接触', min: 0, max: 1, def: 0.6, step: 0.1, title: '碰后与碰前法向相对速度之比：1 弹性，0 完全非弹性' }),
-  bool('rotate', '允许转动', { group: '转动', init: true, rebuild: true, title: '关闭后只平动（姿态保持初始倾角）' }),
+  bool('rotate', '允许转动', { group: '转动', init: true, rebuild: true, def: true, title: '关闭后只平动（姿态保持初始倾角）' }),
   num('omega0', '初始角速度', 'ω₀', 'rad/s', { group: '转动', def: 0, init: true, when: o => o.rotate !== false, title: '逆时针为正' }),
   bool('fixed', '固定（不参与运动）', { group: '行为', init: true }),
   bool('collide', '参与物体间碰撞', { group: '行为' }),
@@ -160,7 +160,7 @@ function schemaOf(o) {
 function sanitizeBySchema(o) {
   const fixes = [];
   for (const d of schemaOf(o)) {
-    if (d.type === 'bool') { if (o[d.key] != null) o[d.key] = !!o[d.key]; continue; }
+    if (d.type === 'bool') { if (o[d.key] != null) o[d.key] = !!o[d.key]; else if (d.def != null) o[d.key] = d.def; continue; }
     let v = o[d.key];
     if (v == null) { if (d.def != null) o[d.key] = d.def; continue; }
     v = Number(v);
@@ -1102,7 +1102,7 @@ function drawDotMark(sx, sy) {
   ctx.fill();
 }
 function drawField(f) {
-  const [x, y, w, h] = fieldScreenRect(f), sel = f === selected();
+  const [x, y, w, h] = fieldScreenRect(f), sel = isSel(f);
   const isE = f.kind === 'efield', line = isE ? C['--efield-line'] : C['--bfield-line'];
   ctx.save();
   ctx.fillStyle = isE ? C['--efield'] : C['--bfield']; ctx.fillRect(x, y, w, h);
@@ -1133,7 +1133,6 @@ function drawField(f) {
   const txt = isE ? `E = ${fmt(f.E)} V/m` : `B = ${fmt(f.B)} T ${f.dir < 0 ? '⊗' : '⊙'}`;
   if (f.all) label(txt + '（全空间）', 10, isE ? 16 : 36, line);
   else label(txt, x + 6, y + 12, line);
-  if (sel && !f.all) { for (const [hx, hy] of rectHandles(f)) handleDot(hx, hy, line); }
 }
 function rectHandles(f) { const [x, y, w, h] = fieldScreenRect(f); return [[x, y], [x + w, y], [x + w, y + h], [x, y + h]]; }
 function handleDot(x, y, color, r = 5) { ctx.save(); ctx.fillStyle = C['--panel']; ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill(); ctx.stroke(); ctx.restore(); }
@@ -1145,7 +1144,7 @@ function hatchLine(x1, y1, x2, y2, side, color) {
   ctx.stroke(); ctx.restore();
 }
 function drawSurface(o) {
-  const sel = o === selected(), col = sel ? C['--accent'] : C['--surface'];
+  const sel = false, col = C['--surface'];
   ctx.save(); ctx.lineCap = 'round';
   if (o.kind === 'ground') {
     const y = w2s(0, o.y)[1];
@@ -1155,7 +1154,6 @@ function drawSurface(o) {
   } else if (o.kind === 'wall') {
     const [a, b] = w2s(o.x1, o.y1), [c, d] = w2s(o.x2, o.y2);
     ctx.strokeStyle = col; ctx.lineWidth = sel ? 4 : 3; ctx.beginPath(); ctx.moveTo(a, b); ctx.lineTo(c, d); ctx.stroke();
-    if (sel) { handleDot(a, b, col); handleDot(c, d, col); }
   } else if (o.kind === 'incline') {
     const p = inclinePts(o).map(q => w2s(q[0], q[1]));
     ctx.beginPath(); ctx.moveTo(p[0][0], p[0][1]); ctx.lineTo(p[1][0], p[1][1]); ctx.lineTo(p[2][0], p[2][1]); ctx.closePath();
@@ -1171,7 +1169,7 @@ function drawSurface(o) {
 }
 function drawLink(s) {
   const e = linkEnds(s); if (!e) return;
-  const [x1, y1] = w2s(e.x1, e.y1), [x2, y2] = w2s(e.x2, e.y2), sel = s === selected();
+  const [x1, y1] = w2s(e.x1, e.y1), [x2, y2] = w2s(e.x2, e.y2), sel = false;
   const kind = s.kind;
   const base = kind === 'rod' ? '#4d6470' : kind === 'rope' ? '#4f7faf' : '#3d8f86';
   ctx.save();
@@ -1237,15 +1235,10 @@ function drawBodyShape(b, x, y, ang, ghost) {
   }
 }
 function drawBody(b) {
-  const st = b.st, [x, y] = w2s(st.x, st.y), sel = b === selected(), S = scene.settings;
+  const st = b.st, [x, y] = w2s(st.x, st.y), S = scene.settings;
   if (b.hidden) return;
   drawBodyShape(b, x, y, st.ang, false);
   if (b.fixed) { ctx.save(); ctx.fillStyle = C['--text']; ctx.beginPath(); ctx.arc(x, y, 2.5, 0, 7); ctx.fill(); ctx.restore(); }
-  if (sel) {
-    ctx.save(); ctx.strokeStyle = C['--accent']; ctx.lineWidth = 2; ctx.setLineDash([4, 3]);
-    const r = b.kind === 'box' ? Math.hypot(b.w, b.h) / 2 * scene.view.scale + 4 : bodyScreenR(b) + 5;
-    ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.stroke(); ctx.restore();
-  }
   if (S.showLabels) label(b.name, x, y + bodyScreenR(b) + 13, C['--muted'], 'center', false);
 }
 /** 可单独选取的矢量：初速度、瞬时速度、外力，以及受力图里的分力。零矢量不画箭头。 */
@@ -1490,9 +1483,6 @@ function drawPointCharge(o) {
   ctx.beginPath(); ctx.moveTo(sx - k, sy); ctx.lineTo(sx + k, sy);
   if (pos) { ctx.moveTo(sx, sy - k); ctx.lineTo(sx, sy + k); }
   ctx.stroke();
-  if (o === selected()) {
-    ctx.setLineDash([4, 3]); ctx.strokeStyle = C['--accent']; ctx.beginPath(); ctx.arc(sx, sy, r + 5, 0, 7); ctx.stroke();
-  }
   if (scene.settings.showLabels) label(o.name + ` (${pos ? '+' : ''}${fmt(o.q, 2)} C)`, sx, sy + r + 12, C['--muted'], 'center', false);
   ctx.restore();
 }
@@ -1578,7 +1568,11 @@ function computePrediction() {
     const h = Math.max(1e-9, S.maxDt);
     let n = Math.max(1, Math.min(PRED_MAX_STEPS, Math.round(T / h)));
     // 交互预算：按上次实测的单步耗时把总耗时控制在 ~35 ms 内（拖动时保持跟手），图例会显示实际预测时长
-    if (predCache.msPerStep) n = Math.min(n, Math.max(200, Math.floor(35 / predCache.msPerStep)));
+    if (predCache.msPerStep) {
+      const per01 = Math.max(1, Math.round(0.1 / h));   // 预算截短时按 0.1 s 取整，图例上显示整齐的时长
+      const budget = Math.max(200, Math.floor(35 / predCache.msPerStep));
+      if (budget < n) n = Math.max(per01, Math.floor(budget / per01) * per01);
+    }
     const tStart = sim.t;
     predCache.steps = n;
     for (let i = 0; i < n; i++) {
@@ -1808,27 +1802,8 @@ let pending = null; // 正在创建的矩形/线段/弹簧
 /** 悬停反馈：被指到的对象描一圈半透明强调色 */
 function drawHover() {
   const o = hoverObj;
-  if (!o || (o === selected() && tool === 'select') || !scene.objects.includes(o)) return;
-  ctx.save(); ctx.strokeStyle = C['--accent']; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-  const sc = scene.view.scale;
-  if (isBody(o) && o.st) {
-    const [x, y] = w2s(o.st.x, o.st.y);
-    const r = o.kind === 'box' ? Math.hypot(o.w, o.h) / 2 * sc + 4 : bodyScreenR(o) + 4;
-    ctx.globalAlpha = 0.18; ctx.fillStyle = C['--accent']; ctx.beginPath(); ctx.arc(x, y, r + 2, 0, 7); ctx.fill();
-    ctx.globalAlpha = 0.7; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(x, y, r + 2, 0, 7); ctx.stroke();
-  } else if (o.kind === 'pointCharge') {
-    const [x, y] = w2s(o.x, o.y), r = Math.max(8, (o.softRadius || 0.08) * sc) + 5;
-    ctx.globalAlpha = 0.7; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.stroke();
-  } else {
-    ctx.globalAlpha = 0.28; ctx.lineWidth = 8; ctx.beginPath();
-    if (o.kind === 'wall') { const [a, b] = w2s(o.x1, o.y1), [c, d] = w2s(o.x2, o.y2); ctx.moveTo(a, b); ctx.lineTo(c, d); }
-    else if (isLink(o)) { const e = linkEnds(o); if (e) { const [a, b] = w2s(e.x1, e.y1), [c, d] = w2s(e.x2, e.y2); ctx.moveTo(a, b); ctx.lineTo(c, d); } }
-    else if (o.kind === 'ground') { const y = w2s(0, o.y)[1]; ctx.moveTo(0, y); ctx.lineTo(W, y); }
-    else if (o.kind === 'incline') { const p = inclinePts(o).map(q => w2s(q[0], q[1])); ctx.lineWidth = 5; ctx.moveTo(...p[0]); ctx.lineTo(...p[1]); ctx.lineTo(...p[2]); ctx.closePath(); }
-    else if (o.kind === 'efield' || o.kind === 'bfield') { const [x, y, w, h] = fieldScreenRect(o); ctx.lineWidth = 4; ctx.rect(x, y, w, h); }
-    ctx.stroke();
-  }
-  ctx.restore();
+  if (!o || (isSel(o) && tool === 'select') || !scene.objects.includes(o)) return;
+  outlineObject(o, 'hover');
 }
 /** 放置预览：添加工具激活时，在吸附后的光标位置画出半透明的待放对象 */
 function drawGhost() {
@@ -1863,16 +1838,16 @@ function draw() {
   const objs = scene.objects;
   ensureFields();
   if (scene.settings.showFieldLines) drawElectricFieldLines();
-  const shown = objs.filter(o => !o.hidden);
+  // 绘制顺序 = 图层顺序（数组越靠后越在上）；场与点电荷作为背景层先画，其余按图层顺序
+  const shown = objs.filter(o => !o.hidden && !(groupOf(o) && groupOf(o).hidden));
   shown.filter(o => o.kind === 'efield' || o.kind === 'bfield').forEach(drawField);
   shown.filter(o => o.kind === 'pointCharge').forEach(drawPointCharge);
-  shown.filter(o => ['ground', 'wall', 'incline'].includes(o.kind)).forEach(drawSurface);
-  shown.filter(isLink).forEach(drawLink);
+  shown.filter(o => ['ground', 'wall', 'incline'].includes(o.kind) || isLink(o)).forEach(o => isLink(o) ? drawLink(o) : drawSurface(o));
   ensureStates();
   analyticShown = false;
   bodies().forEach(drawTrail);
   drawPredictions();
-  bodies().forEach(drawBody);
+  shown.filter(isBody).forEach(drawBody);
   drawSelectableVectors();
   const s = selected();
   if (isBody(s) && !sim.running && sim.t > 0 && (!selVec || (selVec.bodyId === s.id && selVec.key === 'v0'))) {
@@ -1884,7 +1859,9 @@ function draw() {
     drawAnalyticPath(s);
   }
   drawPins();
+  drawSelection();
   drawHover();
+  drawMarquee();
   drawGhost();
   drawTraceHover();
   drawLegend();
@@ -1917,6 +1894,15 @@ const touchPoints = new Map();
 let pinch = null;
 function selected() { return selId != null ? byId(selId) : null; }
 function syncListSelection() {
+  renderLayerFoot();
+  document.querySelectorAll('.lrow[data-id]').forEach(r => {
+    const id = +r.dataset.id;
+    r.classList.toggle('sel', !selVec && selSet.has(id));
+    r.classList.toggle('primary', !selVec && id === selId && selSet.size > 1);
+  });
+  document.querySelectorAll('.lrow[data-vec-body]').forEach(r => {
+    r.classList.toggle('sel', !!(selVec && r.dataset.vecBody === String(selVec.bodyId) && r.dataset.vecKey === selVec.key));
+  });
   document.querySelectorAll('.objlist li').forEach(li => {
     if (li.classList.contains('vec-item')) {
       const on = selVec && li.dataset.vecBody === String(selVec.bodyId) && li.dataset.vecKey === selVec.key;
@@ -1931,7 +1917,19 @@ function select(id, opts = {}) {
   const prev = selId;
   const prevVec = selVec ? selVec.bodyId + '\0' + selVec.key : '';
   if (!opts.keepVec) selVec = null;
+  const prevSize = selSet.size;
+  if (id == null) selSet = new Set();
+  else {
+    const o = byId(id);
+    const ids = o && opts.group ? expandForClick(o, opts.deep) : [id];
+    if (opts.toggle) {
+      if (ids.every(i => selSet.has(i))) ids.forEach(i => selSet.delete(i)); else ids.forEach(i => selSet.add(i));
+      id = selSet.has(id) ? id : ([...selSet].at(-1) ?? null);
+    } else selSet = new Set(ids);
+  }
+  if (prevSize !== selSet.size) opts.forcePanel = true;
   selId = id;
+  updateOptContext();
   const vecKey = selVec ? selVec.bodyId + '\0' + selVec.key : '';
   syncListSelection();
   if ((prev !== id || prevVec !== vecKey) && !opts.deferPanel) buildPanel();
@@ -1945,6 +1943,257 @@ function selectVector(bodyId, key, opts = {}) {
   const changed = selId !== bodyId || prevVec !== nextVec;
   select(bodyId, Object.assign({ keepVec: true, forcePanel: changed }, opts));
 }
+/* =====================================================================
+ *  选择体系：selSet 为当前选中的对象集合，selId 为主对象（最后点选的那个）。
+ *  规则（与 Adobe 系软件一致）：
+ *   · 单击选中；Shift / Ctrl 单击加选或减选；空白处拖出选框
+ *   · 编组内的对象：单击选中整组，双击进入组内只选该对象
+ *   · 锁定的对象在画布上不可选、不可动，只能在图层面板里选中
+ * ===================================================================== */
+let selSet = new Set();
+function isSel(o) { return !!o && selSet.has(o.id); }
+function selection() { return [...selSet].map(byId).filter(Boolean); }
+function groupOf(o) { return o && o.group != null ? (scene.groups || []).find(g => g.id === o.group) : null; }
+function groupMembers(gid) { return scene.objects.filter(o => o.group === gid); }
+function canvasPickable(o) { return o && !o.hidden && !o.locked && !(groupOf(o) && (groupOf(o).locked || groupOf(o).hidden)); }
+/** 单击命中的对象应扩展成哪些 id（编组 → 整组） */
+function expandForClick(o, deep) {
+  const g = groupOf(o);
+  if (!g || deep) return [o.id];
+  return groupMembers(g.id).filter(m => !m.locked).map(m => m.id);
+}
+function setSelection(ids, primary, opts = {}) {
+  selSet = new Set(ids.filter(id => byId(id)));
+  selId = selSet.size ? (primary != null && selSet.has(primary) ? primary : [...selSet].at(-1)) : null;
+  selVec = null;
+  syncListSelection();
+  if (!opts.deferPanel) buildPanel();
+  requestDraw();
+  updateOptContext();
+}
+/** 所有对象（含隐藏、锁定之外）中可以“全选”的 */
+function selectAll() { setSelection(scene.objects.filter(canvasPickable).map(o => o.id)); }
+
+/* ---------------- 包围盒（世界坐标）：统一用于选框、对齐、选中框 ---------------- */
+/** initial = true：物体按初始位置（x₀, y₀, θ₀）计算——对齐、分布编辑的正是初始位置 */
+function objBounds(o, initial = false) {
+  if (isBody(o)) {
+    const st = !initial && o.st ? o.st : { x: o.x0, y: o.y0, ang: (o.ang0 || 0) * DEG };
+    if (o.kind === 'box') {
+      const c = Math.cos(st.ang || 0), s = Math.sin(st.ang || 0), hw = o.w / 2, hh = o.h / 2;
+      const ex = Math.abs(hw * c) + Math.abs(hh * s), ey = Math.abs(hw * s) + Math.abs(hh * c);
+      return [st.x - ex, st.y - ey, st.x + ex, st.y + ey];
+    }
+    return [st.x - o.r, st.y - o.r, st.x + o.r, st.y + o.r];
+  }
+  if (o.kind === 'wall') return [Math.min(o.x1, o.x2), Math.min(o.y1, o.y2), Math.max(o.x1, o.x2), Math.max(o.y1, o.y2)];
+  if (o.kind === 'incline') { const p = inclinePts(o); return [Math.min(...p.map(q => q[0])), Math.min(...p.map(q => q[1])), Math.max(...p.map(q => q[0])), Math.max(...p.map(q => q[1]))]; }
+  if (o.kind === 'efield' || o.kind === 'bfield') return o.all ? null : [o.x, o.y, o.x + o.w, o.y + o.h];
+  if (o.kind === 'pointCharge') { const r = o.softRadius || 0.08; return [o.x - r, o.y - r, o.x + r, o.y + r]; }
+  if (o.kind === 'ground') return null;
+  if (isLink(o)) { const e = linkEnds(o); return e ? [Math.min(e.x1, e.x2), Math.min(e.y1, e.y2), Math.max(e.x1, e.x2), Math.max(e.y1, e.y2)] : null; }
+  return null;
+}
+function screenRectOf(bb) { const [a, b] = w2s(bb[0], bb[3]), [c, d] = w2s(bb[2], bb[1]); return [a, b, c, d]; }
+/** 选框命中：与选框相交即选中（地面看水平线是否穿过选框） */
+function hitsMarquee(o, r) {
+  if (o.kind === 'ground') { const y = w2s(0, o.y)[1]; return y >= r[1] && y <= r[3]; }
+  const bb = objBounds(o); if (!bb) return false;
+  const [a, b, c, d] = screenRectOf(bb);
+  return a <= r[2] && c >= r[0] && b <= r[3] && d >= r[1];
+}
+
+/* ---------------- 统一的选中/悬停描边 ---------------- */
+function traceShape(o) {
+  const sc = scene.view.scale;
+  ctx.beginPath();
+  if (isBody(o) && o.st) {
+    const [x, y] = w2s(o.st.x, o.st.y);
+    if (o.kind === 'box') {
+      const c = Math.cos(o.st.ang || 0), s = Math.sin(o.st.ang || 0), hw = o.w / 2 * sc + 3, hh = o.h / 2 * sc + 3;
+      const pts = [[-hw, -hh], [hw, -hh], [hw, hh], [-hw, hh]].map(([lx, ly]) => [x + lx * c - ly * s, y - (lx * s + ly * c)]);
+      ctx.moveTo(...pts[0]); pts.slice(1).forEach(p => ctx.lineTo(...p)); ctx.closePath();
+    } else ctx.arc(x, y, bodyScreenR(o) + 3, 0, Math.PI * 2);
+  } else if (o.kind === 'pointCharge') { const [x, y] = w2s(o.x, o.y); ctx.arc(x, y, Math.max(8, (o.softRadius || 0.08) * sc) + 3, 0, Math.PI * 2); }
+  else if (o.kind === 'wall') { const [a, b] = w2s(o.x1, o.y1), [c, d] = w2s(o.x2, o.y2); ctx.moveTo(a, b); ctx.lineTo(c, d); }
+  else if (isLink(o)) { const e = linkEnds(o); if (e) { const [a, b] = w2s(e.x1, e.y1), [c, d] = w2s(e.x2, e.y2); ctx.moveTo(a, b); ctx.lineTo(c, d); } }
+  else if (o.kind === 'ground') { const y = w2s(0, o.y)[1]; ctx.moveTo(0, y); ctx.lineTo(W, y); }
+  else if (o.kind === 'incline') { const p = inclinePts(o).map(q => w2s(q[0], q[1])); ctx.moveTo(...p[0]); ctx.lineTo(...p[1]); ctx.lineTo(...p[2]); ctx.closePath(); }
+  else if ((o.kind === 'efield' || o.kind === 'bfield') && !o.all) { const [x, y, w, h] = fieldScreenRect(o); ctx.rect(x, y, w, h); }
+}
+const LINEAR_KINDS = ['wall', 'ground', 'spring', 'rope', 'rod'];
+function outlineObject(o, mode) {
+  if (!o || o.hidden || (o.kind === 'efield' || o.kind === 'bfield') && o.all) return;
+  ctx.save(); ctx.strokeStyle = C['--accent']; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  traceShape(o);
+  const linear = LINEAR_KINDS.includes(o.kind);
+  if (mode === 'hover') { ctx.globalAlpha = 0.35; ctx.lineWidth = linear ? 8 : 4; ctx.stroke(); }
+  else { ctx.globalAlpha = linear ? 0.35 : 1; ctx.lineWidth = linear ? 7 : 1.6; ctx.stroke(); }
+  ctx.restore();
+}
+/** 选中对象：统一描边 + 外接框 + 名称标签；单选时显示尺寸，并画该类型的编辑手柄 */
+function drawSelection() {
+  const list = selection().filter(o => !o.hidden);
+  if (!list.length) return;
+  for (const o of list) outlineObject(o, 'sel');
+  let box = null;
+  for (const o of list) {
+    const bb = objBounds(o); if (!bb) continue;
+    const r = screenRectOf(bb);
+    box = box ? [Math.min(box[0], r[0]), Math.min(box[1], r[1]), Math.max(box[2], r[2]), Math.max(box[3], r[3])] : r;
+  }
+  if (box && (list.length > 1 || groupOf(list[0]))) {
+    const pad = 6, [a, b, c, d] = [box[0] - pad, box[1] - pad, box[2] + pad, box[3] + pad];
+    ctx.save(); ctx.strokeStyle = C['--accent']; ctx.lineWidth = 1; ctx.setLineDash([4, 3]);
+    ctx.strokeRect(Math.round(a) + .5, Math.round(b) + .5, Math.round(c - a), Math.round(d - b)); ctx.restore();
+    const g = groupOf(list[0]), allGroup = g && list.length === groupMembers(g.id).length && list.every(o => o.group === g.id);
+    selChip(allGroup ? `▣ ${g.name} · ${list.length} 个对象` : `${list.length} 个对象`, a, b);
+  } else if (list.length === 1) {
+    const o = list[0];
+    if (box) {
+      const dims = dimText(o);
+      if (dims) label(dims, (box[0] + box[2]) / 2, box[3] + (o.kind === 'box' || o.kind === 'ball' || o.kind === 'particle' ? 28 : 14), C['--accent'], 'center', true);
+    }
+    // 单选时的编辑手柄
+    if (o.kind === 'wall') { const [p, q] = w2s(o.x1, o.y1), [u, v] = w2s(o.x2, o.y2); handleDot(p, q, C['--accent']); handleDot(u, v, C['--accent']); }
+    if ((o.kind === 'efield' || o.kind === 'bfield') && !o.all) for (const [hx, hy] of rectHandles(o)) handleDot(hx, hy, C['--accent']);
+  }
+}
+function dimText(o) {
+  if (o.kind === 'box') return `${fmt(o.w)} × ${fmt(o.h)} m`;
+  if (o.kind === 'ball' || o.kind === 'particle') return `r = ${fmt(o.r)} m`;
+  if (o.kind === 'wall') return `${fmt(Math.hypot(o.x2 - o.x1, o.y2 - o.y1))} m`;
+  if (o.kind === 'efield' || o.kind === 'bfield') return o.all ? '' : `${fmt(o.w)} × ${fmt(o.h)} m`;
+  if (o.kind === 'incline') return `θ = ${fmt(o.ang)}° · L = ${fmt(o.L)} m`;
+  return '';
+}
+function selChip(text, x, y) {
+  ctx.save(); ctx.font = '600 11px ' + UI_FONT;
+  const w = ctx.measureText(text).width + 12;
+  const bx = Math.max(2, Math.min(W - w - 2, x)), by = Math.max(2, y - 20);
+  ctx.fillStyle = C['--accent']; ctx.beginPath(); ctx.roundRect ? ctx.roundRect(bx, by, w, 17, 4) : ctx.rect(bx, by, w, 17); ctx.fill();
+  ctx.fillStyle = '#fff'; ctx.textBaseline = 'middle'; ctx.fillText(text, bx + 6, by + 9);
+  ctx.restore();
+}
+function drawMarquee() {
+  if (!drag || drag.type !== 'marquee' || !drag.active) return;
+  const [a, b, c, d] = drag.rect;
+  ctx.save(); ctx.fillStyle = C['--accent-soft']; ctx.strokeStyle = C['--accent']; ctx.lineWidth = 1; ctx.setLineDash([4, 3]);
+  ctx.fillRect(a, b, c - a, d - b); ctx.strokeRect(a + .5, b + .5, c - a, d - b); ctx.restore();
+}
+
+/* ---------------- 选择集合上的操作 ---------------- */
+/** 记录选中对象的位置字段，供拖动时“从起点 + 位移”重算，避免累计误差 */
+const POS_KEYS = ['x0', 'y0', 'x', 'y', 'x1', 'y1', 'x2', 'y2', 'ax', 'ay'];
+function posSnapshot(list) { return list.map(o => [o, Object.fromEntries(POS_KEYS.filter(k => o[k] != null).map(k => [k, o[k]]))]); }
+function restorePos(snap) { for (const [o, p] of snap) Object.assign(o, p); }
+/** 连接件随两端物体移动，不单独平移；两端都在选择里的连接件不重复移动固定点 */
+function movableSelection() {
+  const list = selection().filter(o => !o.locked);
+  return list.filter(o => !(isLink(o) && o.b != null));
+}
+function deleteSelection() {
+  const list = selection();
+  if (!list.length) return;
+  if (list.length === 1) { deleteSel(); return; }
+  pushUndo(`删除 ${list.length} 个对象`);
+  const ids = new Set(list.map(o => o.id));
+  const before = scene.objects.length;
+  scene.objects = scene.objects.filter(o => !ids.has(o.id) && !(isLink(o) && (ids.has(o.a) || ids.has(o.b))));
+  pruneGroups();
+  selSet.clear(); selId = null; selVec = null;
+  afterStructure(); buildPanel();
+  toast(`已删除 ${before - scene.objects.length} 个对象`, { action: UNDO_ACTION });
+}
+function pruneGroups() {
+  if (!scene.groups) scene.groups = [];
+  scene.groups = scene.groups.filter(g => scene.objects.filter(o => o.group === g.id).length >= 2);
+  const live = new Set(scene.groups.map(g => g.id));
+  for (const o of scene.objects) if (o.group != null && !live.has(o.group)) delete o.group;
+}
+let nextGroupId = 1;
+function groupSelection() {
+  const list = selection().filter(o => !isLink(o) || o.b == null || true);
+  if (list.length < 2) { toast('至少选中两个对象才能编组'); return; }
+  pushUndo('编组');
+  if (!scene.groups) scene.groups = [];
+  const id = nextGroupId++;
+  const n = scene.groups.length + 1;
+  scene.groups.push({ id, name: uniqueGroupName(`编组 ${n}`) });
+  for (const o of list) o.group = id;
+  pruneGroups();
+  // 编组内对象在 z 序上连续：移到组内最上层成员的位置
+  const ids = new Set(list.map(o => o.id)), top = Math.max(...list.map(o => scene.objects.indexOf(o)));
+  const rest = scene.objects.filter(o => !ids.has(o.id)), insertAt = rest.filter(o => scene.objects.indexOf(o) < top).length;
+  rest.splice(insertAt, 0, ...scene.objects.filter(o => ids.has(o.id)));
+  scene.objects = rest;
+  afterStructure(); setSelection(list.map(o => o.id), selId);
+  toast(`已编组 ${list.length} 个对象`, { action: UNDO_ACTION });
+}
+function uniqueGroupName(base) { const names = new Set((scene.groups || []).map(g => g.name)); let n = base, i = 2; while (names.has(n)) n = base.replace(/\d+$/, '') + (i++); return n; }
+function ungroupSelection() {
+  const gids = new Set(selection().map(o => o.group).filter(g => g != null));
+  if (!gids.size) { toast('选中的对象没有编组'); return; }
+  pushUndo('取消编组');
+  for (const o of scene.objects) if (gids.has(o.group)) delete o.group;
+  pruneGroups(); afterStructure(); buildPanel();
+  toast(`已取消 ${gids.size} 个编组`, { action: UNDO_ACTION });
+}
+function setLocked(list, v) {
+  if (!list.length) return;
+  pushUndo(v ? '锁定' : '解锁');
+  for (const o of list) { if (v) o.locked = true; else delete o.locked; }
+  if (v) setSelection([]); else { refreshLeft(); buildPanel(); }
+  markDirty(); requestDraw();
+  toast(v ? `已锁定 ${list.length} 个对象（在图层面板中解锁）` : `已解锁 ${list.length} 个对象`, { action: UNDO_ACTION });
+}
+function setHidden(list, v) {
+  if (!list.length) return;
+  pushUndo(v ? '隐藏' : '显示');
+  for (const o of list) { if (v) o.hidden = true; else delete o.hidden; }
+  if (v) setSelection([]); else refreshLeft();
+  markDirty(); requestDraw();
+  toast(v ? `已隐藏 ${list.length} 个对象（仍参与物理计算）` : `已显示 ${list.length} 个对象`, { action: UNDO_ACTION });
+}
+/** z 序：scene.objects 越靠后越在上层。how = front | forward | backward | back */
+function arrangeSelection(how) {
+  const list = selection(); if (!list.length) return;
+  pushUndo({ front: '置于顶层', forward: '上移一层', backward: '下移一层', back: '置于底层' }[how]);
+  const ids = new Set(list.map(o => o.id)), arr = scene.objects;
+  if (how === 'front' || how === 'back') {
+    const moving = arr.filter(o => ids.has(o.id)), rest = arr.filter(o => !ids.has(o.id));
+    scene.objects = how === 'front' ? [...rest, ...moving] : [...moving, ...rest];
+  } else if (how === 'forward') {
+    for (let i = arr.length - 2; i >= 0; i--) if (ids.has(arr[i].id) && !ids.has(arr[i + 1].id)) [arr[i], arr[i + 1]] = [arr[i + 1], arr[i]];
+  } else {
+    for (let i = 1; i < arr.length; i++) if (ids.has(arr[i].id) && !ids.has(arr[i - 1].id)) [arr[i], arr[i - 1]] = [arr[i - 1], arr[i]];
+  }
+  afterStructure();
+}
+/** 对齐 / 分布：按包围盒计算，平移对象本身 */
+function alignSelection(mode) {
+  const list = movableSelection().filter(o => objBounds(o, true));
+  if (list.length < (mode.startsWith('dist') ? 3 : 2)) { toast(mode.startsWith('dist') ? '分布需要至少 3 个对象' : '对齐需要至少 2 个对象'); return; }
+  pushUndo({ left: '左对齐', hcenter: '水平居中对齐', right: '右对齐', top: '顶对齐', vcenter: '垂直居中对齐', bottom: '底对齐', disth: '水平分布', distv: '垂直分布' }[mode]);
+  const bb = list.map(o => objBounds(o, true));
+  const minX = Math.min(...bb.map(b => b[0])), maxX = Math.max(...bb.map(b => b[2])), minY = Math.min(...bb.map(b => b[1])), maxY = Math.max(...bb.map(b => b[3]));
+  if (mode === 'disth' || mode === 'distv') {
+    const ax = mode === 'disth' ? 0 : 1;
+    const order = list.map((o, i) => [o, bb[i]]).sort((p, q) => (p[1][ax] + p[1][ax + 2]) - (q[1][ax] + q[1][ax + 2]));
+    const c0 = (order[0][1][ax] + order[0][1][ax + 2]) / 2, c1 = (order.at(-1)[1][ax] + order.at(-1)[1][ax + 2]) / 2;
+    order.forEach(([o, b], i) => { const target = c0 + (c1 - c0) * i / (order.length - 1), cur = (b[ax] + b[ax + 2]) / 2; translateObject(o, ax ? 0 : target - cur, ax ? target - cur : 0); });
+  } else {
+    list.forEach((o, i) => {
+      const b = bb[i];
+      const dx = mode === 'left' ? minX - b[0] : mode === 'right' ? maxX - b[2] : mode === 'hcenter' ? (minX + maxX) / 2 - (b[0] + b[2]) / 2 : 0;
+      const dy = mode === 'bottom' ? minY - b[1] : mode === 'top' ? maxY - b[3] : mode === 'vcenter' ? (minY + maxY) / 2 - (b[1] + b[3]) / 2 : 0;
+      translateObject(o, clean(dx), clean(dy));
+    });
+  }
+  if (list.some(isBody)) initChanged(); else liveEdit();
+  buildPanel();
+}
+
 const TOOL_HINT = {
   select: '',
   pan: '拖动画布平移 · 滚轮缩放', ball: '点击画布放置小球（按住 Shift 可连续放置）',
@@ -1962,6 +2211,7 @@ function setTool(t) {
   const hint = $('#toolhint');
   if (hint) hint.innerHTML = TOOL_HINT[t] ? `${escapeHtml(TOOL_HINT[t])}${t !== 'select' && t !== 'pan' ? ' <span class="th-k">Alt 关闭吸附 · Esc 取消</span>' : ''}` : '';
   hoverObj = null;
+  updateOptContext();
   cv.style.cursor = t === 'pan' ? 'grab' : t === 'select' ? 'default' : 'crosshair';
   if (leftTab === 'add') refreshLeft();
   draw();
@@ -1973,7 +2223,7 @@ function evPos(e) { const r = cv.getBoundingClientRect(); return [e.clientX - r.
 function hitBody(sx, sy) {
   const list = bodies();
   for (let i = list.length - 1; i >= 0; i--) {
-    const b = list[i]; if (b.hidden || !b.st) continue;
+    const b = list[i]; if (!canvasPickable(b) || !b.st) continue;
     const [x, y] = w2s(b.st.x, b.st.y);
     if (b.kind === 'box') {
       const a = b.st.ang, dx = sx - x, dy = -(sy - y), c = Math.cos(a), s = Math.sin(a);
@@ -1990,7 +2240,7 @@ function pointInTri(p, a, b, c) {
   return (A >= 0 && B >= 0 && D >= 0) || (A <= 0 && B <= 0 && D <= 0);
 }
 function hitOther(sx, sy) {
-  const objs = scene.objects.filter(o => !o.hidden);
+  const objs = scene.objects.filter(canvasPickable);
   for (const o of objs) if (o.kind === 'pointCharge') {
     const [x, y] = w2s(o.x, o.y);
     const r = Math.max(8, (o.softRadius || 0.08) * scene.view.scale);
@@ -2157,17 +2407,19 @@ cv.addEventListener('pointerdown', e => {
     }
     return;
   }
-  if (cur && (cur.kind === 'efield' || cur.kind === 'bfield') && !cur.all) {
+  const additive = e.shiftKey || e.ctrlKey || e.metaKey;
+  // 单选时的类型手柄（区域四角、挡板端点）
+  if (cur && selSet.size === 1 && !cur.locked && (cur.kind === 'efield' || cur.kind === 'bfield') && !cur.all) {
     const hs = rectHandles(cur);
     for (let i = 0; i < 4; i++) if (Math.hypot(sx - hs[i][0], sy - hs[i][1]) < 9) { pushUndo('调整区域'); drag = { type: 'fieldCorner', o: cur, i, moved: false }; return; }
   }
-  if (cur && cur.kind === 'wall') {
+  if (cur && selSet.size === 1 && !cur.locked && cur.kind === 'wall') {
     const [a, b] = w2s(cur.x1, cur.y1), [c, d] = w2s(cur.x2, cur.y2);
     if (Math.hypot(sx - a, sy - b) < 9) { pushUndo('调整端点'); drag = { type: 'wallEnd', o: cur, end: 1, moved: false }; return; }
     if (Math.hypot(sx - c, sy - d) < 9) { pushUndo('调整端点'); drag = { type: 'wallEnd', o: cur, end: 2, moved: false }; return; }
   }
   const hb = hitBody(sx, sy);
-  if (hb && sim.running && !hb.fixed) {
+  if (hb && sim.running && !hb.fixed && !additive) {
     // 运行中：直接抓住物体，松手时按鼠标速度甩出（不改初始条件）
     select(hb.id, { deferPanel: true });
     hb._grab = { x: hb.st.x, y: hb.st.y, vx: 0, vy: 0, t: performance.now() };
@@ -2175,22 +2427,40 @@ cv.addEventListener('pointerdown', e => {
     cv.style.cursor = 'grabbing';
     return;
   }
-  if (hb) {
-    // 拖拽开始时不要同步重建右侧面板（MathQuill 很重），松手后再建
-    select(hb.id, { deferPanel: true }); pushUndo(`移动「${hb.name}」`);
-    drag = { type: 'body', b: hb, ox: wp[0] - hb.st.x, oy: wp[1] - hb.st.y, moved: false, sx, sy, wasT: sim.t };
+  if (!hb && !additive) {
+    const pi = hitPin(sx, sy);
+    if (pi >= 0) { const p = pins[pi]; pins.splice(pi, 1); toast('已移除标记点'); if (selId === p.bodyId) buildPanel(); requestDraw(); drag = null; return; }
+    const th = findTrace(sx, sy);
+    if (th) { addPin(th); traceHit = null; requestDraw(); return; }
+  }
+  const ho = hb || hitOther(sx, sy);
+  if (ho) {
+    if (additive) { select(ho.id, { group: true, toggle: true }); return; }          // Shift/Ctrl：加选或减选
+    if (!isSel(ho)) select(ho.id, { group: true, deferPanel: true });               // 编组：整组选中
+    else if (selId !== ho.id) { selId = ho.id; }
+    const movers = movableSelection();
+    if (!movers.length) return;
+    if (movers.length === 1 && isBody(movers[0])) {
+      const b = movers[0];
+      pushUndo(`移动「${b.name}」`);
+      drag = { type: 'body', b, ox: wp[0] - b.st.x, oy: wp[1] - b.st.y, moved: false, sx, sy, wasT: sim.t };
+      return;
+    }
+    pushUndo(movers.length > 1 ? `移动 ${movers.length} 个对象` : `移动「${ho.name}」`);
+    drag = { type: 'moveSel', snap: posSnapshot(movers), start: sp, moved: false, sx, sy, wasT: sim.t, hasBody: movers.some(isBody) };
     return;
   }
-  const pi = hitPin(sx, sy);
-  if (pi >= 0) { const p = pins[pi]; pins.splice(pi, 1); toast('已移除标记点'); if (selId === p.bodyId) buildPanel(); requestDraw(); drag = null; return; }
-  const th = findTrace(sx, sy);
-  if (th) { addPin(th); traceHit = null; requestDraw(); return; }
-  const ho = hitOther(sx, sy);
-  if (ho) {
-    select(ho.id, { deferPanel: true }); pushUndo(`移动「${ho.name}」`);
-    drag = { type: 'moveObj', o: ho, last: wp, snapLast: sp, moved: false }; return;
-  }
-  drag = { type: 'pan', sx, sy, cx: scene.view.cx, cy: scene.view.cy, click: true };
+  if (e.pointerType === 'touch') { drag = { type: 'pan', sx, sy, cx: scene.view.cx, cy: scene.view.cy, click: true }; return; }
+  // 空白处：拖出选框（Shift 在原选择上追加）
+  drag = { type: 'marquee', sx, sy, rect: [sx, sy, sx, sy], add: additive, base: additive ? new Set(selSet) : new Set(), active: false };
+});
+let lastDragMovedAt = 0;
+cv.addEventListener('dblclick', e => {
+  if (tool !== 'select') return;
+  if (performance.now() - lastDragMovedAt < 120) return;   // 第二下其实是一次拖动（dblclick 紧随其 pointerup 触发），不算双击
+  const [sx, sy] = evPos(e);
+  const o = hitBody(sx, sy) || hitOther(sx, sy);
+  if (o && groupOf(o)) { select(o.id, { group: true, deep: true, forcePanel: true }); toast(`已进入「${groupOf(o).name}」，只选中「${o.name}」`); }
 });
 cv.addEventListener('pointermove', e => {
   const [sx, sy] = evPos(e);
@@ -2260,6 +2530,27 @@ cv.addEventListener('pointermove', e => {
     b._Ferr = '';
     liveEdit(); return;
   }
+  if (drag.type === 'marquee') {
+    if (!drag.active && Math.hypot(sx - drag.sx, sy - drag.sy) < 4) return;
+    drag.active = true;
+    drag.rect = [Math.min(drag.sx, sx), Math.min(drag.sy, sy), Math.max(drag.sx, sx), Math.max(drag.sy, sy)];
+    const ids = new Set(drag.base);
+    for (const o of scene.objects) {
+      if (!canvasPickable(o) || !hitsMarquee(o, drag.rect)) continue;
+      for (const id of expandForClick(o, false)) ids.add(id);
+    }
+    setSelection([...ids], null, { deferPanel: true });
+    return;
+  }
+  if (drag.type === 'moveSel') {
+    if (!drag.moved && Math.hypot(sx - drag.sx, sy - drag.sy) < 3) return;
+    drag.moved = true;
+    restorePos(drag.snap);
+    const dx = clean(sp[0] - drag.start[0]), dy = clean(sp[1] - drag.start[1]);
+    for (const [o] of drag.snap) translateObject(o, dx, dy);
+    if (drag.hasBody) syncInitialLive(null); else liveEditLight();
+    return;
+  }
   if (drag.type === 'body') {
     if (!drag.moved && Math.hypot(sx - drag.sx, sy - drag.sy) < 3) return;
     drag.moved = true;
@@ -2290,6 +2581,7 @@ cv.addEventListener('pointermove', e => {
 function finishDrag(e) {
   if (!drag) return;
   const d = drag; drag = null;
+  if (d.moved || d.active) lastDragMovedAt = performance.now();
   try { if (e && e.pointerId != null) cv.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
   if (d.type === 'grab') {
     const b = d.b, g = b._grab; b._grab = null;
@@ -2303,6 +2595,18 @@ function finishDrag(e) {
     cv.style.cursor = 'default'; buildPanel(); requestDraw(); return;
   }
   if (d.type === 'pan') { cv.style.cursor = tool === 'pan' ? 'grab' : 'default'; if (d.click && tool === 'select') select(null); markDirty(); return; }
+  if (d.type === 'marquee') {
+    if (!d.active) { if (!d.add) select(null); return; }
+    buildPanel(); refreshLeft(); requestDraw();
+    return;
+  }
+  if (d.type === 'moveSel') {
+    if (!d.moved) { cancelLastUndo(); buildPanel(); refreshLeft(); return; }
+    if (d.hasBody && d.wasT > 0) toast('已修改初始位置，回到 t = 0');
+    if (d.hasBody) initChanged(); else { markFieldsDirty(); markDirty(); draw(); }
+    buildPanel(); refreshLeft();
+    return;
+  }
   if (d.type === 'create' && pending) {
     const p = pending; pending = null;
     const tiny = Math.abs(p.x2 - p.x1) < 1e-9 && Math.abs(p.y2 - p.y1) < 1e-9;
@@ -2480,12 +2784,12 @@ function translateObject(o, dx, dy) {
 }
 let lastNudge = 0;
 function nudgeSel(dx, dy) {
-  const o = selected(); if (!o) return false;
+  const list = movableSelection(); if (!list.length) return false;
   const now = performance.now();
-  if (now - lastNudge > 700) pushUndo(`移动「${o.name}」`);   // 连续按键合并为一步撤销
+  if (now - lastNudge > 700) pushUndo(list.length > 1 ? `移动 ${list.length} 个对象` : `移动「${list[0].name}」`);   // 连续按键合并为一步撤销
   lastNudge = now;
-  if (!translateObject(o, dx, dy)) { toast('两端都连着物体的连接件不能单独移动'); return true; }
-  if (isBody(o)) initChanged(); else liveEdit();
+  list.forEach(o => translateObject(o, dx, dy));
+  if (list.some(isBody)) initChanged(); else liveEdit();
   updateStatus(true);
   return true;
 }
@@ -2500,49 +2804,31 @@ document.addEventListener('keydown', e => {
   const isRange = tag === 'INPUT' && (ae.type === 'range' || ae.type === 'checkbox');
   const typing = !isRange && (['INPUT', 'SELECT', 'TEXTAREA'].includes(tag) || (ae && ae.isContentEditable) || (ae && ae.closest && ae.closest('.mq-editable-field')));
   if (typing) { if (e.key === 'Escape') ae.blur(); return; }
+  if (modalOpen()) return;
   if (isRange && (e.key.startsWith('Arrow') || e.key === 'Home' || e.key === 'End')) return; // 滑块自身处理方向键
   if (isRange && e.key === ' ') ae.blur();
-  const k = e.key.toLowerCase(), mod = e.ctrlKey || e.metaKey;
-  if (mod && k === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
-  if (mod && k === 'y') { e.preventDefault(); redo(); return; }
-  if (mod && k === 'd') { e.preventDefault(); duplicateSel(); return; }
-  if (mod && k === 'c') { if (selected()) { e.preventDefault(); copySel(); } return; }
-  if (mod && k === 'v') { e.preventDefault(); pasteClip(); return; }
-  if (mod && k === 's') { e.preventDefault(); $('#bSave')?.click(); return; }
-  if (mod && (k === '=' || k === '+')) { e.preventDefault(); zoomAt(1.25); return; }
-  if (mod && k === '-') { e.preventDefault(); zoomAt(0.8); return; }
-  if (mod || e.altKey) return;
-  if (e.key === ' ') { e.preventDefault(); if (!e.repeat) togglePlay(); return; }
-  if (k === 'delete' || k === 'backspace') { e.preventDefault(); deleteSel(); return; }
-  if (k.startsWith('arrow')) {
-    if (!selected() || selVec) return;
-    e.preventDefault();
-    const st = (scene.settings.snapStep || 0.1) * (e.shiftKey ? 10 : 1);
-    nudgeSel(k === 'arrowleft' ? -st : k === 'arrowright' ? st : 0, k === 'arrowup' ? st : k === 'arrowdown' ? -st : 0);
-    return;
-  }
-  if (k === 'escape') {
+  if (e.key === 'Escape') {
+    if (openMenuIdx >= 0) { closeMenus(); return; }
     if ($('#help').classList.contains('show')) { $('#help').classList.remove('show'); return; }
-    $('#moreMenu')?.classList.remove('open');
     $('#viewFlags')?.classList.remove('show'); $('#bView')?.classList.remove('active');
     hideContextMenu();
     closeMobilePanels();
+    if (homeShown() && docOpen) { hideHome(); return; }
     if (pending) { pending = null; draw(); }
     if (tool !== 'select') setTool('select');
     else if (selVec) { selVec = null; syncListSelection(); buildPanel(); draw(); }
-    else if (selId != null) select(null);
+    else if (selSet.size) setSelection([]);
     return;
   }
-  if (e.key === '?') { $('#help').classList.toggle('show'); return; }
-  if (k === 'r') { resetSim('已重置到 t = 0'); draw(); updateReadouts(); return; }
-  if (k === '.') { stepOnce(); return; }
-  if (k === ',') { stepBack(); return; }
-  if (k === '=' || k === '+') { zoomAt(1.25); return; }
-  if (k === '-') { zoomAt(0.8); return; }
-  if (k === 'v') { setTool('select'); return; }
-  if (k === 'h') { setTool('pan'); return; }
-  if (k === 'f') { fitView(); return; }
-  if (TOOL_KEYS[e.key]) { setTool(TOOL_KEYS[e.key]); toast(`${KIND_NAME[TOOL_KEYS[e.key]]}：${TOOL_HINT[TOOL_KEYS[e.key]]}`); return; }
+  if (e.key.startsWith('Arrow') && !(e.ctrlKey || e.metaKey || e.altKey)) {
+    if (!docOpen || homeShown() || !selSet.size || selVec) return;
+    e.preventDefault();
+    const st = (scene.settings.snapStep || 0.1) * (e.shiftKey ? 10 : 1), k = e.key;
+    nudgeSel(k === 'ArrowLeft' ? -st : k === 'ArrowRight' ? st : 0, k === 'ArrowUp' ? st : k === 'ArrowDown' ? -st : 0);
+    return;
+  }
+  if (e.repeat && e.code === 'Space') { e.preventDefault(); return; }
+  handleShortcut(e);
 });
 // 鼠标点过的按钮立刻失焦，避免随后按空格时按钮被再次“点击”
 document.addEventListener('pointerup', e => {
@@ -2554,6 +2840,7 @@ document.addEventListener('pointerup', e => {
 const undoStack = [], redoStack = [];
 /** 记录一步可撤销操作。label 用于提示「已撤销：xxx」。 */
 function pushUndo(label = '修改参数') {
+  bumpEdit();
   undoStack.push({ s: serialize(), label, redo: redoStack.splice(0) });
   if (undoStack.length > 120) undoStack.shift();
   syncHistoryButtons();
@@ -2561,19 +2848,25 @@ function pushUndo(label = '修改参数') {
 /** 操作最终没有产生改动（例如点了一下没拖动）：撤回刚压入的记录，并恢复重做栈。 */
 function cancelLastUndo() {
   const it = undoStack.pop();
+  if (it) editSeq--;
   if (it && it.redo) redoStack.push(...it.redo);
   syncHistoryButtons();
 }
 function restoreSnapshot(json) {
-  const keepSel = selId, keepVec = selVec;
+  const keepSel = selId, keepVec = selVec, keepSet = [...selSet];
   loadScene(JSON.parse(json), true);
-  if (keepSel != null && byId(keepSel)) { selId = keepSel; selVec = keepVec && byId(keepVec.bodyId) ? keepVec : null; syncListSelection(); buildPanel(); draw(); }
+  const alive = keepSet.filter(id => byId(id));
+  if (alive.length) {
+    selSet = new Set(alive); selId = byId(keepSel) ? keepSel : alive.at(-1);
+    selVec = keepVec && byId(keepVec.bodyId) ? keepVec : null;
+    syncListSelection(); buildPanel(); draw(); updateOptContext();
+  }
 }
 function undo() {
   const it = undoStack.pop();
   if (!it) { toast('没有可撤销的操作'); return; }
   redoStack.push({ s: serialize(), label: it.label });
-  restoreSnapshot(it.s);
+  restoreSnapshot(it.s); bumpEdit();
   toast(it.label ? `已撤销：${it.label}` : '已撤销');
   syncHistoryButtons();
 }
@@ -2581,7 +2874,7 @@ function redo() {
   const it = redoStack.pop();
   if (!it) { toast('没有可重做的操作'); return; }
   undoStack.push({ s: serialize(), label: it.label });
-  restoreSnapshot(it.s);
+  restoreSnapshot(it.s); bumpEdit();
   toast(it.label ? `已重做：${it.label}` : '已重做');
   syncHistoryButtons();
 }
@@ -2647,34 +2940,95 @@ function cloneObject(src, dx, dy) {
   else { c.x = clean(c.x + dx); c.y = clean(c.y + dy); }
   return c;
 }
-function insertClone(src, dx, dy, label) {
-  if (isLink(src)) { toast('连接件请用「添加」工具重新连接两端'); return; }
-  pushUndo(label);
-  const c = cloneObject(src, dx, dy);
-  scene.objects.push(c);
-  if (isBody(c)) { if (sim.t > 0) resetSim(); initState(c); }
-  afterStructure(); select(c.id);
-  toast(`已${label}「${c.name}」`, { action: UNDO_ACTION });
+/**
+ * 克隆一组对象：连接件只有两端都在这组里（或一端固定点）时才一起复制，并把端点 id 重映射到副本；
+ * 编组关系在副本中保留为新的编组。
+ */
+function cloneSet(srcs, dx, dy) {
+  const ids = new Set(srcs.map(o => o.id)), idMap = new Map(), gMap = new Map(), out = [];
+  for (const o of srcs) {
+    if (isLink(o)) continue;
+    const c = cloneObject(o, dx, dy);
+    idMap.set(o.id, c.id);
+    if (o.group != null) { if (!gMap.has(o.group)) gMap.set(o.group, nextGroupId++); c.group = gMap.get(o.group); }
+    out.push(c);
+  }
+  // 连接件：选中的，或两端都被复制的
+  const links = scene.objects.filter(l => isLink(l) && idMap.has(l.a) && (l.b == null || idMap.has(l.b)));
+  for (const l of [...new Set([...srcs.filter(isLink), ...links])]) {
+    if (!idMap.has(l.a) || (l.b != null && !idMap.has(l.b))) continue;
+    const c = JSON.parse(JSON.stringify(Object.assign({}, l, { _N: 0 })));
+    c.id = nextId++; c.name = uniqueName(l.name + ' 副本'); c.a = idMap.get(l.a); if (l.b != null) c.b = idMap.get(l.b);
+    if (l.b == null) { c.ax = clean(c.ax + dx); c.ay = clean(c.ay + dy); }
+    delete c.group;
+    out.push(c);
+  }
+  if (gMap.size) {
+    if (!scene.groups) scene.groups = [];
+    for (const [old, nid] of gMap) { const g = (scene.groups || []).find(x => x.id === old); scene.groups.push({ id: nid, name: uniqueGroupName((g ? g.name : '编组') + ' 副本') }); }
+  }
+  return out;
 }
+function insertClones(srcs, dx, dy, label) {
+  if (!srcs.length) return;
+  if (srcs.every(isLink)) { toast('连接件请与它连接的物体一起复制'); return; }
+  pushUndo(label);
+  const made = cloneSet(srcs, dx, dy);
+  scene.objects.push(...made);
+  pruneGroups();
+  if (made.some(isBody)) { if (sim.t > 0) resetSim(); made.filter(isBody).forEach(initState); }
+  afterStructure();
+  setSelection(made.filter(o => !isLink(o)).map(o => o.id));
+  toast(made.length === 1 ? `已${label}「${made[0].name}」` : `已${label} ${made.length} 个对象`, { action: UNDO_ACTION });
+}
+function insertClone(src, dx, dy, label) { insertClones([src], dx, dy, label); }
 function duplicateSel() {
-  const s = selected(); if (!s) return;
+  const list = selection().filter(o => !o.locked);
+  if (!list.length) return;
   const off = Math.max(scene.settings.snapStep || 0.1, 0.5);
-  insertClone(s, off, s.kind === 'ground' ? off : -off, '复制');
+  insertClones(list, off, list.length === 1 && list[0].kind === 'ground' ? off : -off, '复制');
 }
 let clipboard = null;
-function copySel() {
-  const s = selected(); if (!s) return;
-  if (isLink(s)) { toast('连接件不能单独复制'); return; }
-  clipboard = JSON.parse(JSON.stringify(Object.assign({}, s, { st: null })));
-  toast(`已复制「${s.name}」· Ctrl+V 粘贴到鼠标处`);
+function copySel(cut = false) {
+  const list = selection();
+  if (!list.length) return;
+  const ids = new Set(list.map(o => o.id));
+  const links = scene.objects.filter(l => isLink(l) && ids.has(l.a) && (l.b == null || ids.has(l.b)));
+  clipboard = JSON.parse(JSON.stringify([...new Set([...list, ...links])].map(o => Object.assign({}, o, { st: null, _exprErr: null, _hold: null, _grab: null }))));
+  if (cut) {
+    pushUndo('剪切');
+    const kill = new Set(list.map(o => o.id));
+    scene.objects = scene.objects.filter(o => !kill.has(o.id) && !(isLink(o) && (kill.has(o.a) || kill.has(o.b))));
+    pruneGroups(); selSet.clear(); selId = null; afterStructure(); buildPanel();
+    toast(`已剪切 ${list.length} 个对象`, { action: UNDO_ACTION });
+  } else toast(list.length === 1 ? `已拷贝「${list[0].name}」· Ctrl+V 粘贴到鼠标处` : `已拷贝 ${list.length} 个对象`);
 }
 function pasteClip() {
-  if (!clipboard) { toast('剪贴板是空的'); return; }
-  const c = clipboard;
-  const ox = isBody(c) ? c.x0 : c.kind === 'wall' ? (c.x1 + c.x2) / 2 : c.kind === 'ground' ? 0 : c.x;
-  const oy = isBody(c) ? c.y0 : c.kind === 'wall' ? (c.y1 + c.y2) / 2 : c.y;
-  const p = mouseIn ? snapPt(mouseW) : [ox + 0.5, oy - 0.5];
-  insertClone(c, p[0] - ox, p[1] - oy, '粘贴');
+  if (!clipboard || !clipboard.length) { toast('剪贴板是空的'); return; }
+  // 以剪贴板内容的包围盒中心对齐到鼠标位置（不在画布上时偏移 0.5 m）
+  const objs = clipboard.map(o => JSON.parse(JSON.stringify(o)));
+  const bbs = objs.filter(o => !isLink(o)).map(o => { const t = Object.assign({}, o, { st: null }); return objBounds(t); }).filter(Boolean);
+  let cx = 0, cy = 0;
+  if (bbs.length) { cx = (Math.min(...bbs.map(b => b[0])) + Math.max(...bbs.map(b => b[2]))) / 2; cy = (Math.min(...bbs.map(b => b[1])) + Math.max(...bbs.map(b => b[3]))) / 2; }
+  const p = mouseIn ? snapPt(mouseW) : [cx + 0.5, cy - 0.5];
+  insertClonesFrom(objs, clean(p[0] - cx), clean(p[1] - cy));
+}
+/** 从剪贴板数据（可能已不在场景中）克隆 */
+function insertClonesFrom(pool, dx, dy) {
+  const idMap = new Map(), out = [];
+  pushUndo('粘贴');
+  for (const o of pool) { if (isLink(o)) continue; const c = cloneObject(o, dx, dy); delete c.group; idMap.set(o.id, c.id); out.push(c); }
+  for (const l of pool) {
+    if (!isLink(l) || !idMap.has(l.a) || (l.b != null && !idMap.has(l.b))) continue;
+    const c = JSON.parse(JSON.stringify(l)); c.id = nextId++; c.name = uniqueName(l.name); c.a = idMap.get(l.a); if (l.b != null) c.b = idMap.get(l.b);
+    if (l.b == null) { c.ax = clean(c.ax + dx); c.ay = clean(c.ay + dy); }
+    delete c.group; out.push(c);
+  }
+  scene.objects.push(...out);
+  if (out.some(isBody)) { if (sim.t > 0) resetSim(); out.filter(isBody).forEach(initState); }
+  afterStructure();
+  setSelection(out.filter(o => !isLink(o)).map(o => o.id));
+  toast(`已粘贴 ${out.length} 个对象`, { action: UNDO_ACTION });
 }
 
 /* ---------------- 播放控制 ---------------- */
@@ -2711,11 +3065,12 @@ function loop(ts) {
 function afterFrame() { requestDraw(); updateReadouts(); }
 function updateBadge() {
   updateTimeline();
+  const zp = $('#zoomPct'); if (zp) { const t = `${fmt(scene.view.scale, 3)} px/m`; if (zp.textContent !== t) zp.textContent = t; }
   $('#tbadge').innerHTML = `t = <b>${fmt(sim.t, 3)}</b> s &nbsp;<span class="${sim.running ? 'run' : 'pause'}">${sim.running ? '● 运行中' : sim.t === 0 ? '○ 初始' : '‖ 暂停'}</span>${scene.settings.speed !== 1 ? ` &nbsp;${scene.settings.speed}×` : ''}`;
 }
-function fitView() {
+function fitView(only) {
   const pts = [];
-  for (const o of scene.objects) {
+  for (const o of (only && only.length ? only : scene.objects)) {
     if (isBody(o)) { pts.push([o.st ? o.st.x : o.x0, o.st ? o.st.y : o.y0], [o.x0, o.y0]); }
     else if (o.kind === 'wall') pts.push([o.x1, o.y1], [o.x2, o.y2]);
     else if (o.kind === 'incline') pts.push(...inclinePts(o));
@@ -2955,8 +3310,10 @@ function buildPanel() {
   binds = [];
   derivedLive = [];
   const P = $('#props'); P.innerHTML = '';
+  P.classList.remove('is-locked');
   const o = selected();
   if (!o) return buildScenePanel(P);
+  if (selSet.size > 1 && !selVec) return buildMultiPanel(P);
   if (isBody(o) && selVec && selVec.bodyId === o.id) return buildVectorInspector(P, o, selVec.key);
 
   const head = el('div', { class: 'insp-head' });
@@ -2984,10 +3341,92 @@ function buildPanel() {
   head.appendChild(acts);
   P.appendChild(head);
   const kindExtra = o.kind === 'bfield' ? (o.dir < 0 ? ' · 向里' : ' · 向外') : '';
-  P.appendChild(el('div', { class: 'insp-meta' }, KIND_NAME[o.kind] + kindExtra));
+  const g = groupOf(o);
+  P.appendChild(el('div', { class: 'insp-meta' }, KIND_NAME[o.kind] + kindExtra + (g ? ` · 属于「${escapeHtml(g.name)}」` : '')));
+  if (o.locked) {
+    P.classList.add('is-locked');
+    const bn = el('div', { class: 'lock-banner' }, '<span>已锁定：画布上不可选择或移动，属性只读。</span>');
+    bn.appendChild(el('button', { type: 'button', onclick: () => setLocked([o], false) }, '解锁'));
+    P.appendChild(bn);
+  }
 
   if (isBody(o)) buildBodyPanel(P, o);
   else buildNonBodyPanel(P, o);
+}
+
+/** 多选：共同属性（取值不同时显示“混合”，修改会应用到全部）、排列与对齐 */
+function buildMultiPanel(P) {
+  const list = selection();
+  const head = el('div', { class: 'insp-head' });
+  const g = groupOf(list[0]);
+  const whole = g && list.every(o => o.group === g.id) && list.length === groupMembers(g.id).length;
+  if (whole) {
+    const nm = el('input', { type: 'text', value: g.name, 'aria-label': '编组名称', title: '编组名称' });
+    nm.addEventListener('change', () => { pushUndo('重命名编组'); g.name = nm.value.trim() || g.name; nm.value = g.name; refreshLeft(); requestDraw(); markDirty(); });
+    nm.addEventListener('keydown', e => { if (e.key === 'Enter') nm.blur(); });
+    head.appendChild(nm);
+  } else head.appendChild(el('div', { class: 'insp-title' }, `${list.length} 个对象`));
+  const acts = el('div', { class: 'insp-actions' });
+  acts.appendChild(el('button', { type: 'button', title: '复制 (Ctrl+D)', 'aria-label': '复制', onclick: duplicateSel }, '<svg class="ic"><use href="#i-copy"/></svg>'));
+  acts.appendChild(el('button', { type: 'button', class: 'danger', title: '删除 (Delete)', 'aria-label': '删除', onclick: deleteSelection }, '<svg class="ic"><use href="#i-trash"/></svg>'));
+  head.appendChild(acts);
+  P.appendChild(head);
+  const counts = {};
+  list.forEach(o => { counts[KIND_NAME[o.kind]] = (counts[KIND_NAME[o.kind]] || 0) + 1; });
+  P.appendChild(el('div', { class: 'insp-meta' }, (whole ? `编组 · ${list.length} 个对象 · ` : '') + Object.entries(counts).map(([k, n]) => `${n} ${k}`).join(' · ')));
+  const panels = el('div', { class: 'tab-panels' });
+  const pp = panelBox('props', 'props');
+
+  // 共同属性：每个对象的 schema 里都有、且单位一致的属性
+  const defsOf = o => schemaOf(o).filter(d => !d.when || d.when(o));
+  const common = defsOf(list[0]).filter(d => list.every(o => defsOf(o).some(e => e.key === d.key && e.type === d.type && e.unit === d.unit)));
+  const editable = list.filter(o => !o.locked);
+  if (common.length) {
+    const groups = [...new Set(common.map(d => d.group))];
+    for (const gname of groups) {
+      const sec = section(pp, `${gname}（共同）`);
+      for (const d of common.filter(x => x.group === gname)) {
+        if (['x', 'y', 'x0', 'y0', 'x1', 'y1', 'x2', 'y2', 'ax', 'ay'].includes(d.key)) continue;   // 位置各不相同，用对齐/移动
+        const vals = list.map(o => d.key === 'mus' ? (o.mus ?? o.mu ?? 0) : (o[d.key] ?? d.def));
+        const same = vals.every(v => v === vals[0]);
+        if (d.type === 'bool') {
+          const c = chkRow(sec, d.label + (same ? '' : '（混合）'), () => list.every(o => !!(o[d.key] ?? d.def)), v => { editable.forEach(o => { o[d.key] = v; }); }, { init: d.init });
+          if (!same) c.indeterminate = true;
+          continue;
+        }
+        const inp = numRow(sec, `${d.label} <i class="sym">${d.sym}</i>`, () => (list.every(o => (d.key === 'mus' ? (o.mus ?? o.mu ?? 0) : o[d.key]) === vals[0]) ? vals[0] : NaN),
+          v => { editable.forEach(o => { o[d.key] = v; }); }, d.unit, {
+            min: d.min, minEx: d.minEx, max: d.max, step: d.step, init: d.init, title: d.title,
+            validate: v => { for (const o of editable) { const m = d.check ? d.check(o, v) : ''; if (m) return `「${o.name}」：${m}`; } return ''; },
+            after: () => { if (list.some(o => FIELD_SOURCE_KINDS.includes(o.kind))) markFieldsDirty(); refreshLeft(); },
+          });
+        if (!same) inp.placeholder = '混合';
+      }
+    }
+  } else {
+    const s0 = section(pp, '属性');
+    s0.appendChild(el('div', { class: 'hint' }, '所选对象类型不同，没有共同属性。在图层面板里单独选中某个对象即可编辑它。'));
+  }
+
+  const ar = section(pp, '排列');
+  const b1 = el('div', { class: 'btnrow' });
+  btn(b1, whole ? '取消编组' : '编组', whole ? ungroupSelection : groupSelection, '', whole ? 'Ctrl+Shift+G' : 'Ctrl+G');
+  btn(b1, '置于顶层', () => arrangeSelection('front')); btn(b1, '置于底层', () => arrangeSelection('back'));
+  btn(b1, '锁定', () => setLocked(list, true)); btn(b1, '隐藏', () => setHidden(list, true));
+  ar.appendChild(b1);
+  const al = section(pp, '对齐与分布');
+  const grid = el('div', { class: 'align-grid' });
+  [['left', '左对齐', 'M3 2v12M6 5h7M6 11h4'], ['hcenter', '水平居中', 'M8 2v12M4 5h8M5.5 11h5'], ['right', '右对齐', 'M13 2v12M3 5h7M6 11h4'],
+    ['top', '顶对齐', 'M2 3h12M5 6v7M11 6v4'], ['vcenter', '垂直居中', 'M2 8h12M5 4v8M11 5.5v5'], ['bottom', '底对齐', 'M2 13h12M5 3v7M11 6v4'],
+    ['disth', '水平分布', 'M2 3v10M14 3v10M6 5v6M10 5v6'], ['distv', '垂直分布', 'M3 2h10M3 14h10M5 6h6M5 10h6']].forEach(([m, t, d]) => {
+    const bt = el('button', { type: 'button', title: t, 'aria-label': t }, `<svg viewBox="0 0 16 16" width="16" height="16"><path d="${d}" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg><span>${t}</span>`);
+    bt.onclick = () => alignSelection(m);
+    grid.appendChild(bt);
+  });
+  al.appendChild(grid);
+  al.appendChild(el('div', { class: 'hint' }, '按各对象的包围盒对齐；物体移动的是初始位置。分布需要至少 3 个对象。'));
+  panels.appendChild(pp); P.appendChild(panels);
+  syncDesmosKeypadForAnalysis(false);
 }
 
 function buildVectorInspector(P, b, key) {
@@ -3066,7 +3505,7 @@ function buildVectorInspector(P, b, key) {
 const FIELD_SOURCE_KINDS = ['efield', 'bfield', 'pointCharge'];
 function propRow(parent, o, d) {
   if (d.type === 'bool') {
-    return chkRow(parent, d.label, () => !!o[d.key], v => { o[d.key] = v; if (FIELD_SOURCE_KINDS.includes(o.kind)) markFieldsDirty(); },
+    return chkRow(parent, d.label, () => !!(o[d.key] ?? d.def), v => { o[d.key] = v; if (FIELD_SOURCE_KINDS.includes(o.kind)) markFieldsDirty(); },
       { init: d.init, rebuild: d.rebuild });
   }
   const get = d.key === 'mus' ? () => (o.mus ?? o.mu ?? 0) : () => o[d.key];
@@ -3581,7 +4020,7 @@ function buildScenePanel(P) {
       const s = section(pOv, '开始');
       s.appendChild(el('div', { class: 'hint' }, `从左侧「实验」载入一个经典模型，或在「添加」里自己搭建。选中物体可设置初态、外力，并查看运动分析。`));
       const br = el('div', { class: 'btnrow' });
-      btn(br, '浏览实验库', () => { leftTab = 'presets'; leftChip = 'all'; document.querySelectorAll('#leftTabs button').forEach(b => b.classList.toggle('active', b.dataset.leftTab === 'presets')); if (window.matchMedia('(max-width: 820px)').matches) openMobile('presets'); else { $('#main').classList.remove('noleft'); syncPanelToggleButtons(); refreshLeft(); } });
+      btn(br, '从模板新建', () => showHome('templates'));
       btn(br, '使用说明', () => $('#help').classList.add('show'));
       s.appendChild(br);
     }
@@ -3704,82 +4143,219 @@ function matchQuery(text, q) {
   return String(text).toLowerCase().includes(q.trim().toLowerCase());
 }
 
+/* =====================================================================
+ *  图层面板：编组 ▸ 对象 ▸（连接件、矢量）
+ *  · 顺序即 z 序：列表越靠上越在前（scene.objects 越靠后）
+ *  · 连接件挂在它连接的第一个物体下面，随物体移动
+ *  · 眼睛 = 隐藏（仍参与物理计算）；锁 = 画布上不可选、不可动
+ * ===================================================================== */
+const ICON = {
+  chev: '<svg viewBox="0 0 12 12"><path d="M4.5 2.5 8 6l-3.5 3.5" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  eye: '<svg viewBox="0 0 16 16"><path d="M1.5 8S4 3.5 8 3.5 14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8z" stroke="currentColor" stroke-width="1.3" fill="none"/><circle cx="8" cy="8" r="2" fill="currentColor"/></svg>',
+  eyeOff: '<svg viewBox="0 0 16 16"><path d="M2 2l12 12M6.3 4c.5-.3 1.1-.5 1.7-.5 4 0 6.5 4.5 6.5 4.5s-.7 1.3-2 2.5M9.8 11.9c-.6.4-1.2.6-1.8.6-4 0-6.5-4.5-6.5-4.5s.8-1.4 2.2-2.6" stroke="currentColor" stroke-width="1.3" fill="none" stroke-linecap="round"/></svg>',
+  lock: '<svg viewBox="0 0 16 16"><rect x="3.5" y="7" width="9" height="6.5" rx="1.3" stroke="currentColor" stroke-width="1.3" fill="none"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2" stroke="currentColor" stroke-width="1.3" fill="none"/></svg>',
+  unlock: '<svg viewBox="0 0 16 16"><rect x="3.5" y="7" width="9" height="6.5" rx="1.3" stroke="currentColor" stroke-width="1.3" fill="none"/><path d="M5.5 7V5a2.5 2.5 0 0 1 4.8-1" stroke="currentColor" stroke-width="1.3" fill="none"/></svg>',
+};
+const layerOpen = new Set();          // 展开的物体 id（显示连接件 / 矢量）
+let layerDrag = null;
+function attachedTo(l) { return isLink(l) ? byId(l.a) : null; }
+function isChildLink(o) { const a = attachedTo(o); return !!(a && isBody(a)); }
+function swatchClass(o) { return isBody(o) ? (o.kind === 'box' ? 'sq' : '') : (isLink(o) || o.kind === 'wall' || o.kind === 'ground') ? 'ln' : 'sq'; }
+function layerMatches(o, q) { return !q || matchQuery(o.name, q) || matchQuery(KIND_NAME[o.kind] || '', q) || matchQuery(summaryOf(o), q); }
+
+function buildLayerTree(q) {
+  const objs = scene.objects, nodes = [], seen = new Set();
+  const objNode = o => {
+    const kids = isBody(o) ? objs.filter(l => isLink(l) && l.a === o.id).reverse() : [];
+    return { type: 'obj', o, kids };
+  };
+  for (let i = objs.length - 1; i >= 0; i--) {
+    const o = objs[i];
+    if (isChildLink(o)) continue;
+    const g = groupOf(o);
+    if (g) {
+      if (seen.has(g.id)) continue; seen.add(g.id);
+      const members = objs.filter(m => m.group === g.id && !isChildLink(m)).reverse().map(objNode);
+      nodes.push({ type: 'group', g, kids: members });
+    } else nodes.push(objNode(o));
+  }
+  if (!q) return nodes;
+  const keep = n => n.type === 'group' ? (n.kids = n.kids.filter(keep)).length > 0 || matchQuery(n.g.name, q)
+    : layerMatches(n.o, q) || n.kids.some(k => layerMatches(k, q));
+  return nodes.filter(keep);
+}
+
+function layerRow(opts) {
+  const { o, g, ind, hasKids, open, vec } = opts;
+  const r = el('div', { class: 'lrow' + (g ? ' group' : ''), style: `--ind:${ind}` });
+  const tw = el('button', { type: 'button', class: 'tw' + (open ? ' open' : ''), tabindex: '-1', 'aria-label': open ? '折叠' : '展开' }, hasKids ? ICON.chev : '');
+  if (!hasKids) tw.style.visibility = 'hidden';
+  r.appendChild(tw);
+  if (vec) {
+    r.appendChild(el('span')); r.appendChild(el('span'));
+    r.appendChild(el('span', { class: 'lsw ln', style: `--c:${vec.color}` }));
+    const m = el('div', { class: 'lmain' }); m.appendChild(el('div', { class: 'lname' }, escapeHtml(vec.name))); r.appendChild(m);
+    r.appendChild(el('span', { class: 'lkind' }, '矢量'));
+    return { r, tw };
+  }
+  const target = g || o;
+  const hidden = !!target.hidden, locked = !!target.locked;
+  const eye = el('button', { type: 'button', class: 'eye' + (hidden ? ' off' : ''), title: hidden ? '显示' : '隐藏（仍参与物理计算）', 'aria-label': hidden ? '显示' : '隐藏', tabindex: '-1' }, hidden ? ICON.eyeOff : ICON.eye);
+  const lk = el('button', { type: 'button', class: 'lock' + (locked ? ' on' : ''), title: locked ? '解锁' : '锁定', 'aria-label': locked ? '解锁' : '锁定', tabindex: '-1' }, locked ? ICON.lock : ICON.unlock);
+  r.appendChild(eye); r.appendChild(lk);
+  r.appendChild(el('span', { class: 'lsw ' + (g ? 'grp' : swatchClass(o)), style: g ? '' : `--c:${objColor(o)}` }));
+  const m = el('div', { class: 'lmain' });
+  m.appendChild(el('div', { class: 'lname' }, escapeHtml(g ? g.name : o.name)));
+  m.appendChild(el('div', { class: 'lsum' }, escapeHtml(g ? `${groupMembers(g.id).length} 个对象` : summaryOf(o))));
+  r.appendChild(m);
+  r.appendChild(el('span', { class: 'lkind' }, g ? '编组' : (KIND_NAME[o.kind] || '')));
+  const dimmed = hidden || (o && groupOf(o) && groupOf(o).hidden);
+  if (dimmed) r.classList.add('dim');
+  return { r, tw, eye, lk, m };
+}
+
+function renderLayers(host) {
+  const q = leftQuery;
+  const wrap = el('div', { class: 'layers', role: 'tree' });
+  const tree = buildLayerTree(q);
+  const cnt = $('#layerCount'); if (cnt) cnt.textContent = scene.objects.length ? `${scene.objects.length} 个对象${(scene.groups || []).length ? ` · ${scene.groups.length} 个编组` : ''}` : '';
+  if (!tree.length) {
+    wrap.appendChild(el('div', { class: 'empty-hint' }, scene.objects.length ? '没有匹配的图层。' : '文档是空的。用左侧工具条（或「插入」菜单）添加物体、表面、场与约束。'));
+    host.appendChild(wrap); renderLayerFoot(); return;
+  }
+  const addObj = (n, ind) => {
+    const o = n.o;
+    const open = layerOpen.has(o.id) || (q && n.kids.some(k => layerMatches(k, q)));
+    const vecs = isBody(o) ? listVectors(o) : [];
+    const { r, tw, eye, lk, m } = layerRow({ o, ind, hasKids: n.kids.length > 0 || vecs.length > 0, open });
+    r.dataset.id = String(o.id);
+    if (!selVec && selSet.has(o.id)) r.classList.add('sel');
+    if (!selVec && selSet.size > 1 && o.id === selId) r.classList.add('primary');
+    tw.onclick = ev => { ev.stopPropagation(); open ? layerOpen.delete(o.id) : layerOpen.add(o.id); refreshLeft(); };
+    eye.onclick = ev => { ev.stopPropagation(); setHidden([o], !o.hidden); };
+    lk.onclick = ev => { ev.stopPropagation(); setLocked([o], !o.locked); };
+    r.onclick = ev => { select(o.id, { toggle: ev.shiftKey || ev.ctrlKey || ev.metaKey, forcePanel: true }); closeMobilePanels(); };
+    m.ondblclick = ev => { ev.stopPropagation(); inlineRename(m, o.name, v => { pushUndo('重命名'); o.name = v; buildPanel(); requestDraw(); markDirty(); }); };
+    r.oncontextmenu = ev => { ev.preventDefault(); if (!selSet.has(o.id)) select(o.id); openContextMenu(ev.clientX, ev.clientY, o, 'list'); };
+    if (!isChildLink(o)) makeDraggable(r, { id: o.id });
+    wrap.appendChild(r);
+    if (open) {
+      for (const k of n.kids) addObj({ o: k, kids: [] }, ind + 1);
+      for (const v of vecs) {
+        const { r: vr } = layerRow({ vec: v, ind: ind + 1 });
+        vr.dataset.vecBody = String(o.id); vr.dataset.vecKey = v.key;
+        if (selVec && selVec.bodyId === o.id && selVec.key === v.key) vr.classList.add('sel');
+        vr.onclick = ev => { ev.stopPropagation(); selectVector(o.id, v.key); closeMobilePanels(); };
+        vr.oncontextmenu = ev => { ev.preventDefault(); selectVector(o.id, v.key); openVectorMenu(ev.clientX, ev.clientY, o, v.key); };
+        wrap.appendChild(vr);
+      }
+    }
+  };
+  for (const n of tree) {
+    if (n.type === 'group') {
+      const g = n.g, open = !g.collapsed || !!q;
+      const { r, tw, eye, lk, m } = layerRow({ g, ind: 0, hasKids: true, open });
+      r.dataset.group = String(g.id);
+      const members = groupMembers(g.id);
+      if (!selVec && members.length && members.every(x => selSet.has(x.id))) r.classList.add('sel');
+      tw.onclick = ev => { ev.stopPropagation(); g.collapsed = !g.collapsed; if (!g.collapsed) delete g.collapsed; refreshLeft(); markDirty(); };
+      eye.onclick = ev => { ev.stopPropagation(); pushUndo(g.hidden ? '显示编组' : '隐藏编组'); g.hidden = !g.hidden; if (!g.hidden) delete g.hidden; refreshLeft(); requestDraw(); markDirty(); };
+      lk.onclick = ev => { ev.stopPropagation(); pushUndo(g.locked ? '解锁编组' : '锁定编组'); g.locked = !g.locked; if (!g.locked) delete g.locked; if (g.locked) setSelection([]); refreshLeft(); markDirty(); };
+      r.onclick = ev => {
+        const ids = members.map(x => x.id);
+        if (ev.shiftKey || ev.ctrlKey || ev.metaKey) { const all = ids.every(i => selSet.has(i)); ids.forEach(i => all ? selSet.delete(i) : selSet.add(i)); setSelection([...selSet]); }
+        else setSelection(ids);
+      };
+      m.ondblclick = ev => { ev.stopPropagation(); inlineRename(m, g.name, v => { pushUndo('重命名编组'); g.name = v; buildPanel(); requestDraw(); markDirty(); }); };
+      makeDraggable(r, { group: g.id });
+      wrap.appendChild(r);
+      if (open) for (const k of n.kids) addObj(k, 1);
+    } else addObj(n, 0);
+  }
+  host.appendChild(wrap);
+  renderLayerFoot();
+}
+function renderLayerFoot() {
+  const f = $('#layerFoot'); if (!f) return;
+  f.innerHTML = '';
+  const n = selSet.size;
+  const b = (t, fn, title, dis) => { const x = el('button', { type: 'button', title: title || t }, t); x.onclick = fn; if (dis) x.disabled = true; f.appendChild(x); };
+  b('编组', groupSelection, '编组 (Ctrl+G)', n < 2);
+  b('取消编组', ungroupSelection, '取消编组 (Ctrl+Shift+G)', !selection().some(o => o.group != null));
+  f.appendChild(el('span', { class: 'lf-sp' }));
+  b('删除', () => deleteSelection(), '删除 (Delete)', !n);
+}
+function inlineRename(host, value, commit) {
+  const name = host.querySelector('.lname');
+  const inp = el('input', { type: 'text', class: 'rename', value });
+  name.replaceWith(inp); inp.focus(); inp.select();
+  let done = false;
+  const finish = ok => { if (done) return; done = true; const v = inp.value.trim(); if (ok && v && v !== value) commit(v); refreshLeft(); };
+  inp.addEventListener('keydown', e => { if (e.key === 'Enter') finish(true); else if (e.key === 'Escape') finish(false); e.stopPropagation(); });
+  inp.addEventListener('blur', () => finish(true));
+  inp.addEventListener('click', e => e.stopPropagation());
+}
+/* 拖动排序：放在某行上方/下方 = 调整前后；放在编组行中部 = 移入该组；放在顶层对象旁 = 移出编组 */
+function makeDraggable(r, ref) {
+  r.draggable = true;
+  r.addEventListener('dragstart', e => {
+    let ids;
+    if (ref.group != null) ids = groupMembers(ref.group).map(o => o.id);
+    else ids = selSet.has(ref.id) ? selection().filter(o => !isChildLink(o)).map(o => o.id) : [ref.id];
+    layerDrag = { ids, group: ref.group };
+    e.dataTransfer.effectAllowed = 'move';
+    try { e.dataTransfer.setData('text/plain', 'layer'); } catch { }
+  });
+  r.addEventListener('dragend', () => { layerDrag = null; document.querySelectorAll('.lrow').forEach(x => x.classList.remove('drop-above', 'drop-below', 'drop-into')); });
+  r.addEventListener('dragover', e => {
+    if (!layerDrag) return;
+    e.preventDefault();
+    const rc = r.getBoundingClientRect(), y = (e.clientY - rc.top) / rc.height;
+    const isGroup = ref.group != null && layerDrag.group == null;
+    const pos = isGroup && y > 0.3 && y < 0.7 ? 'into' : y < 0.5 ? 'above' : 'below';
+    r.classList.toggle('drop-above', pos === 'above'); r.classList.toggle('drop-below', pos === 'below'); r.classList.toggle('drop-into', pos === 'into');
+    r.dataset.drop = pos;
+  });
+  r.addEventListener('dragleave', () => r.classList.remove('drop-above', 'drop-below', 'drop-into'));
+  r.addEventListener('drop', e => {
+    e.preventDefault();
+    if (!layerDrag) return;
+    const pos = r.dataset.drop || 'above';
+    moveLayers(layerDrag.ids, ref, pos, layerDrag.group);
+    layerDrag = null;
+  });
+}
+function moveLayers(ids, ref, pos, draggedGroup) {
+  const idset = new Set(ids);
+  if (ref.id != null && idset.has(ref.id)) return;
+  if (ref.group != null && draggedGroup === ref.group) return;
+  pushUndo('调整图层顺序');
+  const moving = scene.objects.filter(o => idset.has(o.id));
+  const rest = scene.objects.filter(o => !idset.has(o.id));
+  let anchorIdx, targetGroup = undefined;
+  if (ref.group != null) {
+    const mem = rest.filter(o => o.group === ref.group).map(o => rest.indexOf(o));
+    if (pos === 'into') { anchorIdx = Math.max(...mem) + 1; targetGroup = ref.group; }
+    else { anchorIdx = pos === 'above' ? Math.max(...mem) + 1 : Math.min(...mem); targetGroup = null; }
+  } else {
+    const t = byId(ref.id), k = rest.indexOf(t);
+    anchorIdx = pos === 'above' ? k + 1 : k;
+    targetGroup = t.group != null ? t.group : null;
+  }
+  if (draggedGroup == null) for (const o of moving) { if (targetGroup == null) delete o.group; else o.group = targetGroup; }
+  rest.splice(anchorIdx, 0, ...moving);
+  scene.objects = rest;
+  pruneGroups();
+  afterStructure(); buildPanel();
+}
+
 function refreshLeft() {
   const host = $('#leftBody');
   if (!host) return;
   host.innerHTML = '';
   const q = leftQuery;
 
-  if (leftTab === 'objects') {
-    if (leftChip === 'spring') leftChip = 'link';
-    const chips = el('div', { class: 'chips' });
-    [['all', '全部'], ['body', '物体'], ['field', '场'], ['surface', '表面'], ['link', '约束']].forEach(([id, lab]) => {
-      const b = el('button', { type: 'button', class: 'chip' + (leftChip === id ? ' active' : '') }, lab);
-      b.onclick = () => { leftChip = id; refreshLeft(); };
-      chips.appendChild(b);
-    });
-    host.appendChild(chips);
-    const wrap = el('div', { class: 'side-body pad' });
-    const groups = [
-      ['物体', 'body', o => isBody(o)],
-      ['场', 'field', o => o.kind === 'efield' || o.kind === 'bfield' || o.kind === 'pointCharge'],
-      ['表面', 'surface', o => ['ground', 'wall', 'incline'].includes(o.kind)],
-      ['约束', 'link', o => isLink(o)],
-    ];
-    let any = false;
-    for (const [title, chip, pred] of groups) {
-      if (leftChip !== 'all' && leftChip !== chip) continue;
-      const items = scene.objects.filter(o => pred(o) && (matchQuery(o.name, q) || matchQuery(KIND_NAME[o.kind], q)));
-      if (!items.length) continue;
-      any = true;
-      wrap.appendChild(el('div', { class: 'objgroup' }, `${title} · ${items.length}`));
-      const ul = el('ul', { class: 'objlist' });
-      for (const o of items) {
-        const li = el('li', { class: (!selVec && o.id === selId ? 'sel' : '') + (o.hidden ? ' is-hidden' : '') });
-        const col = objColor(o);
-        const sw = el('button', { type: 'button', class: 'swatch', title: o.hidden ? '显示' : '隐藏（仍参与物理计算）', 'aria-label': o.hidden ? '显示' : '隐藏',
-          style: `--c:${col}` });
-        sw.addEventListener('click', ev => {
-          ev.stopPropagation();
-          pushUndo(o.hidden ? '显示对象' : '隐藏对象');
-          o.hidden = !o.hidden; if (!o.hidden) delete o.hidden;
-          refreshLeft(); markDirty(); requestDraw();
-        });
-        li.appendChild(sw);
-        const main = el('div', { class: 'om' });
-        main.appendChild(el('div', { class: 'on' }, escapeHtml(o.name)));
-        main.appendChild(el('div', { class: 'os' }, escapeHtml(summaryOf(o))));
-        li.appendChild(main);
-        li.appendChild(el('span', { class: 'ty' }, KIND_NAME[o.kind] || ''));
-        li.dataset.id = String(o.id);
-        li.addEventListener('click', () => { select(o.id); closeMobilePanels(); });
-        li.addEventListener('contextmenu', (ev) => {
-          ev.preventDefault();
-          select(o.id);
-          openContextMenu(ev.clientX, ev.clientY, o, 'list');
-        });
-        ul.appendChild(li);
-        const expanded = selId === o.id || (selVec && selVec.bodyId === o.id);
-        if (isBody(o) && expanded && (leftChip === 'all' || leftChip === 'body')) {
-          for (const v of listVectors(o)) {
-            const vi = el('li', { class: 'vec-item' + (selVec && selVec.bodyId === o.id && selVec.key === v.key ? ' sel' : '') });
-            vi.dataset.vecBody = String(o.id);
-            vi.dataset.vecKey = v.key;
-            vi.appendChild(el('span', { class: 'dot', style: `background:${v.color}` }));
-            vi.appendChild(el('span', {}, v.name));
-            vi.appendChild(el('span', { class: 'ty' }, '矢量'));
-            vi.addEventListener('click', (ev) => { ev.stopPropagation(); selectVector(o.id, v.key); closeMobilePanels(); });
-            vi.addEventListener('contextmenu', (ev) => { ev.preventDefault(); ev.stopPropagation(); selectVector(o.id, v.key); openVectorMenu(ev.clientX, ev.clientY, o, v.key); });
-            ul.appendChild(vi);
-          }
-        }
-      }
-      wrap.appendChild(ul);
-    }
-    if (!any) wrap.appendChild(el('div', { class: 'empty-hint' }, scene.objects.length ? '无匹配结果。' : '场景为空。切换到「添加」或「预设」开始。'));
-    host.appendChild(wrap);
-    return;
-  }
+  if (leftTab === 'objects') { renderLayers(host); return; }
 
   if (leftTab === 'add') {
     const grid = el('div', { class: 'add-grid' });
@@ -3800,46 +4376,7 @@ function refreshLeft() {
     return;
   }
 
-  if (leftTab === 'presets') {
-    const chips = el('div', { class: 'chips' });
-    const cats = ['全部', ...PRESET_CATS];
-    const cur = leftChip === 'all' ? '全部' : leftChip;
-    cats.forEach(c => {
-      const id = c === '全部' ? 'all' : c;
-      const b = el('button', { type: 'button', class: 'chip' + (cur === c || (c === '全部' && leftChip === 'all') ? ' active' : '') }, c);
-      b.onclick = () => { leftChip = id; refreshLeft(); };
-      chips.appendChild(b);
-    });
-    // fix active state
-    chips.querySelectorAll('.chip').forEach(ch => {
-      const lab = ch.textContent;
-      const id = lab === '全部' ? 'all' : lab;
-      ch.classList.toggle('active', leftChip === id);
-    });
-    host.appendChild(chips);
-    const wrap = el('div', { class: 'side-body pad' });
-    let any = false;
-    for (const key of Object.keys(PRESETS)) {
-      const meta = PRESET_META[key] || { cat: '其他', tags: [] };
-      if (leftChip !== 'all' && meta.cat !== leftChip) continue;
-      const P_ = PRESETS[key], name = P_.name;
-      const blob = [name, meta.cat, ...(meta.tags || []), P_.desc || ''].join(' ');
-      if (!matchQuery(blob, q)) continue;
-      any = true;
-      const item = el('div', { class: 'preset-item' + (scene.info && scene.info.key === key ? ' sel' : ''), role: 'button', tabindex: '0' });
-      const top = el('div', { class: 'p-top' });
-      top.appendChild(el('div', { class: 'p-name' }, `${name}${meta.fresh ? '<span class="p-new">新</span>' : ''}`));
-      top.appendChild(el('div', { class: 'p-cat' }, meta.cat));
-      item.appendChild(top);
-      const short = (P_.desc || '').split('。')[0];
-      if (short) item.appendChild(el('div', { class: 'p-desc' }, short.length > 46 ? short.slice(0, 45) + '…' : short + '。'));
-      item.onclick = () => { loadPreset(key); closeMobilePanels(); };
-      item.onkeydown = e => { if (e.key === 'Enter') item.onclick(); };
-      wrap.appendChild(item);
-    }
-    if (!any) wrap.appendChild(el('div', { class: 'empty-hint' }, '无匹配预设。'));
-    host.appendChild(wrap);
-  }
+  return;
 }
 
 function buildList() { refreshLeft(); }
@@ -3856,6 +4393,7 @@ function setDockActive(dock) {
   document.querySelectorAll('#mobile-dock button').forEach(b => b.classList.toggle('active', b.dataset.dock === dock));
 }
 function closeMobilePanels(resetDock = true) {
+  if (leftTab !== 'objects') { setLeftMode('objects'); refreshLeft(); }
   $('#left')?.classList.remove('open');
   $('#right')?.classList.remove('open');
   $('#viewFlags')?.classList.remove('show');
@@ -3869,11 +4407,17 @@ function openMobileView() {
   setDockActive('view');
 }
 
+function setLeftMode(mode) {
+  leftTab = mode;
+  const t = $('#leftTitle'); if (t) t.textContent = mode === 'add' ? '添加' : '图层';
+  const f = $('#layerFoot'); if (f) f.style.display = mode === 'add' ? 'none' : '';
+  const sw = document.querySelector('#left .search-wrap'); if (sw) sw.style.display = mode === 'add' ? 'none' : '';
+}
 function openMobile(which) {
   const left = $('#left'), right = $('#right'), scrim = $('#panelScrim');
   closeMobilePanels(false);
   if (which === 'objects' || which === 'add' || which === 'presets') {
-    leftTab = which;
+    setLeftMode(which === 'add' ? 'add' : 'objects');
     leftChip = 'all';
     document.querySelectorAll('#leftTabs button').forEach(b => b.classList.toggle('active', b.dataset.leftTab === leftTab));
     refreshLeft();
@@ -4731,6 +5275,7 @@ const PRESETS = {
 };
 function loadPreset(key) {
   const p = PRESETS[key]; if (!p) return;
+  if (!docOpen) { docOpen = true; doc = { id: null, title: p.name, savedSeq: editSeq + 1 }; hideHome(); }
   pushUndo(`载入「${p.name}」`);
   const sc = p.make(); sc.objects.forEach(o => { if (isBody(o)) o.st = null; });
   sc.info = { key };
@@ -4738,13 +5283,14 @@ function loadPreset(key) {
   loadScene(sc, false);
   if (!sc.view || W < 640) fitView();
   toast(`已载入「${p.name}」· 空格播放`, { action: UNDO_ACTION });
+  syncDocTitle();
 }
 
 /* =====================================================================
  *  保存 / 载入
  * ===================================================================== */
 function serialize() {
-  return JSON.stringify({ app: 'physim', version: 1, settings: scene.settings, view: scene.view, info: scene.info || null,
+  return JSON.stringify({ app: 'physim', version: 2, settings: scene.settings, view: scene.view, info: scene.info || null, groups: scene.groups || [],
     objects: scene.objects.map(o => {
       const c = Object.assign({}, o);
       delete c.st; delete c._exprErr; delete c._hold; delete c._Ferr; delete c._grab; delete c._N;
@@ -4787,11 +5333,15 @@ function loadScene(data, keepView) {
     }),
     view: keepView ? oldView : Object.assign({ cx: 0, cy: 2, scale: 60 }, data.view || {}),
     info: data.info && PRESETS[data.info.key] ? { key: data.info.key } : null,
+    groups: Array.isArray(data.groups) ? data.groups.map(g => ({ id: +g.id, name: String(g.name || '编组'), ...(g.hidden ? { hidden: true } : {}), ...(g.locked ? { locked: true } : {}), ...(g.collapsed ? { collapsed: true } : {}) })) : [],
   };
+  nextGroupId = scene.groups.reduce((m, g) => Math.max(m, g.id), 0) + 1;
+  pruneGroups();
   nextId = scene.objects.reduce((m, o) => Math.max(m, o.id || 0), 0) + 1;
   if (selId != null && !byId(selId)) selId = null;
   if (selVec && !byId(selVec.bodyId)) selVec = null;
-  if (!keepView) { selId = null; selVec = null; pins = []; }
+  if (!keepView) { selId = null; selVec = null; pins = []; selSet = new Set(); }
+  selSet = new Set([...selSet].filter(id => byId(id)));
   pins = pins.filter(p => scene.objects.some(o => o.id === p.bodyId));
   predCache.key = '';
   if (leftChip === 'spring') leftChip = 'link';
@@ -4799,7 +5349,7 @@ function loadScene(data, keepView) {
   if (normalizeObject.fixed.length) setTimeout(() => toast(`已修正 ${normalizeObject.fixed.length} 处不合法的参数：${normalizeObject.fixed.slice(0, 2).join('；')}${normalizeObject.fixed.length > 2 ? '…' : ''}`), 50);
 }
 let saveT = 0;
-function markDirty() { clearTimeout(saveT); saveT = setTimeout(() => { try { localStorage.setItem(STORE_KEY, serialize()); } catch (e) { } }, 400); }
+function markDirty() { clearTimeout(saveT); saveT = setTimeout(() => { if (!docOpen) return; try { localStorage.setItem(STORE_KEY, serialize()); } catch (e) { } }, 400); }
 
 /* =====================================================================
  *  工具栏绑定
@@ -4849,51 +5399,19 @@ function initToolbar() {
     $('#chkFieldLines').onchange = e => { scene.settings.showFieldLines = e.target.checked; markFieldsDirty(); markDirty(); draw(); };
   }
 
-  // left tabs
-  document.querySelectorAll('#leftTabs [data-left-tab]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      leftTab = btn.dataset.leftTab;
-      leftChip = 'all';
-      document.querySelectorAll('#leftTabs button').forEach(b => b.classList.toggle('active', b === btn));
-      refreshLeft();
-    });
-  });
   const q = $('#qLeft');
-  if (q) {
-    q.addEventListener('input', () => { leftQuery = q.value; refreshLeft(); });
-  }
-  document.addEventListener('keydown', e => {
-    if (e.key === '/' && !['INPUT', 'TEXTAREA', 'SELECT'].includes((document.activeElement || {}).tagName)) {
-      e.preventDefault();
-      if (window.matchMedia('(max-width: 820px)').matches) openMobile('objects');
-      $('#qLeft')?.focus();
-    }
-  });
-
-  // more menu
-  const moreBtn = $('#bMore'), moreMenu = $('#moreMenu');
-  moreBtn?.addEventListener('click', e => {
-    e.preventDefault();
-    e.stopPropagation();
-    moreMenu?.classList.toggle('open');
-  });
-  document.addEventListener('click', e => {
-    if (moreMenu?.classList.contains('open') && !moreMenu.contains(e.target) && e.target !== moreBtn) {
-      moreMenu.classList.remove('open');
-    }
-  });
-  moreMenu?.addEventListener('click', e => e.stopPropagation());
+  if (q) q.addEventListener('input', () => { leftQuery = q.value; refreshLeft(); });
+  q?.addEventListener('keydown', e => { if (e.key === 'Escape') { q.value = ''; leftQuery = ''; refreshLeft(); q.blur(); } });
+  const moreMenu = null;
 
   // display popover
   const viewBtn = $('#bView'), viewPop = $('#viewFlags');
   viewBtn?.addEventListener('click', e => {
     e.preventDefault(); e.stopPropagation();
-    moreMenu?.classList.remove('open');
     const open = !viewPop.classList.contains('show');
     viewPop.classList.toggle('show', open);
     viewBtn.classList.toggle('active', open);
   });
-  moreBtn?.addEventListener('click', () => { viewPop?.classList.remove('show'); viewBtn?.classList.remove('active'); });
   document.addEventListener('click', e => {
     if (!viewPop?.classList.contains('show')) return;
     if (viewPop.contains(e.target) || viewBtn?.contains(e.target) || e.target.closest?.('#mobile-dock')) return;
@@ -4909,71 +5427,18 @@ function initToolbar() {
   $('#bZoomIn')?.addEventListener('click', () => zoomBy(1.25));
   $('#bZoomOut')?.addEventListener('click', () => zoomBy(0.8));
   $('#bFit')?.addEventListener('click', () => fitView());
-  $('#bShot')?.addEventListener('click', () => {
-    moreMenu?.classList.remove('open');
-    try {
-      const a = el('a', { href: cv.toDataURL('image/png'), download: `物理实验_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.png` });
-      document.body.appendChild(a); a.click(); a.remove();
-      toast('已保存截图');
-    } catch (err) { toast('截图失败：' + err.message); }
-  });
-
   $('#bUndo').onclick = undo;
   $('#bRedo') && ($('#bRedo').onclick = redo);
   syncHistoryButtons();
-  $('#bSave').onclick = () => {
-    const blob = new Blob([serialize()], { type: 'application/json' });
-    const a = el('a', { href: URL.createObjectURL(blob), download: `物理场景_${new Date().toISOString().slice(0, 10)}.json` });
-    document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-    toast('已导出');
-    moreMenu?.classList.remove('open');
-  };
-  $('#bLoad').onclick = () => { $('#fileIn').click(); moreMenu?.classList.remove('open'); };
-  $('#fileIn').onchange = e => {
-    const f = e.target.files[0]; if (!f) return;
-    const rd = new FileReader();
-    rd.onload = () => { try { const data = JSON.parse(rd.result); pushUndo('导入场景'); loadScene(data, false); toast(`已导入 ${f.name}`, { action: UNDO_ACTION }); } catch (err) { if (undoStack.at(-1)?.label === '导入场景') cancelLastUndo(); toast('导入失败：文件不是有效的场景 JSON'); } };
-    rd.readAsText(f); e.target.value = '';
-  };
-  $('#bClear').onclick = () => {
-    if (!scene.objects.length) { toast('场景已经是空的'); moreMenu?.classList.remove('open'); return; }
-    pushUndo('清空场景');
-    const s = scene.settings;
-    loadScene({ objects: [], settings: s, view: scene.view }, true);
-    toast('已清空场景', { action: UNDO_ACTION });
-    moreMenu?.classList.remove('open');
-  };
-  $('#bTheme').onclick = () => {
-    document.body.classList.toggle('dark');
-    try { localStorage.setItem('physim.theme', document.body.classList.contains('dark') ? 'dark' : 'light'); } catch (e) {}
-    syncThemeMeta(); readColors(); markFieldsDirty(); draw(); drawChart(); updateEnergyReadout(true);
-    moreMenu?.classList.remove('open');
-  };
-  $('#bHelp').onclick = () => { $('#help').classList.add('show'); moreMenu?.classList.remove('open'); };
+  $('#fileIn').onchange = e => { const f = e.target.files[0]; if (f) importFile(f); e.target.value = ''; };
+  $('#bHome')?.addEventListener('click', () => homeShown() && docOpen ? hideHome() : showHome('home'));
+  $('#docTitle')?.addEventListener('click', renameDocument);
+  $('#zoomPct')?.addEventListener('click', () => fitView());
   $('#bHelpClose')?.addEventListener('click', () => $('#help').classList.remove('show'));
   $('#help').addEventListener('click', e => { if (e.target.id === 'help') e.target.classList.remove('show'); });
 
-  $('#bLeft')?.addEventListener('click', () => {
-    const main = $('#main');
-    main.classList.toggle('noleft');
-    syncPanelToggleButtons();
-    toast(main.classList.contains('noleft') ? '已隐藏对象栏' : '已显示对象栏');
-    requestAnimationFrame(() => { resize(); requestDraw(); });
-  });
-  $('#bRight')?.addEventListener('click', () => {
-    const main = $('#main');
-    main.classList.toggle('noright');
-    syncPanelToggleButtons();
-    toast(main.classList.contains('noright') ? '已隐藏检视栏' : '已显示检视栏');
-    requestAnimationFrame(() => { resize(); requestDraw(); });
-  });
-  document.addEventListener('keydown', e => {
-    if (e.key === 'Escape') {
-      moreMenu?.classList.remove('open');
-      closeMobilePanels();
-    }
-  });
+  $('#bLeft')?.addEventListener('click', () => togglePanel('left'));
+  $('#bRight')?.addEventListener('click', () => togglePanel('right'));
 
   // mobile dock
   document.querySelectorAll('#mobile-dock [data-dock]').forEach(btn => {
@@ -5162,6 +5627,673 @@ function placeContextMenu(menu, clientX, clientY) {
 /* =====================================================================
  *  启动（仅由 main.ts 调用一次；禁止在模块底再自动 boot）
  * ===================================================================== */
+/* =====================================================================
+ *  文档：本地文档库、新建 / 打开 / 保存 / 另存为 / 关闭、未保存状态
+ * ===================================================================== */
+const DOCS_KEY = 'physim.docs.v1', CUR_KEY = 'physim.current.v1';
+const docKey = id => 'physim.doc.' + id;
+let doc = { id: null, title: '未命名-1', savedSeq: 0 };
+let docOpen = false, editSeq = 0, untitledN = 1;
+function readIndex() { try { return JSON.parse(localStorage.getItem(DOCS_KEY)) || []; } catch { return []; } }
+function writeIndex(list) { try { localStorage.setItem(DOCS_KEY, JSON.stringify(list)); return true; } catch { return false; } }
+function isDirty() { return docOpen && editSeq !== doc.savedSeq; }
+function bumpEdit() { editSeq++; syncDocTitle(); }
+function syncDocTitle() {
+  const t = $('#docTitle'), st = $('#docState');
+  if (t && !t.dataset.editing) t.textContent = doc.title;
+  if (st) {
+    st.classList.toggle('dirty', isDirty());
+    st.textContent = !docOpen ? '' : isDirty() ? '● 未保存' : doc.id ? '已保存' : '尚未保存';
+  }
+  document.title = docOpen ? `${doc.title}${isDirty() ? ' ●' : ''} — 物理实验室` : '物理实验室';
+  try { localStorage.setItem(CUR_KEY, JSON.stringify({ open: docOpen, id: doc.id, title: doc.title, dirty: isDirty() })); } catch { }
+}
+function fmtTime(ts) {
+  const d = new Date(ts), now = new Date();
+  const p = n => String(n).padStart(2, '0');
+  if (d.toDateString() === now.toDateString()) return `今天 ${p(d.getHours())}:${p(d.getMinutes())}`;
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+/** 当前画布缩略图（JPEG，约 10–20 KB） */
+function makeThumb(w = 320, h = 200) {
+  try {
+    const c = document.createElement('canvas'); c.width = w; c.height = h;
+    const g = c.getContext('2d');
+    const s = Math.max(w / cv.width, h / cv.height), dw = cv.width * s, dh = cv.height * s;
+    g.fillStyle = C['--canvas'] || '#fbfaf6'; g.fillRect(0, 0, w, h);
+    g.drawImage(cv, (w - dw) / 2, (h - dh) / 2, dw, dh);
+    return c.toDataURL('image/jpeg', 0.78);
+  } catch { return ''; }
+}
+function resetHistory() { undoStack.length = 0; redoStack.length = 0; syncHistoryButtons(); }
+/** 打开一个场景作为当前文档 */
+function openAsDocument(sceneData, meta) {
+  doc = { id: meta.id ?? null, title: meta.title, savedSeq: 0 };
+  editSeq = meta.dirty ? 1 : 0;
+  docOpen = true;
+  setSelection([], null, { deferPanel: true });
+  propsTab = 'overview';
+  loadScene(sceneData, false);
+  if (!sceneData.view) fitView();
+  resetHistory();
+  hideHome();
+  syncDocTitle();
+}
+function newUntitledTitle() { const names = new Set(readIndex().map(d => d.title)); let t; do { t = `未命名-${untitledN++}`; } while (names.has(t)); return t; }
+function saveDocument(asNew = false, title) {
+  if (!docOpen) return false;
+  const list = readIndex();
+  if (asNew || !doc.id) { doc.id = 'd' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
+  if (title) doc.title = title;
+  const entry = { id: doc.id, title: doc.title, modified: Date.now(), thumb: makeThumb(), objects: scene.objects.length };
+  const old = list.find(d => d.id === doc.id);
+  entry.created = old ? old.created : Date.now();
+  try { localStorage.setItem(docKey(doc.id), serialize()); }
+  catch { toast('保存失败：浏览器本地存储已满。可先导出为文件，或在开始页删除旧文档。'); return false; }
+  const next = [entry, ...list.filter(d => d.id !== doc.id)];
+  if (!writeIndex(next)) { entry.thumb = ''; writeIndex(next); }
+  doc.savedSeq = editSeq;
+  syncDocTitle();
+  toast(`已保存「${doc.title}」到本地文档库`);
+  return true;
+}
+function saveAs() {
+  if (!docOpen) return;
+  promptDialog({ title: '另存为', label: '文档名称', value: doc.title + ' 副本', ok: '保存' }, v => saveDocument(true, v));
+}
+function saveOrPrompt() {
+  if (!docOpen) return;
+  if (doc.id) saveDocument();
+  else promptDialog({ title: '保存文档', label: '文档名称', value: doc.title, ok: '保存', hint: '保存到本浏览器的本地文档库。若要换电脑使用，请用「文件 → 导出 → 场景文件」。' }, v => saveDocument(false, v));
+}
+function openDocById(id) {
+  const meta = readIndex().find(d => d.id === id);
+  let data = null;
+  try { data = JSON.parse(localStorage.getItem(docKey(id))); } catch { }
+  if (!meta || !data) { toast('找不到这个文档，可能已被删除'); return; }
+  guardUnsaved(() => { openAsDocument(data, { id, title: meta.title }); toast(`已打开「${meta.title}」`); });
+}
+function deleteDocById(id) {
+  const meta = readIndex().find(d => d.id === id); if (!meta) return;
+  confirmDialog({ title: `删除「${meta.title}」？`, body: '将从本地文档库中永久删除，不能撤销。', ok: '删除', danger: true }, () => {
+    writeIndex(readIndex().filter(d => d.id !== id));
+    try { localStorage.removeItem(docKey(id)); } catch { }
+    if (doc.id === id) { doc.id = null; syncDocTitle(); }
+    renderHome(); toast(`已删除「${meta.title}」`);
+  });
+}
+/** 有未保存修改时先询问：保存 / 不保存 / 取消 */
+function guardUnsaved(next) {
+  if (!isDirty()) { next(); return; }
+  openModal(`
+    <div class="dlg sm"><div class="dlg-head"><h3>保存对「${escapeHtml(doc.title)}」的修改？</h3><p>不保存的话，这些修改将会丢失。</p></div>
+    <div class="dlg-foot"><button type="button" class="left" data-act="discard">不保存</button><button type="button" data-act="cancel">取消</button><button type="button" class="primary" data-act="save">保存</button></div></div>`,
+  { discard: () => { closeModal(); next(); }, cancel: closeModal, save: () => { closeModal(); if (doc.id) { saveDocument(); next(); } else promptDialog({ title: '保存文档', label: '文档名称', value: doc.title, ok: '保存' }, v => { if (saveDocument(false, v)) next(); }); } });
+}
+function closeDocument() { guardUnsaved(() => { docOpen = false; setSelection([], null, { deferPanel: true }); sim.running = false; updatePlayBtn(); syncDocTitle(); showHome('home'); }); }
+function renameDocument() {
+  if (!docOpen) return;
+  const t = $('#docTitle');
+  const inp = el('input', { type: 'text', id: 'docTitleInput', value: doc.title });
+  t.dataset.editing = '1'; t.style.display = 'none'; t.after(inp); inp.focus(); inp.select();
+  let done = false;
+  const fin = ok => {
+    if (done) return; done = true;
+    const v = inp.value.trim();
+    inp.remove(); t.style.display = ''; delete t.dataset.editing;
+    if (ok && v && v !== doc.title) {
+      doc.title = v;
+      if (doc.id) { const list = readIndex(); const e = list.find(d => d.id === doc.id); if (e) { e.title = v; writeIndex(list); } }
+      toast(`已重命名为「${v}」`);
+    }
+    syncDocTitle();
+  };
+  inp.addEventListener('keydown', e => { if (e.key === 'Enter') fin(true); if (e.key === 'Escape') fin(false); e.stopPropagation(); });
+  inp.addEventListener('blur', () => fin(true));
+}
+
+/* ---------------- 文档预设（新建） ---------------- */
+const DOC_PRESETS = [
+  { id: 'ground', name: '地面与重力', sub: 'g = 9.8 m/s² · 地面 y = 0', gOn: true, g: 9.8, ground: true, groundY: 0, smooth: false, art: 'ground' },
+  { id: 'blank', name: '空白画布', sub: '无重力 · 无地面', gOn: false, g: 9.8, ground: false, art: 'blank' },
+  { id: 'table', name: '光滑水平面', sub: '光滑地面 · 研究碰撞与振动', gOn: true, g: 9.8, ground: true, groundY: 0, smooth: true, art: 'table' },
+  { id: 'space', name: '太空 · 万有引力', sub: '无重力 · 物体相互吸引 G = 1', gOn: false, gravity: true, Gc: 1, ground: false, art: 'space' },
+  { id: 'em', name: '电磁场', sub: '无重力 · 全空间匀强磁场 ⊗', gOn: false, ground: false, bAll: true, art: 'em' },
+  { id: 'incline', name: '斜面实验台', sub: '地面 + 37° 粗糙斜面', gOn: true, g: 9.8, ground: true, groundY: 0, incline: true, art: 'incline' },
+];
+const ART = {
+  ground: '<svg viewBox="0 0 160 84"><path d="M10 64h140" stroke="currentColor" stroke-width="2"/><path d="M14 68l-6 6M26 68l-6 6M38 68l-6 6M50 68l-6 6M62 68l-6 6M74 68l-6 6M86 68l-6 6M98 68l-6 6M110 68l-6 6M122 68l-6 6M134 68l-6 6M146 68l-6 6" stroke="currentColor" opacity=".45"/><circle cx="58" cy="52" r="8" fill="#d97757"/><path d="M58 40c18-26 46-26 64 10" stroke="#d97757" stroke-dasharray="3 4" fill="none"/></svg>',
+  blank: '<svg viewBox="0 0 160 84"><path d="M80 18v48M56 42h48" stroke="currentColor" stroke-width="1.4" opacity=".5"/></svg>',
+  table: '<svg viewBox="0 0 160 84"><path d="M10 60h140" stroke="currentColor" stroke-width="2"/><circle cx="50" cy="51" r="9" fill="#4a78b0"/><circle cx="104" cy="51" r="9" fill="#d97757"/><path d="M64 51h18" stroke="#4a8a4f" stroke-width="2"/></svg>',
+  space: '<svg viewBox="0 0 160 84"><circle cx="80" cy="42" r="9" fill="#c2973e"/><ellipse cx="80" cy="42" rx="52" ry="22" stroke="currentColor" fill="none" stroke-dasharray="3 4" opacity=".6"/><circle cx="132" cy="42" r="5" fill="#4a78b0"/></svg>',
+  em: '<svg viewBox="0 0 160 84"><g stroke="#4f7faf" stroke-width="1.4"><path d="M30 20l8 8M38 20l-8 8M76 20l8 8M84 20l-8 8M122 20l8 8M130 20l-8 8M30 56l8 8M38 56l-8 8M76 56l8 8M84 56l-8 8M122 56l8 8M130 56l-8 8"/></g><circle cx="80" cy="42" r="22" stroke="#d97757" fill="none" stroke-dasharray="3 4"/></svg>',
+  incline: '<svg viewBox="0 0 160 84"><path d="M10 70h140" stroke="currentColor" stroke-width="2"/><path d="M40 70h80V28z" fill="currentColor" opacity=".12" stroke="currentColor" stroke-width="1.4"/><rect x="88" y="34" width="16" height="11" fill="#d08a3c" transform="rotate(-27.7 96 40)"/></svg>',
+};
+function sceneFromPreset(p, over = {}) {
+  const q = Object.assign({}, p, over);
+  nextId = 1;
+  const objs = [];
+  if (q.ground) objs.push(mkGround(q.groundY || 0, { smooth: !!q.smooth }));
+  if (q.incline) objs.push(mkIncline(-2, q.groundY || 0, { L: 4, ang: 37 }));
+  if (q.bAll) objs.push(mkB({ name: '磁场 ⊗', B: 1, dir: -1, all: true }));
+  const settings = { gOn: !!q.gOn, g: q.g ?? 9.8, drag: q.drag || 0, gravity: !!q.gravity, Gc: q.Gc ?? 1, maxDt: q.maxDt ?? 0.001, snapStep: q.snapStep ?? 0.1 };
+  const view = q.ground ? { cx: 2, cy: 3, scale: 60 } : { cx: 0, cy: 0, scale: 60 };
+  return { objects: objs, settings, view, groups: [] };
+}
+function createFromPreset(p, over = {}, title) {
+  guardUnsaved(() => {
+    openAsDocument(sceneFromPreset(p, over), { title: title || newUntitledTitle() });
+    toast(`已新建「${doc.title}」· 用左侧工具添加物体`);
+  });
+}
+function createFromTemplate(key) {
+  const P = PRESETS[key]; if (!P) return;
+  guardUnsaved(() => {
+    const sc = P.make(); sc.objects.forEach(o => { if (isBody(o)) o.st = null; }); sc.info = { key };
+    openAsDocument(sc, { title: P.name });
+    toast(`已从模板新建「${P.name}」· 空格播放`);
+  });
+}
+
+/* ---------------- 新建文档对话框 ---------------- */
+function openNewDialog(presetId = 'ground') {
+  let cur = DOC_PRESETS.find(p => p.id === presetId) || DOC_PRESETS[0];
+  const st = { title: newUntitledTitle(), gOn: cur.gOn, g: cur.g ?? 9.8, ground: cur.ground, groundY: cur.groundY ?? 0, smooth: !!cur.smooth, drag: 0, gravity: !!cur.gravity, Gc: cur.Gc ?? 1, maxDt: 0.001, snapStep: 0.1 };
+  const html = `
+  <div class="dlg"><div class="dlg-head"><h3>新建文档</h3><p>选择一个起点，再按需调整。所有设置之后都能在「属性 → 物理」里修改。</p></div>
+  <div class="dlg-body"><div class="nd-grid">
+    <div class="nd-list">${DOC_PRESETS.map(p => `<button type="button" data-p="${p.id}" class="${p.id === cur.id ? 'active' : ''}"><b>${p.name}</b><span>${p.sub}</span></button>`).join('')}</div>
+    <div class="nd-form">
+      <h4>文档</h4>
+      <div class="row"><span class="lab">名称</span><input type="text" data-k="title"></div>
+      <h4>环境</h4>
+      <label class="chk"><input type="checkbox" data-k="gOn">均匀重力场</label>
+      <div class="row"><span class="lab">重力加速度 g</span><input type="number" step="0.1" data-k="g"><span class="unit">m/s²</span></div>
+      <label class="chk"><input type="checkbox" data-k="ground">地面</label>
+      <div class="row"><span class="lab">地面高度</span><input type="number" step="0.1" data-k="groundY"><span class="unit">m</span></div>
+      <label class="chk"><input type="checkbox" data-k="smooth">地面光滑</label>
+      <div class="row"><span class="lab">线性阻力 b</span><input type="number" step="0.05" min="0" data-k="drag"><span class="unit">N·s/m</span></div>
+      <label class="chk"><input type="checkbox" data-k="gravity">物体间万有引力</label>
+      <div class="row"><span class="lab">引力常量 G</span><input type="number" step="0.1" data-k="Gc"><span class="unit">N·m²/kg²</span></div>
+      <h4>精度</h4>
+      <div class="row"><span class="lab">积分步长 Δt</span><select data-k="maxDt"><option value="0.002">2 ms（快速）</option><option value="0.001">1 ms（标准）</option><option value="0.0002">0.2 ms（精细）</option></select></div>
+      <div class="row"><span class="lab">吸附步长</span><input type="number" step="0.05" min="0.001" data-k="snapStep"><span class="unit">m</span></div>
+      <div class="field-err" data-err></div>
+    </div>
+  </div></div>
+  <div class="dlg-foot"><button type="button" data-act="cancel">取消</button><button type="button" class="primary" data-act="create">创建</button></div></div>`;
+  const root = openModal(html, {
+    cancel: closeModal,
+    create: () => {
+      read();
+      if (!(st.g >= 0) || !(st.snapStep > 0) || !(st.drag >= 0) || !st.title.trim()) { root.querySelector('[data-err]').textContent = '请检查：名称不能为空，g、阻力不能为负，吸附步长必须大于 0。'; return; }
+      closeModal();
+      createFromPreset(cur, { gOn: st.gOn, g: st.g, ground: st.ground, groundY: st.groundY, smooth: st.smooth, drag: st.drag, gravity: st.gravity, Gc: st.Gc, maxDt: +st.maxDt, snapStep: st.snapStep, incline: cur.incline && st.ground, bAll: cur.bAll }, st.title.trim());
+    },
+  });
+  const fields = [...root.querySelectorAll('[data-k]')];
+  const write = () => fields.forEach(f => { const v = st[f.dataset.k]; if (f.type === 'checkbox') f.checked = !!v; else f.value = v; });
+  const read = () => fields.forEach(f => { const k = f.dataset.k; st[k] = f.type === 'checkbox' ? f.checked : f.type === 'number' ? parseFloat(f.value) : f.value; });
+  const sync = () => {
+    const on = k => root.querySelector(`[data-k="${k}"]`);
+    on('g').disabled = !st.gOn; on('groundY').disabled = !st.ground; on('smooth').disabled = !st.ground; on('Gc').disabled = !st.gravity;
+  };
+  write(); sync();
+  fields.forEach(f => f.addEventListener('input', () => { read(); sync(); }));
+  root.querySelectorAll('[data-p]').forEach(b => b.addEventListener('click', () => {
+    read();
+    cur = DOC_PRESETS.find(p => p.id === b.dataset.p);
+    Object.assign(st, { gOn: cur.gOn, g: cur.g ?? 9.8, ground: cur.ground, groundY: cur.groundY ?? 0, smooth: !!cur.smooth, gravity: !!cur.gravity, Gc: cur.Gc ?? 1 });
+    root.querySelectorAll('[data-p]').forEach(x => x.classList.toggle('active', x === b));
+    write(); sync();
+  }));
+  root.querySelector('[data-k="title"]').select();
+}
+
+/* ---------------- 通用对话框 ---------------- */
+let modalKeyHandler = null;
+function openModal(html, actions = {}) {
+  const m = $('#modal');
+  m.innerHTML = html; m.classList.add('show');
+  m.querySelectorAll('[data-act]').forEach(b => b.addEventListener('click', () => actions[b.dataset.act] && actions[b.dataset.act]()));
+  m.onclick = e => { if (e.target === m) closeModal(); };
+  modalKeyHandler = e => {
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeModal(); }
+    else if (e.key === 'Enter' && e.target.tagName !== 'TEXTAREA' && e.target.tagName !== 'BUTTON') { const p = m.querySelector('button.primary'); if (p) { e.preventDefault(); e.stopPropagation(); p.click(); } }
+  };
+  document.addEventListener('keydown', modalKeyHandler, true);
+  setTimeout(() => { const f = m.querySelector('input, select, button.primary'); if (f) f.focus(); }, 0);
+  return m;
+}
+function closeModal() { const m = $('#modal'); m.classList.remove('show'); m.innerHTML = ''; if (modalKeyHandler) document.removeEventListener('keydown', modalKeyHandler, true); modalKeyHandler = null; }
+function modalOpen() { return $('#modal').classList.contains('show'); }
+function promptDialog(o, done) {
+  const root = openModal(`<div class="dlg sm"><div class="dlg-head"><h3>${escapeHtml(o.title)}</h3>${o.hint ? `<p>${escapeHtml(o.hint)}</p>` : ''}</div>
+    <div class="dlg-body nd-form"><div class="row"><span class="lab">${escapeHtml(o.label)}</span><input type="${o.type || 'text'}" data-v ${o.min != null ? `min="${o.min}"` : ''} ${o.step ? `step="${o.step}"` : ''}>${o.unit ? `<span class="unit">${o.unit}</span>` : ''}</div><div class="field-err" data-err></div></div>
+    <div class="dlg-foot"><button type="button" data-act="cancel">取消</button><button type="button" class="primary" data-act="ok">${escapeHtml(o.ok || '确定')}</button></div></div>`,
+  { cancel: closeModal, ok: () => {
+    const raw = root.querySelector('[data-v]').value.trim();
+    const v = o.type === 'number' ? parseFloat(raw) : raw;
+    const err = !raw ? '不能为空' : o.validate ? o.validate(v) : '';
+    if (err) { root.querySelector('[data-err]').textContent = err; return; }
+    closeModal(); done(v);
+  } });
+  const inp = root.querySelector('[data-v]'); inp.value = o.value ?? ''; setTimeout(() => { inp.focus(); inp.select(); }, 0);
+}
+function confirmDialog(o, done) {
+  openModal(`<div class="dlg sm"><div class="dlg-head"><h3>${escapeHtml(o.title)}</h3><p>${escapeHtml(o.body || '')}</p></div>
+    <div class="dlg-foot"><button type="button" data-act="cancel">取消</button><button type="button" class="primary${o.danger ? ' danger-fill' : ''}" data-act="ok">${escapeHtml(o.ok || '确定')}</button></div></div>`,
+  { cancel: closeModal, ok: () => { closeModal(); done(); } });
+}
+
+/* ---------------- 开始页 ---------------- */
+let homeView = 'home', homeCat = 'all';
+function showHome(view) { if (view) homeView = view; renderHome(); $('#home').classList.add('show'); updateOptContext(); }
+function hideHome() { $('#home').classList.remove('show'); }
+function homeShown() { return $('#home').classList.contains('show'); }
+function renderHome() {
+  const h = $('#home'); if (!h) return;
+  const docs = readIndex();
+  const nav = `
+    <div class="home-nav">
+      <button type="button" class="primary" data-h="new">新建文档…</button>
+      <button type="button" data-h="openFile">从文件打开…</button>
+      <div class="hn-sep"></div>
+      <button type="button" class="hn-link ${homeView === 'home' ? 'active' : ''}" data-v="home">主页</button>
+      <button type="button" class="hn-link ${homeView === 'templates' ? 'active' : ''}" data-v="templates">模板（${Object.keys(PRESETS).length}）</button>
+      <button type="button" class="hn-link ${homeView === 'docs' ? 'active' : ''}" data-v="docs">我的文档（${docs.length}）</button>
+      ${docOpen ? `<div class="hn-sep"></div><button type="button" data-h="back">返回「${escapeHtml(doc.title)}」</button>` : ''}
+    </div>`;
+  const presetCards = DOC_PRESETS.map(p => `<button type="button" class="pcard" data-preset="${p.id}"><div class="pc-art">${ART[p.art] || ''}</div><div class="pc-name">${p.name}</div><div class="pc-sub">${p.sub}</div></button>`).join('');
+  const docCards = list => list.length ? `<div class="doc-grid">${list.map(d => `
+      <div class="dcard"><button type="button" class="pcard" data-doc="${d.id}" style="width:100%"><div class="pc-art">${d.thumb ? `<img alt="" src="${d.thumb}">` : ''}</div>
+      <div class="pc-name">${escapeHtml(d.title)}</div><div class="pc-sub">${fmtTime(d.modified)} · ${d.objects ?? '?'} 个对象</div></button>
+      <button type="button" class="dc-del" data-del="${d.id}" title="删除" aria-label="删除">×</button></div>`).join('')}</div>`
+    : '<div class="empty-box">还没有保存过的文档。新建后按 Ctrl+S 保存到本地文档库。</div>';
+  const tplCards = cat => {
+    const keys = Object.keys(PRESETS).filter(k => cat === 'all' || (PRESET_META[k] || {}).cat === cat);
+    return `<div class="tpl-grid">${keys.map(k => { const P = PRESETS[k], M = PRESET_META[k] || {}; return `
+      <button type="button" class="tcard" data-tpl="${k}"><div class="tc-top"><span class="tc-name">${escapeHtml(P.name)}</span><span class="tc-cat">${M.cat || ''}</span></div><div class="tc-desc">${escapeHtml(P.desc || '')}</div></button>`; }).join('')}</div>`;
+  };
+  let main;
+  if (homeView === 'templates') {
+    main = `<h1>模板</h1><p class="lead">每个模板都是一个可编辑的完整文档，附原理说明、关键公式和可以尝试的改动。</p>
+      <div class="tpl-chips">${['all', ...PRESET_CATS].map(c => `<button type="button" class="chip ${homeCat === c ? 'active' : ''}" data-cat="${c}">${c === 'all' ? '全部' : c}</button>`).join('')}</div>${tplCards(homeCat)}`;
+  } else if (homeView === 'docs') {
+    main = `<h1>我的文档</h1><p class="lead">保存在本浏览器的本地文档库中。换设备时请用「文件 → 导出 → 场景文件」。</p>${docCards(docs)}`;
+  } else {
+    main = `<h1>${docs.length ? '欢迎回来' : '欢迎使用物理实验室'}</h1>
+      <p class="lead">新建一个空白文档自己搭建，或者从经典模板开始。</p>
+      <h2>新建</h2><div class="preset-cards">${presetCards}</div>
+      <h2>最近的文档 ${docs.length > 6 ? '<button type="button" class="ghost h2-act" data-v="docs">全部 →</button>' : ''}</h2>${docCards(docs.slice(0, 6))}
+      <h2>从模板开始 <button type="button" class="ghost h2-act" data-v="templates">全部 ${Object.keys(PRESETS).length} 个 →</button></h2>${tplCards('all').replace('<div class="tpl-grid">', '<div class="tpl-grid tpl-preview">')}`;
+  }
+  h.innerHTML = `<div class="home-wrap">${nav}<div class="home-main">${main}</div></div>`;
+  h.querySelectorAll('[data-v]').forEach(b => b.onclick = () => { homeView = b.dataset.v; renderHome(); h.scrollTop = 0; });
+  h.querySelectorAll('[data-cat]').forEach(b => b.onclick = () => { homeCat = b.dataset.cat; renderHome(); });
+  h.querySelectorAll('[data-preset]').forEach(b => b.onclick = () => createFromPreset(DOC_PRESETS.find(p => p.id === b.dataset.preset)));
+  h.querySelectorAll('[data-doc]').forEach(b => b.onclick = () => openDocById(b.dataset.doc));
+  h.querySelectorAll('[data-del]').forEach(b => b.onclick = e => { e.stopPropagation(); deleteDocById(b.dataset.del); });
+  h.querySelectorAll('[data-tpl]').forEach(b => b.onclick = () => createFromTemplate(b.dataset.tpl));
+  const act = { new: () => openNewDialog(), openFile: () => $('#fileIn').click(), back: () => hideHome() };
+  h.querySelectorAll('[data-h]').forEach(b => b.onclick = () => act[b.dataset.h]());
+}
+function openDocsDialog() {
+  const docs = readIndex();
+  const root = openModal(`<div class="dlg"><div class="dlg-head"><h3>打开</h3><p>本地文档库中的文档，或从电脑上的场景文件打开。</p></div>
+    <div class="dlg-body">${docs.length ? `<div class="doc-grid">${docs.map(d => `<button type="button" class="pcard" data-doc="${d.id}"><div class="pc-art">${d.thumb ? `<img alt="" src="${d.thumb}">` : ''}</div><div class="pc-name">${escapeHtml(d.title)}</div><div class="pc-sub">${fmtTime(d.modified)}</div></button>`).join('')}</div>` : '<div class="empty-box">本地文档库是空的。</div>'}</div>
+    <div class="dlg-foot"><button type="button" class="left" data-act="file">从文件打开…</button><button type="button" data-act="cancel">取消</button></div></div>`,
+  { cancel: closeModal, file: () => { closeModal(); $('#fileIn').click(); } });
+  root.querySelectorAll('[data-doc]').forEach(b => b.onclick = () => { closeModal(); openDocById(b.dataset.doc); });
+}
+
+/* =====================================================================
+ *  导出：PNG（1× / 2×）、CSV 数据、WebM 视频、场景文件
+ * ===================================================================== */
+function safeName(s) { return String(s).replace(/[\\/:*?"<>|]+/g, '_').slice(0, 80) || '物理实验'; }
+function downloadBlob(blob, name) {
+  const a = el('a', { href: URL.createObjectURL(blob), download: name });
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+function exportPNG(mult = 1) {
+  const oldDPR = DPR;
+  try {
+    DPR = (window.devicePixelRatio || 1) * mult;
+    cv.width = Math.round(W * DPR); cv.height = Math.round(H * DPR);
+    const keepHover = hoverObj, keepTrace = traceHit; hoverObj = null; traceHit = null;
+    draw();
+    cv.toBlob(b => { if (b) downloadBlob(b, `${safeName(doc.title)}${mult > 1 ? '@' + mult + 'x' : ''}.png`); }, 'image/png');
+    hoverObj = keepHover; traceHit = keepTrace;
+    toast(`已导出 PNG（${cv.width} × ${cv.height} 像素）`);
+  } finally { DPR = oldDPR; resize(); }
+}
+function exportCSV() {
+  const list = bodies().filter(b => b.st && b.st.hist.length > 1);
+  if (!list.length || sim.t === 0) { toast('还没有运动数据：先播放一段再导出'); return; }
+  const rows = ['物体,t (s),x (m),y (m),vx (m/s),vy (m/s),|v| (m/s),Ek (J),|a| (m/s²)'];
+  for (const b of list) for (const h of b.st.hist) rows.push([`"${String(b.name).replace(/"/g, '""')}"`, ...h.slice(0, 8).map(v => +(+v).toPrecision(10))].join(','));
+  const e = sim.eHist;
+  if (e.length > 1) { rows.push('', 't (s),动能 Ek (J),势能 Ep (J),机械能 E (J),E − W (J)'); for (const r of e) rows.push(r.map(v => +(+v).toPrecision(10)).join(',')); }
+  downloadBlob(new Blob(['﻿' + rows.join('\n')], { type: 'text/csv;charset=utf-8' }), `${safeName(doc.title)}_数据.csv`);
+  toast(`已导出 ${list.length} 个物体的运动数据（CSV，可用 Excel 打开）`);
+}
+function exportJSON() {
+  const data = JSON.parse(serialize()); data.title = doc.title;
+  downloadBlob(new Blob([JSON.stringify(data, null, 1)], { type: 'application/json' }), `${safeName(doc.title)}.physim.json`);
+  toast('已导出场景文件，可在任何设备上用「文件 → 打开」载入');
+}
+let recording = null;
+function exportVideo() {
+  if (recording) { recording.stop(); return; }
+  if (!window.MediaRecorder || !cv.captureStream) { toast('当前浏览器不支持录制视频（需要 MediaRecorder）'); return; }
+  promptDialog({ title: '导出视频', label: '时长', type: 'number', value: '6', unit: 's（模拟时间）', min: 0.5, step: 0.5, ok: '开始录制',
+    hint: `从 t = 0 开始，以当前速度倍率（${scene.settings.speed}×）实时录制画布，结束后自动下载 WebM 文件。`, validate: v => !(v > 0) ? '时长必须大于 0' : v > 120 ? '最长 120 s' : '' }, dur => {
+    const mime = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'].find(m => MediaRecorder.isTypeSupported(m)) || '';
+    const stream = cv.captureStream(60);
+    const rec = new MediaRecorder(stream, mime ? { mimeType: mime, videoBitsPerSecond: 6e6 } : {});
+    const chunks = [];
+    rec.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+    rec.onstop = () => {
+      stream.getTracks().forEach(t => t.stop());
+      clearInterval(watch); recording = null; $('#stage').classList.remove('recording');
+      sim.running = false; updatePlayBtn();
+      downloadBlob(new Blob(chunks, { type: 'video/webm' }), `${safeName(doc.title)}.webm`);
+      toast('已导出视频');
+    };
+    resetSim(); selSet.clear(); selId = null; buildPanel();
+    rec.start(200); recording = rec; $('#stage').classList.add('recording');
+    sim.running = true; lastTs = 0; updatePlayBtn();
+    toast(`正在录制（${dur} s）… 再次选择「导出视频」可提前结束`);
+    const watch = setInterval(() => { if (sim.t >= dur || !sim.running) rec.stop(); }, 50);
+  });
+}
+function importFile(f) {
+  const rd = new FileReader();
+  rd.onload = () => {
+    let data;
+    try { data = JSON.parse(rd.result); if (!data || !Array.isArray(data.objects)) throw 0; }
+    catch { toast('打开失败：不是有效的场景文件（.physim.json）'); return; }
+    const title = data.title || f.name.replace(/\.physim\.json$|\.json$/i, '');
+    guardUnsaved(() => { openAsDocument(data, { title, dirty: true }); toast(`已打开 ${f.name}（尚未保存到文档库）`); });
+  };
+  rd.readAsText(f);
+}
+
+/* =====================================================================
+ *  命令：菜单、快捷键、工具条共用一份定义
+ * ===================================================================== */
+const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+const CMD = {};
+function cmd(id, label, run, o = {}) { CMD[id] = Object.assign({ id, label, run }, o); }
+const needDoc = () => docOpen && !homeShown();
+const hasSel = () => needDoc() && selSet.size > 0;
+const S_ = () => scene.settings;
+function toggleSetting(k, after) { return () => { S_()[k] = !S_()[k]; syncToolbar(); if (after) after(); markDirty(); requestDraw(); if (!selected()) buildPanel(); }; }
+function setSpeed(v) { scene.settings.speed = v; syncToolbar(); markDirty(); requestDraw(); }
+function setTheme(dark) {
+  document.body.classList.toggle('dark', dark);
+  try { localStorage.setItem('physim.theme', dark ? 'dark' : 'light'); } catch { }
+  syncThemeMeta(); readColors(); markFieldsDirty(); draw(); drawChart(); updateEnergyReadout(true);
+}
+function togglePanel(side) {
+  const main = $('#main'); main.classList.toggle(side === 'left' ? 'noleft' : 'noright');
+  syncPanelToggleButtons(); requestAnimationFrame(() => { resize(); requestDraw(); });
+}
+// 文件
+cmd('file.new', '新建…', () => openNewDialog(), { kbd: 'Ctrl+N' });
+cmd('file.home', '开始页', () => showHome('home'));
+cmd('file.templates', '从模板新建…', () => showHome('templates'));
+cmd('file.open', '打开…', () => openDocsDialog(), { kbd: 'Ctrl+O' });
+cmd('file.openFile', '从文件打开…', () => $('#fileIn').click());
+cmd('file.save', '保存', saveOrPrompt, { kbd: 'Ctrl+S', enabled: () => docOpen });
+cmd('file.saveAs', '另存为…', saveAs, { kbd: 'Ctrl+Shift+S', enabled: () => docOpen });
+cmd('file.rename', '重命名文档…', renameDocument, { enabled: () => docOpen });
+cmd('file.exportPNG', 'PNG 图片', () => exportPNG(1), { kbd: 'Ctrl+Shift+E', enabled: needDoc });
+cmd('file.exportPNG2', 'PNG 图片（2 倍分辨率）', () => exportPNG(2), { enabled: needDoc });
+cmd('file.exportVideo', '视频（WebM）…', exportVideo, { enabled: needDoc, label2: () => recording ? '停止录制' : null });
+cmd('file.exportCSV', '运动数据（CSV）', exportCSV, { enabled: needDoc });
+cmd('file.exportJSON', '场景文件（.physim.json）', exportJSON, { enabled: () => docOpen });
+cmd('file.close', '关闭文档', closeDocument, { kbd: 'Ctrl+Alt+W', enabled: () => docOpen });
+// 编辑
+cmd('edit.undo', '撤销', undo, { kbd: 'Ctrl+Z', enabled: () => needDoc() && undoStack.length > 0, label2: () => undoStack.length && undoStack.at(-1).label ? `撤销 ${undoStack.at(-1).label}` : null });
+cmd('edit.redo', '重做', redo, { kbd: 'Ctrl+Shift+Z', alt: ['Ctrl+Y'], enabled: () => needDoc() && redoStack.length > 0, label2: () => redoStack.length && redoStack.at(-1).label ? `重做 ${redoStack.at(-1).label}` : null });
+cmd('edit.cut', '剪切', () => copySel(true), { kbd: 'Ctrl+X', enabled: hasSel });
+cmd('edit.copy', '拷贝', () => copySel(), { kbd: 'Ctrl+C', enabled: hasSel });
+cmd('edit.paste', '粘贴', pasteClip, { kbd: 'Ctrl+V', enabled: () => needDoc() && !!clipboard });
+cmd('edit.duplicate', '复制一份', duplicateSel, { kbd: 'Ctrl+D', enabled: hasSel });
+cmd('edit.delete', '删除', () => (selVec ? deleteSel() : deleteSelection()), { kbd: 'Delete', alt: ['Backspace'], enabled: hasSel });
+cmd('edit.selectAll', '全选', selectAll, { kbd: 'Ctrl+A', enabled: needDoc });
+cmd('edit.deselect', '取消选择', () => setSelection([]), { kbd: 'Ctrl+Shift+A', enabled: hasSel });
+cmd('edit.clear', '清空文档内容', () => {
+  if (!scene.objects.length) { toast('文档已经是空的'); return; }
+  pushUndo('清空文档'); loadScene({ objects: [], settings: scene.settings, view: scene.view, groups: [] }, true);
+  toast('已清空文档内容', { action: UNDO_ACTION });
+}, { enabled: needDoc });
+// 对象
+cmd('obj.group', '编组', groupSelection, { kbd: 'Ctrl+G', enabled: () => needDoc() && selSet.size > 1 });
+cmd('obj.ungroup', '取消编组', ungroupSelection, { kbd: 'Ctrl+Shift+G', enabled: () => hasSel() && selection().some(o => o.group != null) });
+cmd('obj.front', '置于顶层', () => arrangeSelection('front'), { kbd: 'Ctrl+Shift+]', enabled: hasSel });
+cmd('obj.forward', '上移一层', () => arrangeSelection('forward'), { kbd: 'Ctrl+]', enabled: hasSel });
+cmd('obj.backward', '下移一层', () => arrangeSelection('backward'), { kbd: 'Ctrl+[', enabled: hasSel });
+cmd('obj.back', '置于底层', () => arrangeSelection('back'), { kbd: 'Ctrl+Shift+[', enabled: hasSel });
+for (const [m, t] of [['left', '左对齐'], ['hcenter', '水平居中对齐'], ['right', '右对齐'], ['top', '顶对齐'], ['vcenter', '垂直居中对齐'], ['bottom', '底对齐']]) cmd('obj.align.' + m, t, () => alignSelection(m), { enabled: () => needDoc() && selSet.size > 1 });
+cmd('obj.dist.h', '水平分布', () => alignSelection('disth'), { enabled: () => needDoc() && selSet.size > 2 });
+cmd('obj.dist.v', '垂直分布', () => alignSelection('distv'), { enabled: () => needDoc() && selSet.size > 2 });
+cmd('obj.lock', '锁定所选', () => setLocked(selection(), true), { kbd: 'Ctrl+2', enabled: hasSel });
+cmd('obj.unlockAll', '全部解锁', () => setLocked(scene.objects.filter(o => o.locked), false), { kbd: 'Ctrl+Alt+2', enabled: () => needDoc() && scene.objects.some(o => o.locked) });
+cmd('obj.hide', '隐藏所选', () => setHidden(selection(), true), { kbd: 'Ctrl+3', enabled: hasSel });
+cmd('obj.showAll', '全部显示', () => setHidden(scene.objects.filter(o => o.hidden), false), { kbd: 'Ctrl+Alt+3', enabled: () => needDoc() && scene.objects.some(o => o.hidden) });
+cmd('obj.fix', '固定 / 取消固定', () => {
+  const bs = selection().filter(isBody); if (!bs.length) return;
+  pushUndo('固定'); const v = !bs.every(b => b.fixed); bs.forEach(b => { b.fixed = v; }); initChanged(); buildPanel();
+}, { enabled: () => hasSel() && selection().some(isBody) });
+// 插入（工具）
+const TOOL_DEFS = [
+  ['select', '选择', 'V', '<path d="M5 3l11 6.5-5 1.2L8.6 16z" fill="currentColor"/>'],
+  ['pan', '平移视图', 'H', '<path d="M7 10V5.5a1.2 1.2 0 0 1 2.4 0V9M9.4 9V4.3a1.2 1.2 0 0 1 2.4 0V9M11.8 9V5a1.2 1.2 0 0 1 2.4 0v6.2c0 3-2 5.3-5 5.3-2.4 0-3.6-1.4-4.8-3.4L3 10.4a1.2 1.2 0 0 1 2-1.2L7 11.5" stroke="currentColor" stroke-width="1.3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>'],
+  '-',
+  ['ball', '小球', '1', '<circle cx="10" cy="10" r="5.5" fill="currentColor"/>'],
+  ['particle', '带电粒子', '2', '<circle cx="10" cy="10" r="5.5" stroke="currentColor" stroke-width="1.5" fill="none"/><path d="M10 7.3v5.4M7.3 10h5.4" stroke="currentColor" stroke-width="1.5"/>'],
+  ['box', '滑块', '3', '<rect x="4.5" y="6" width="11" height="8" rx="1" fill="currentColor"/>'],
+  '-',
+  ['ground', '地面', '4', '<path d="M3 11h14" stroke="currentColor" stroke-width="1.8"/><path d="M5 13l-2 2.5M8.5 13l-2 2.5M12 13l-2 2.5M15.5 13l-2 2.5" stroke="currentColor" stroke-width="1.1"/>'],
+  ['wall', '挡板', '5', '<path d="M5 16L15 4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>'],
+  ['incline', '斜面', '6', '<path d="M3 15.5h14V5.5z" stroke="currentColor" stroke-width="1.5" fill="currentColor" fill-opacity=".18" stroke-linejoin="round"/>'],
+  '-',
+  ['spring', '弹簧', '7', '<path d="M3 10h2l1.2-3 2 6 2-6 2 6 2-6 1.2 3H17" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linejoin="round"/>'],
+  ['rope', '轻绳', '8', '<path d="M4 5c3 9 9 1 12 10" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/><circle cx="16" cy="15" r="1.8" fill="currentColor"/>'],
+  ['rod', '轻杆', '9', '<path d="M5 15L15 5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><circle cx="5" cy="15" r="2" fill="currentColor"/><circle cx="15" cy="5" r="2" fill="currentColor"/>'],
+  '-',
+  ['efield', '匀强电场', 'E', '<path d="M4 6h10M4 10h10M4 14h10" stroke="currentColor" stroke-width="1.3"/><path d="M13 4.5L15.5 6 13 7.5M13 8.5l2.5 1.5-2.5 1.5M13 12.5l2.5 1.5-2.5 1.5" fill="currentColor"/>'],
+  ['bfield_in', '磁场（向里 ⊗）', 'B', '<circle cx="10" cy="10" r="6" stroke="currentColor" stroke-width="1.3" fill="none"/><path d="M7.5 7.5l5 5M12.5 7.5l-5 5" stroke="currentColor" stroke-width="1.4"/>'],
+  ['bfield_out', '磁场（向外 ⊙）', 'Shift+B', '<circle cx="10" cy="10" r="6" stroke="currentColor" stroke-width="1.3" fill="none"/><circle cx="10" cy="10" r="1.8" fill="currentColor"/>'],
+  ['pointCharge', '点电荷', 'Q', '<circle cx="10" cy="10" r="5.5" fill="currentColor"/><path d="M10 7.5v5M7.5 10h5" stroke="var(--panel)" stroke-width="1.6"/>'],
+];
+for (const t of TOOL_DEFS) if (t !== '-') cmd('tool.' + t[0], t[1], () => setTool(t[0]), { kbd: t[2], enabled: needDoc, checked: () => tool === t[0] });
+// 视图
+cmd('view.zoomIn', '放大', () => zoomAt(1.25), { kbd: 'Ctrl+=', alt: ['=', 'Shift+='], enabled: needDoc });
+cmd('view.zoomOut', '缩小', () => zoomAt(0.8), { kbd: 'Ctrl+-', alt: ['-'], enabled: needDoc });
+cmd('view.fit', '适配视图', () => fitView(), { kbd: 'Ctrl+0', alt: ['F'], enabled: needDoc });
+cmd('view.fitSel', '缩放到所选对象', () => fitView(selection()), { enabled: hasSel });
+cmd('view.origin', '回到原点', () => { scene.view.cx = 0; scene.view.cy = 0; markFieldsDirty(); requestDraw(); markDirty(); }, { enabled: needDoc });
+const VIEW_FLAGS = [['grid', '网格', 'showGrid'], ['labels', '名称标签', 'showLabels'], ['trail', '已走轨迹', 'showTrail'], ['predict', '预测轨迹', 'showPredict'], ['vel', '速度矢量', 'showVel'], ['force', '受力分析', 'showForce'], ['analytic', '解析解', 'showAnalytic'], ['fieldLines', '电场线', 'showFieldLines']];
+for (const [id, label, k] of VIEW_FLAGS) cmd('view.' + id, label, toggleSetting(k, k === 'showFieldLines' ? markFieldsDirty : null), { checked: () => !!S_()[k], enabled: needDoc });
+cmd('view.strobe', '频闪点', () => { const S = S_(); if (S.strobe > 0) { S._strobeLast = S.strobe; S.strobe = 0; } else S.strobe = S._strobeLast || 0.1; syncToolbar(); markDirty(); requestDraw(); if (!selected()) buildPanel(); }, { checked: () => S_().strobe > 0, enabled: needDoc });
+cmd('view.snap', '吸附网格', toggleSetting('snap'), { checked: () => !!S_().snap, enabled: needDoc });
+cmd('view.layers', '图层面板', () => togglePanel('left'), { checked: () => !$('#main').classList.contains('noleft') });
+cmd('view.props', '属性面板', () => togglePanel('right'), { checked: () => !$('#main').classList.contains('noright') });
+cmd('view.dark', '深色模式', () => setTheme(!document.body.classList.contains('dark')), { checked: () => document.body.classList.contains('dark') });
+// 模拟
+cmd('sim.play', '播放 / 暂停', togglePlay, { kbd: 'Space', enabled: needDoc, label2: () => sim.running ? '暂停' : '播放' });
+cmd('sim.step', '前进一帧', stepOnce, { kbd: '.', enabled: needDoc });
+cmd('sim.back', '后退一帧', stepBack, { kbd: ',', enabled: () => needDoc() && sim.frameIdx > 0 });
+cmd('sim.reset', '重置到 t = 0', () => { resetSim('已重置到 t = 0'); draw(); updateReadouts(); }, { kbd: 'R', enabled: needDoc });
+for (const v of [0.1, 0.25, 0.5, 1, 2, 5, 10]) cmd('sim.speed.' + v, `${v}×`, () => setSpeed(v), { checked: () => S_().speed === v, enabled: needDoc });
+cmd('sim.settings', '物理设置…', () => { setSelection([]); propsTab = 'physics'; buildPanel(); if ($('#main').classList.contains('noright')) togglePanel('right'); if (window.matchMedia('(max-width: 820px)').matches) openMobile('inspect'); }, { enabled: needDoc });
+cmd('sim.energy', '能量与动量…', () => { setSelection([]); propsTab = 'overview'; buildPanel(); if (window.matchMedia('(max-width: 820px)').matches) openMobile('inspect'); }, { enabled: needDoc });
+// 帮助
+cmd('help.guide', '使用说明', () => $('#help').classList.add('show'), { kbd: 'Shift+/' });
+cmd('help.about', '关于物理实验室', () => openModal(`<div class="dlg sm"><div class="dlg-head"><h3>物理实验室</h3><p>浏览器里的二维力学与电磁学模拟器。刚体与接触（含转动）、场与约束、辛积分器、轨迹预测与解析解对照。所有数据只保存在本机浏览器中。</p></div><div class="dlg-foot"><button type="button" class="primary" data-act="ok">好</button></div></div>`, { ok: closeModal }));
+
+const MENUS = [
+  ['文件', ['file.new', 'file.templates', '-', 'file.open', 'file.openFile', { label: '最近打开', sub: () => readIndex().slice(0, 8).map(d => ({ label: d.title, run: () => openDocById(d.id), hint: fmtTime(d.modified) })) }, '-', 'file.save', 'file.saveAs', 'file.rename', '-',
+    { label: '导出', sub: ['file.exportPNG', 'file.exportPNG2', 'file.exportVideo', '-', 'file.exportCSV', 'file.exportJSON'] }, '-', 'file.home', 'file.close']],
+  ['编辑', ['edit.undo', 'edit.redo', '-', 'edit.cut', 'edit.copy', 'edit.paste', 'edit.duplicate', 'edit.delete', '-', 'edit.selectAll', 'edit.deselect', '-', 'edit.clear']],
+  ['对象', ['obj.group', 'obj.ungroup', '-', { label: '排列', sub: ['obj.front', 'obj.forward', 'obj.backward', 'obj.back'] },
+    { label: '对齐', sub: ['obj.align.left', 'obj.align.hcenter', 'obj.align.right', '-', 'obj.align.top', 'obj.align.vcenter', 'obj.align.bottom', '-', 'obj.dist.h', 'obj.dist.v'] }, '-',
+    'obj.lock', 'obj.unlockAll', 'obj.hide', 'obj.showAll', '-', 'obj.fix']],
+  ['插入', [{ head: '物体' }, 'tool.ball', 'tool.particle', 'tool.box', { head: '表面' }, 'tool.ground', 'tool.wall', 'tool.incline', { head: '约束' }, 'tool.spring', 'tool.rope', 'tool.rod', { head: '场' }, 'tool.efield', 'tool.bfield_in', 'tool.bfield_out', 'tool.pointCharge']],
+  ['视图', ['view.zoomIn', 'view.zoomOut', 'view.fit', 'view.fitSel', 'view.origin', '-', { head: '显示' }, 'view.grid', 'view.labels', 'view.trail', 'view.predict', 'view.strobe', 'view.vel', 'view.force', 'view.analytic', 'view.fieldLines', '-', 'view.snap', '-', 'view.layers', 'view.props', 'view.dark']],
+  ['模拟', ['sim.play', 'sim.step', 'sim.back', 'sim.reset', '-', { label: '速度', sub: ['sim.speed.0.1', 'sim.speed.0.25', 'sim.speed.0.5', 'sim.speed.1', 'sim.speed.2', 'sim.speed.5', 'sim.speed.10'] }, '-', 'sim.settings', 'sim.energy']],
+  ['帮助', ['help.guide', 'help.about']],
+];
+
+/* ---------------- 菜单渲染 ---------------- */
+function kbdLabel(k) {
+  if (!k) return '';
+  const map = { Ctrl: IS_MAC ? '⌘' : 'Ctrl', Shift: IS_MAC ? '⇧' : 'Shift', Alt: IS_MAC ? '⌥' : 'Alt', Space: '空格', Delete: 'Del', 'Shift+/': '?' };
+  if (map[k]) return map[k];
+  return k.split('+').map(p => map[p] || p).join(IS_MAC ? '' : '+');
+}
+let openMenuIdx = -1;
+function closeMenus() {
+  $('#menuLayer').innerHTML = ''; openMenuIdx = -1;
+  document.querySelectorAll('#menus > button').forEach(b => b.classList.remove('open'));
+}
+function menuItemsEl(items, depth = 0) {
+  const box = el('div', { class: 'dmenu', role: 'menu' });
+  for (const it of (typeof items === 'function' ? items() : items)) {
+    if (it === '-') { box.appendChild(el('div', { class: 'ms' })); continue; }
+    if (it.head) { box.appendChild(el('div', { class: 'mh' }, it.head)); continue; }
+    const c = typeof it === 'string' ? CMD[it] : null;
+    const sub = c ? null : it.sub;   // 注意：字符串自带 String.prototype.sub，不能直接取 it.sub
+    const label = c ? (c.label2 && c.label2()) || c.label : it.label;
+    const enabled = c ? (!c.enabled || c.enabled()) : true;
+    const subItems = sub ? (typeof sub === 'function' ? sub() : sub) : null;
+    const b = el('button', { type: 'button', class: 'mi', role: 'menuitem' },
+      `<span class="ck">${c && c.checked ? (c.checked() ? '✓' : '') : ''}</span><span>${escapeHtml(label)}</span><span class="mk">${c ? escapeHtml(kbdLabel(c.kbd)) : escapeHtml(it.hint || '')}</span><span class="ar">${sub ? '▸' : ''}</span>`);
+    if (!enabled || (sub && !subItems.length)) b.disabled = true;
+    if (sub) {
+      b.addEventListener('pointerenter', () => openSub(b, subItems, depth));
+      b.addEventListener('click', () => openSub(b, subItems, depth));
+    } else {
+      b.addEventListener('pointerenter', () => closeSubs(depth));
+      b.addEventListener('click', () => { closeMenus(); (c ? c.run : it.run)(); });
+    }
+    box.appendChild(b);
+  }
+  box.dataset.depth = String(depth);
+  return box;
+}
+function closeSubs(depth) { document.querySelectorAll('#menuLayer .dmenu').forEach(m => { if (+m.dataset.depth > depth) m.remove(); }); document.querySelectorAll(`#menuLayer .dmenu[data-depth="${depth}"] .mi.hot`).forEach(x => x.classList.remove('hot')); }
+function openSub(btn, items, depth) {
+  closeSubs(depth);
+  if (!items.length) return;
+  btn.classList.add('hot');
+  const m = menuItemsEl(items.map(x => typeof x === 'object' && x.run ? x : x), depth + 1);
+  $('#menuLayer').appendChild(m);
+  const r = btn.getBoundingClientRect();
+  let x = r.right + 2, y = r.top - 5;
+  const mw = m.offsetWidth, mh = m.offsetHeight;
+  if (x + mw > innerWidth - 6) x = r.left - mw - 2;
+  if (y + mh > innerHeight - 6) y = innerHeight - mh - 6;
+  m.style.left = Math.max(6, x) + 'px'; m.style.top = Math.max(6, y) + 'px';
+}
+function openMenu(i) {
+  closeMenus(); openMenuIdx = i;
+  const btn = document.querySelectorAll('#menus > button')[i]; btn.classList.add('open');
+  const m = menuItemsEl(MENUS[i][1], 0);
+  $('#menuLayer').appendChild(m);
+  const r = btn.getBoundingClientRect();
+  m.style.left = Math.max(6, Math.min(r.left, innerWidth - m.offsetWidth - 6)) + 'px'; m.style.top = (r.bottom + 4) + 'px';
+}
+function buildMenubar() {
+  const nav = $('#menus'); nav.innerHTML = '';
+  MENUS.forEach(([label], i) => {
+    const b = el('button', { type: 'button', role: 'menuitem', 'aria-haspopup': 'true' }, label);
+    b.addEventListener('click', e => { e.stopPropagation(); openMenuIdx === i ? closeMenus() : openMenu(i); });
+    b.addEventListener('pointerenter', () => { if (openMenuIdx >= 0 && openMenuIdx !== i) openMenu(i); });
+    nav.appendChild(b);
+  });
+  document.addEventListener('pointerdown', e => { if (openMenuIdx >= 0 && !e.target.closest('#menuLayer') && !e.target.closest('#menus')) closeMenus(); }, true);
+  window.addEventListener('resize', closeMenus);
+  window.addEventListener('blur', closeMenus);
+}
+
+/* ---------------- 工具条与提示 ---------------- */
+function buildToolstrip() {
+  const ts = $('#toolstrip'); ts.innerHTML = '';
+  for (const t of TOOL_DEFS) {
+    if (t === '-') { ts.appendChild(el('div', { class: 'ts-sep' })); continue; }
+    const [id, name, k, svg] = t;
+    const b = el('button', { type: 'button', 'data-tool': id, 'aria-label': `${name}（${kbdLabel(k)}）`, 'data-tip': name, 'data-tipk': kbdLabel(k) },
+      `<svg viewBox="0 0 20 20">${svg}</svg>${k && k.length === 1 && /\d/.test(k) ? `<span class="tk">${k}</span>` : ''}`);
+    b.addEventListener('click', () => setTool(id));
+    ts.appendChild(b);
+  }
+  // 自定义提示（带快捷键）
+  let tipEl = null, tipT = 0;
+  const hide = () => { clearTimeout(tipT); if (tipEl) { tipEl.remove(); tipEl = null; } };
+  document.addEventListener('pointerover', e => {
+    const t = e.target.closest && e.target.closest('[data-tip]');
+    if (!t) { hide(); return; }
+    clearTimeout(tipT);
+    tipT = setTimeout(() => {
+      hide();
+      tipEl = el('div', { class: 'tip' }, `${escapeHtml(t.dataset.tip)}${t.dataset.tipk ? `<kbd>${escapeHtml(t.dataset.tipk)}</kbd>` : ''}`);
+      document.body.appendChild(tipEl);
+      const r = t.getBoundingClientRect();
+      tipEl.style.left = (r.right + 8) + 'px'; tipEl.style.top = (r.top + r.height / 2 - tipEl.offsetHeight / 2) + 'px';
+    }, 350);
+  });
+  document.addEventListener('pointerdown', hide, true);
+}
+/** 控制栏中部：当前工具的操作提示，或选择状态 */
+function updateOptContext() {
+  const c = $('#obContext'); if (!c) return;
+  if (!docOpen || homeShown()) { c.innerHTML = ''; return; }
+  if (tool !== 'select' && tool !== 'pan' && TOOL_HINT[tool]) {
+    c.innerHTML = `<b>${escapeHtml(CMD['tool.' + tool] ? CMD['tool.' + tool].label : tool)}</b> · ${escapeHtml(TOOL_HINT[tool])} <span class="th-k">· Alt 关闭吸附 · Esc 取消</span>`;
+    return;
+  }
+  const n = selSet.size;
+  if (!n) { c.innerHTML = tool === 'pan' ? '<b>平移</b> · 拖动画布移动视图' : '<span class="th-k">单击选择 · Shift 加选 · 空白处拖出选框 · 双击进入编组</span>'; return; }
+  const list = selection();
+  const g = groupOf(list[0]);
+  const whole = g && list.every(o => o.group === g.id) && n === groupMembers(g.id).length;
+  c.innerHTML = n === 1 ? `已选 <b>${escapeHtml(list[0].name)}</b> · ${escapeHtml(KIND_NAME[list[0].kind] || '')}${list[0].locked ? ' · 已锁定' : ''}`
+    : whole ? `已选编组 <b>${escapeHtml(g.name)}</b> · ${n} 个对象` : `已选 <b>${n}</b> 个对象`;
+}
+
+/* ---------------- 快捷键：统一由命令表分发 ---------------- */
+const CODE_KEY = { BracketLeft: '[', BracketRight: ']', Equal: '=', Minus: '-', Comma: ',', Period: '.', Slash: '/', Space: 'Space', Backquote: '`' };
+function comboOf(e) {
+  let k = CODE_KEY[e.code];
+  if (!k) {
+    if (/^Key[A-Z]$/.test(e.code)) k = e.code.slice(3);
+    else if (/^Digit\d$/.test(e.code)) k = e.code.slice(5);
+    else if (/^Numpad\d$/.test(e.code)) k = e.code.slice(6);
+    else k = e.key === 'Del' ? 'Delete' : e.key;
+  }
+  return `${e.ctrlKey || e.metaKey ? 'Ctrl+' : ''}${e.altKey ? 'Alt+' : ''}${e.shiftKey ? 'Shift+' : ''}${k}`;
+}
+let KEYMAP = null;
+function buildKeymap() {
+  KEYMAP = new Map();
+  for (const c of Object.values(CMD)) for (const k of [c.kbd, ...(c.alt || [])]) if (k) KEYMAP.set(k, c);
+}
+function handleShortcut(e) {
+  if (!KEYMAP) buildKeymap();
+  const c = KEYMAP.get(comboOf(e));
+  if (!c) return false;
+  e.preventDefault();
+  if (c.enabled && !c.enabled()) return true;
+  closeMenus();
+  c.run();
+  return true;
+}
+
 function syncThemeMeta() {
   const m = document.querySelector('meta[name="theme-color"]');
   if (m) m.setAttribute('content', document.body.classList.contains('dark') ? '#252422' : '#faf9f5');
@@ -5172,21 +6304,27 @@ function bootOnce() {
     if (th === 'dark' || (!th && window.matchMedia?.('(prefers-color-scheme: dark)').matches)) document.body.classList.add('dark');
   } catch (e) { }
   syncThemeMeta();
-  readColors(); initToolbar();
+  readColors(); buildMenubar(); buildToolstrip(); buildKeymap(); initToolbar();
   new ResizeObserver(resize).observe($('#stage'));
   resize();
-  let loaded = false;
+  // 恢复上次打开的文档（包括未保存的修改）；没有则显示开始页
+  let restored = false;
   try {
+    const cur = JSON.parse(localStorage.getItem(CUR_KEY) || 'null');
     const s = localStorage.getItem(STORE_KEY);
-    if (s) { loadScene(JSON.parse(s), false); loaded = true; }
-  } catch (e) { loaded = false; }
-  if (!loaded) { const sc = PRESETS.welcome.make(); sc.info = { key: 'welcome' }; loadScene(sc, false); }
+    if (s && (!cur || cur.open)) {
+      openAsDocument(JSON.parse(s), { id: cur ? cur.id : null, title: (cur && cur.title) || '恢复的文档', dirty: cur ? !!cur.dirty : true });
+      restored = true;
+    }
+  } catch (e) { restored = false; }
   setTool('select');
   syncPanelToggleButtons();
   ensureDesmosKeypadDock(document.getElementById('right'));
   syncDesmosKeypadForAnalysis(false);
-  toast(loaded ? '已恢复上次场景' : '选中物体后拖动绿色箭头设置初速度，空格播放');
-  try { if (!localStorage.getItem('physim.seenHelp')) { $('#help').classList.add('show'); localStorage.setItem('physim.seenHelp', '1'); } } catch (e) { }
+  if (restored) toast(isDirty() ? `已恢复「${doc.title}」（含未保存的修改）` : `已打开「${doc.title}」`);
+  else showHome('home');
+  syncDocTitle();
+  window.addEventListener('beforeunload', () => { try { localStorage.setItem(STORE_KEY, serialize()); } catch { } syncDocTitle(); });
   window.__physim = {
     scene: () => scene, sim, advance, loadPreset, select, resetSim, togglePlay, fieldSys,
     presetKeys: () => Object.keys(PRESETS), energy: systemEnergy, predict: () => { predCache.msPerStep = 0; return computePrediction(); }, pins: () => pins,
