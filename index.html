@@ -12,6 +12,10 @@
     <defs>
       <symbol id="i-play" viewBox="0 0 16 16"><path d="M4 2.8v10.4c0 .6.7 1 1.2.6l8-5.2c.5-.3.5-1 0-1.3l-8-5.2C4.7 1.8 4 2.2 4 2.8z" fill="currentColor"/></symbol>
       <symbol id="i-pause" viewBox="0 0 16 16"><rect x="3.5" y="2.5" width="3.2" height="11" rx="1" fill="currentColor"/><rect x="9.3" y="2.5" width="3.2" height="11" rx="1" fill="currentColor"/></symbol>
+      <symbol id="i-undo" viewBox="0 0 16 16"><path d="M5.5 4.5 2.5 7.5l3 3M3 7.5h6.5a4 4 0 0 1 0 8H8" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round" transform="translate(0 -1.5)"/></symbol>
+      <symbol id="i-redo" viewBox="0 0 16 16"><path d="M10.5 4.5l3 3-3 3M13 7.5H6.5a4 4 0 0 0 0 8H8" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round" transform="translate(0 -1.5)"/></symbol>
+      <symbol id="i-copy" viewBox="0 0 16 16"><rect x="5" y="5" width="8.5" height="8.5" rx="1.6" stroke="currentColor" stroke-width="1.4" fill="none"/><path d="M3 10.5V3.6C3 3 3.5 2.5 4.1 2.5H10.5" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round"/></symbol>
+      <symbol id="i-trash" viewBox="0 0 16 16"><path d="M2.8 4.2h10.4M6.3 4.2V2.8h3.4v1.4M4.2 4.2l.6 9h6.4l.6-9" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></symbol>
       <symbol id="i-objects" viewBox="0 0 20 20"><path d="M4 5.5h12M4 10h12M4 14.5h8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"/></symbol>
       <symbol id="i-add" viewBox="0 0 20 20"><path d="M10 4v12M4 10h12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"/></symbol>
       <symbol id="i-stage" viewBox="0 0 20 20"><rect x="3" y="4" width="14" height="12" rx="2" stroke="currentColor" stroke-width="1.5" fill="none"/><circle cx="8" cy="11" r="2" fill="currentColor"/><path d="M10.5 9.5l3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></symbol>
@@ -58,7 +62,9 @@
       <div class="top-spacer"></div>
 
       <div class="top-cluster no-rule">
-        <button type="button" id="bUndo" class="ghost" title="撤销 (Ctrl+Z)">撤销</button>
+        <button type="button" id="bUndo" class="ghost icon-only" title="撤销 (Ctrl+Z)" aria-label="撤销"><svg class="ic"><use href="#i-undo"/></svg></button>
+        <button type="button" id="bRedo" class="ghost icon-only" title="重做 (Ctrl+Shift+Z)" aria-label="重做"><svg class="ic"><use href="#i-redo"/></svg></button>
+        <span class="tb-rule"></span>
         <div class="menu-wrap">
           <button type="button" id="bView" class="ghost" title="显示选项" aria-haspopup="true">显示</button>
           <div id="viewFlags" role="menu">
@@ -115,6 +121,12 @@
         <div id="toast"></div>
         <div id="toolhint"></div>
         <div id="tbadge"></div>
+        <div id="timeline" aria-label="时间轴">
+          <button type="button" id="tlBack" title="后退一帧 (,)">‹</button>
+          <input type="range" id="tlRange" min="0" max="0" step="1" value="0" aria-label="回看时刻">
+          <button type="button" id="tlFwd" title="前进一帧 (.)">›</button>
+          <span id="tlTime"></span>
+        </div>
         <div id="zoomCtl">
           <button type="button" id="bZoomIn" title="放大">+</button>
           <button type="button" id="bZoomOut" title="缩小">−</button>
@@ -150,11 +162,12 @@
       <div class="h-card"><b>初态与外力</b><p>选中物体后拖动绿色箭头设初速度；「受力」页可设恒力、随时间变化的表达式或指向目标的力。</p></div>
       <div class="h-card"><b>公式联动</b><p>任何数值旁的 <i>ƒ</i> 都能改写成公式，例如 <code>sin(t)</code> 或 <code>小球2.vx</code>，参数之间可以互相引用。</p></div>
       <div class="h-card"><b>分析</b><p>「分析」页识别运动类型并给出参数方程；「图像」页绘制 v–t、相图、能量曲线等。</p></div>
+      <div class="h-card"><b>时间轴</b><p>暂停后拖动画布底部的时间轴即可回看任意时刻；从回看处继续播放会覆盖之后的记录。运行中可以直接抓住物体甩出去。</p></div>
       <div class="h-card"><b>能量守恒</b><p>不选中任何物体时，检视栏显示系统的动能、各类势能与总能量，可以直观看到守恒或耗散。</p></div>
     </div>
     <div class="h-keys">
       <span><kbd>空格</kbd> 播放 / 暂停</span><span><kbd>.</kbd> 单步</span><span><kbd>R</kbd> 重置</span>
-      <span><kbd>F</kbd> 适配视图</span><span><kbd>Delete</kbd> 删除</span><span><kbd>Ctrl</kbd>+<kbd>Z</kbd> 撤销</span><span><kbd>/</kbd> 搜索</span>
+      <span><kbd>,</kbd> <kbd>.</kbd> 逐帧回看</span><span><kbd>F</kbd> 适配视图</span><span><kbd>1</kbd>–<kbd>9</kbd> 添加工具</span><span><kbd>←↑→↓</kbd> 微调位置</span><span><kbd>Alt</kbd> 拖动时不吸附</span><span><kbd>Ctrl</kbd>+<kbd>C</kbd>/<kbd>V</kbd> 复制粘贴</span><span><kbd>Delete</kbd> 删除</span><span><kbd>Ctrl</kbd>+<kbd>Z</kbd> 撤销 · <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> 重做</span><span><kbd>?</kbd> 本说明</span><span><kbd>/</kbd> 搜索</span>
     </div>
     <div class="h-foot">
       <span class="hint">单位：m、kg、s、C、V/m、T；y 轴向上为正，角度从 +x 逆时针计。</span>

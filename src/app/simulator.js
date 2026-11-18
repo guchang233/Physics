@@ -49,7 +49,7 @@ function byId(id) { return scene.objects.find(o => o.id === id); }
 
 function mkBody(kind, p = {}) {
   const n = bodies().length;
-  const base = { id: nextId++, kind, name: KIND_NAME[kind] + (n + 1), color: PALETTE[n % PALETTE.length],
+  const base = { id: nextId++, kind, name: p.name || uniqueName(KIND_NAME[kind] + (n + 1)), color: PALETTE[n % PALETTE.length],
     m: 1, q: 0, r: 0.25, w: 0.6, h: 0.4, e: 0.6, mu: 0, x0: 0, y0: 0, vx0: 0, vy0: 0, ang0: 0,
     /* 外力：const 恒定 | expr 表达式 | aim 指向目标 */
     F: 0, Fang: 0, Fmode: 'const', Fexpr: '', FangExpr: '0',
@@ -78,7 +78,10 @@ function mkRod(a, b, p = {}) { return Object.assign({ id: nextId++, kind: 'rod',
 /* ---------------- 仿真状态 ---------------- */
 const sim = { t: 0, running: false, accum: 0,
   /* 功的账本：匀强电场做功、外力与阻力做功；能量历史 [t, Ek, Ep, E, E−W] */
-  wE: 0, wExt: 0, eHist: [], E0: null };
+  wE: 0, wExt: 0, eHist: [], E0: null, eDrop: 0,
+  /* 时间轴：每帧一个快照，可在暂停时拖回任意时刻 */
+  frames: [], frameIdx: 0 };
+const MAX_FRAMES = 6000;
 let leftTab = 'objects'; // objects | add | presets
 let leftQuery = '';
 let leftChip = 'all';
@@ -100,6 +103,7 @@ function resetSim(msg) {
   bodies().forEach(initState);
   resolveExprs();
   resetEnergyLedger();
+  sim.frames = []; snapshotFrame();
   updatePlayBtn();
   if (msg) toast(msg);
 }
@@ -650,7 +654,7 @@ function shakeRods(h, reset) {
     for (const s of rods) {
       const e = linkEnds(s); if (!e) continue;
       const mRod = s.m || 0;
-      const inv = body => (!body || body.fixed) ? 0 : 1 / Math.max(body.m + mRod * 0.5, 1e-12);
+      const inv = body => (!body || body.fixed || body._grab) ? 0 : 1 / Math.max(body.m + mRod * 0.5, 1e-12);
       const iA = inv(e.A), iB = e.B ? inv(e.B) : 0, S = iA + iB;
       if (S < 1e-18) continue;
       const A = e.A.st, B = e.B ? e.B.st : null;
@@ -678,6 +682,7 @@ function substep(h, segs) {
   const F = computeForces(movers, false);
   for (const b of movers) {
     const st = b.st, f = F.get(b), ax = f.x / b.m, ay = f.y / b.m;
+    if (b._grab) { const g = b._grab; st.x = g.x; st.y = g.y; st.vx = g.vx; st.vy = g.vy; continue; }
     // Boris：半步电/重力 → 磁场旋转 → 半步
     let vx = st.vx + ax * h / 2, vy = st.vy + ay * h / 2;
     if (b.q) {
@@ -699,6 +704,7 @@ function substep(h, segs) {
   shakeRods(h, true);
   // 与静止表面接触
   for (const b of movers) {
+    if (b._grab) continue;
     for (const sg of segs) contactSeg(b, sg, h);
   }
   // 物体间碰撞
@@ -712,7 +718,8 @@ function substep(h, segs) {
     const tr = b.st.trail, last = tr[tr.length - 1];
     const minD = 2 / scene.view.scale;
     if (!last || Math.abs(last[0] - b.st.x) + Math.abs(last[1] - b.st.y) > minD) {
-      tr.push([b.st.x, b.st.y]); if (tr.length > 4000) tr.splice(0, tr.length - 4000);
+      tr.push([b.st.x, b.st.y]);
+      if (tr.length > 8000) { const n = tr.length - 8000; tr.splice(0, n); b.st.trailDrop = (b.st.trailDrop || 0) + n; }
     }
   }
 }
@@ -747,12 +754,13 @@ function contactSeg(b, sg, h) {
   }
 }
 function collidePair(a, b) {
-  if (a.fixed && b.fixed) return;
+  if ((a.fixed || a._grab) && (b.fixed || b._grab)) return;
   const A = a.st, B = b.st;
   let dx = B.x - A.x, dy = B.y - A.y; const d = Math.hypot(dx, dy), R = bodyRadius(a) + bodyRadius(b);
   if (d >= R || d < 1e-9) return;
   const nx = dx / d, ny = dy / d;
-  const ia = a.fixed ? 0 : 1 / a.m, ib = b.fixed ? 0 : 1 / b.m, is = ia + ib;
+  const ia = a.fixed || a._grab ? 0 : 1 / a.m, ib = b.fixed || b._grab ? 0 : 1 / b.m, is = ia + ib;
+  if (is <= 0) return;
   const pen = R - d;
   A.x -= nx * pen * ia / is; A.y -= ny * pen * ia / is; B.x += nx * pen * ib / is; B.y += ny * pen * ib / is;
   const vrel = (B.vx - A.vx) * nx + (B.vy - A.vy) * ny;
@@ -819,7 +827,7 @@ function systemEnergy() {
   return { Ek, Ug, Us, Ue, Ugr, Ep, E, W: sim.wE + sim.wExt, wE: sim.wE, wExt: sim.wExt, px, py, M };
 }
 function resetEnergyLedger() {
-  sim.wE = 0; sim.wExt = 0; sim.eHist = [];
+  sim.wE = 0; sim.wExt = 0; sim.eHist = []; sim.eDrop = 0;
   const en = systemEnergy();
   sim.E0 = en.E;
   sim.eHist.push([0, en.Ek, en.Ep, en.E, en.E - en.W]);
@@ -828,12 +836,57 @@ function pushEnergy() {
   const en = systemEnergy();
   if (sim.E0 == null) sim.E0 = en.E;
   sim.eHist.push([sim.t, en.Ek, en.Ep, en.E, en.E - en.W]);
-  if (sim.eHist.length > 6000) sim.eHist.splice(0, sim.eHist.length - 6000);
+  if (sim.eHist.length > 8000) { const n = sim.eHist.length - 8000; sim.eHist.splice(0, n); sim.eDrop += n; }
+}
+
+/* ---------------- 时间轴快照 ---------------- */
+function snapshotFrame() {
+  sim.frames.push({ t: sim.t, wE: sim.wE, wExt: sim.wExt, e: sim.eHist.length + sim.eDrop,
+    b: bodies().filter(b => b.st).map(b => { const st = b.st; return [b.id, st.x, st.y, st.vx, st.vy, st.ang, st.trail.length + (st.trailDrop || 0), st.hist.length + (st.histDrop || 0), st.ax || 0, st.ay || 0]; }) });
+  if (sim.frames.length > MAX_FRAMES) sim.frames.shift();
+  sim.frameIdx = sim.frames.length - 1;
+}
+function restoreFrame(i) {
+  i = Math.max(0, Math.min(sim.frames.length - 1, i | 0));
+  const f = sim.frames[i]; if (!f) return;
+  sim.t = f.t; sim.wE = f.wE; sim.wExt = f.wExt;
+  sim.eHist.length = Math.max(1, Math.min(sim.eHist.length, f.e - sim.eDrop));
+  for (const r of f.b) {
+    const o = byId(r[0]); if (!o || !o.st) continue;
+    const st = o.st;
+    st.x = r[1]; st.y = r[2]; st.vx = r[3]; st.vy = r[4]; st.ang = r[5]; st.ax = r[8]; st.ay = r[9];
+    st.trail.length = Math.max(1, Math.min(st.trail.length, r[6] - (st.trailDrop || 0)));
+    st.hist.length = Math.max(1, Math.min(st.hist.length, r[7] - (st.histDrop || 0)));
+    st.contactN = [0, 0]; st.contactF = [0, 0];
+  }
+  sim.frameIdx = i;
+  resolveExprs(); markFieldsDirty(); requestDraw(); updateReadouts(); updateEnergyReadout(true);
+}
+function isScrubbed() { return sim.frameIdx < sim.frames.length - 1; }
+/** 从回看位置继续：丢弃之后的记录 */
+function commitScrub() {
+  if (!isScrubbed()) return;
+  sim.frames.length = sim.frameIdx + 1;
+}
+function updateTimeline() {
+  const box = $('#timeline'); if (!box) return;
+  const n = sim.frames.length;
+  box.classList.toggle('show', n > 1);
+  if (n < 2) return;
+  const r = $('#tlRange');
+  r.max = String(n - 1);
+  if (document.activeElement !== r) r.value = String(sim.frameIdx);
+  const total = sim.frames[n - 1].t, t0 = sim.frames[0].t;
+  r.style.setProperty('--p', `${(sim.frameIdx / (n - 1)) * 100}%`);
+  $('#tlTime').textContent = `${fmt(sim.t, 2)} / ${fmt(total, 2)} s`;
+  box.classList.toggle('scrubbed', isScrubbed());
+  box.title = t0 > 0 ? `只保留最近 ${MAX_FRAMES} 帧（从 ${fmt(t0, 2)} s 起）` : '拖动回看；从回看处播放会丢弃之后的记录';
 }
 
 /* ---------------- 前进一帧 ---------------- */
 function advance(dtFrame) {
   ensureStates();
+  commitScrub();
   const segs = getSegments();
   const n = Math.min(20000, Math.max(1, Math.ceil(dtFrame / scene.settings.maxDt)));
   const h = dtFrame / n;
@@ -849,11 +902,12 @@ function advance(dtFrame) {
     st.ax = (st.vx - st.pvx) / dtFrame; st.ay = (st.vy - st.pvy) / dtFrame;
     pushHist(b);
   }
+  snapshotFrame();
 }
 function pushHist(b) {
   const st = b.st, v2 = st.vx * st.vx + st.vy * st.vy;
   st.hist.push([sim.t, st.x, st.y, st.vx, st.vy, Math.sqrt(v2), 0.5 * b.m * v2, Math.hypot(st.ax || 0, st.ay || 0)]);
-  if (st.hist.length > 6000) st.hist.splice(0, st.hist.length - 6000);
+  if (st.hist.length > 8000) { const n = st.hist.length - 8000; st.hist.splice(0, n); st.histDrop = (st.histDrop || 0) + n; }
 }
 
 /* =====================================================================
@@ -863,7 +917,7 @@ const cv = $('#cv'), ctx = cv.getContext('2d');
 let W = 0, H = 0, DPR = 1;
 function css(v) { return getComputedStyle(document.body).getPropertyValue(v).trim(); }
 let C = {};
-function readColors() { ['--canvas', '--grid', '--grid2', '--axis', '--text', '--muted', '--efield', '--efield-line', '--bfield', '--bfield-line', '--surface', '--accent', '--panel', '--border'].forEach(k => C[k] = css(k)); }
+function readColors() { ['--accent-soft', '--canvas', '--grid', '--grid2', '--axis', '--text', '--muted', '--efield', '--efield-line', '--bfield', '--bfield-line', '--surface', '--accent', '--panel', '--border'].forEach(k => C[k] = css(k)); }
 function resize() {
   const r = cv.getBoundingClientRect(); DPR = window.devicePixelRatio || 1;
   W = r.width; H = r.height; cv.width = Math.round(W * DPR); cv.height = Math.round(H * DPR);
@@ -1358,6 +1412,55 @@ function drawAnalyticPath(b) {
   ctx.restore();
 }
 let pending = null; // 正在创建的矩形/线段/弹簧
+/** 悬停反馈：被指到的对象描一圈半透明强调色 */
+function drawHover() {
+  const o = hoverObj;
+  if (!o || (o === selected() && tool === 'select') || !scene.objects.includes(o)) return;
+  ctx.save(); ctx.strokeStyle = C['--accent']; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  const sc = scene.view.scale;
+  if (isBody(o) && o.st) {
+    const [x, y] = w2s(o.st.x, o.st.y);
+    const r = o.kind === 'box' ? Math.hypot(o.w, o.h) / 2 * sc + 4 : bodyScreenR(o) + 4;
+    ctx.globalAlpha = 0.18; ctx.fillStyle = C['--accent']; ctx.beginPath(); ctx.arc(x, y, r + 2, 0, 7); ctx.fill();
+    ctx.globalAlpha = 0.7; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(x, y, r + 2, 0, 7); ctx.stroke();
+  } else if (o.kind === 'pointCharge') {
+    const [x, y] = w2s(o.x, o.y), r = Math.max(8, (o.softRadius || 0.08) * sc) + 5;
+    ctx.globalAlpha = 0.7; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.stroke();
+  } else {
+    ctx.globalAlpha = 0.28; ctx.lineWidth = 8; ctx.beginPath();
+    if (o.kind === 'wall') { const [a, b] = w2s(o.x1, o.y1), [c, d] = w2s(o.x2, o.y2); ctx.moveTo(a, b); ctx.lineTo(c, d); }
+    else if (isLink(o)) { const e = linkEnds(o); if (e) { const [a, b] = w2s(e.x1, e.y1), [c, d] = w2s(e.x2, e.y2); ctx.moveTo(a, b); ctx.lineTo(c, d); } }
+    else if (o.kind === 'ground') { const y = w2s(0, o.y)[1]; ctx.moveTo(0, y); ctx.lineTo(W, y); }
+    else if (o.kind === 'incline') { const p = inclinePts(o).map(q => w2s(q[0], q[1])); ctx.lineWidth = 5; ctx.moveTo(...p[0]); ctx.lineTo(...p[1]); ctx.lineTo(...p[2]); ctx.closePath(); }
+    else if (o.kind === 'efield' || o.kind === 'bfield') { const [x, y, w, h] = fieldScreenRect(o); ctx.lineWidth = 4; ctx.rect(x, y, w, h); }
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+/** 放置预览：添加工具激活时，在吸附后的光标位置画出半透明的待放对象 */
+function drawGhost() {
+  if (!mouseIn || drag || tool === 'select' || tool === 'pan' || LINK_KINDS.includes(tool)) return;
+  const p = snapPt(mouseW), [x, y] = w2s(p[0], p[1]), sc = scene.view.scale;
+  ctx.save(); ctx.globalAlpha = 0.5; ctx.strokeStyle = C['--accent']; ctx.fillStyle = C['--accent-soft'] || 'rgba(217,119,87,.15)';
+  ctx.lineWidth = 1.5; ctx.setLineDash([4, 3]);
+  if (tool === 'ball' || tool === 'particle') {
+    const r = Math.max((tool === 'ball' ? 0.25 : 0.08) * sc, tool === 'particle' ? 5 : 3);
+    ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill(); ctx.stroke();
+  } else if (tool === 'box') {
+    const w = Math.max(0.6 * sc, 4), h = Math.max(0.4 * sc, 4); ctx.fillRect(x - w / 2, y - h / 2, w, h); ctx.strokeRect(x - w / 2, y - h / 2, w, h);
+  } else if (tool === 'pointCharge') {
+    ctx.beginPath(); ctx.arc(x, y, Math.max(8, 0.08 * sc), 0, 7); ctx.fill(); ctx.stroke();
+  } else if (tool === 'ground') {
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+  } else if (tool === 'incline') {
+    const q = inclinePts({ x: p[0], y: p[1], L: 4, ang: 37, dir: 1 }).map(v => w2s(v[0], v[1]));
+    ctx.beginPath(); ctx.moveTo(...q[0]); ctx.lineTo(...q[1]); ctx.lineTo(...q[2]); ctx.closePath(); ctx.fill(); ctx.stroke();
+  } else {
+    ctx.setLineDash([]); ctx.beginPath(); ctx.moveTo(x - 7, y); ctx.lineTo(x + 7, y); ctx.moveTo(x, y - 7); ctx.lineTo(x, y + 7); ctx.stroke();
+  }
+  ctx.restore();
+  label(`(${fmt(p[0], 2)}, ${fmt(p[1], 2)})${snapOff ? ' · 不吸附' : ''}`, x + 12, y + 14, C['--muted'], 'left', true);
+}
 function draw() {
   if (!W) return;
   if (!drag) resolveExprs();
@@ -1383,6 +1486,8 @@ function draw() {
   if (isBody(s) && !selVec && scene.settings.showAnalytic && (!sim.running || ((performance.now() / 32) | 0) % 2 === 0)) {
     drawAnalyticPath(s);
   }
+  drawHover();
+  drawGhost();
   if (pending) {
     ctx.save(); ctx.strokeStyle = C['--accent']; ctx.setLineDash([5, 4]); ctx.lineWidth = 1.5;
     if (pending.type === 'rect') { const [a, b] = w2s(pending.x1, pending.y1), [c, d] = w2s(pending.x2, pending.y2); ctx.strokeRect(Math.min(a, c), Math.min(b, d), Math.abs(c - a), Math.abs(d - b)); label(`${fmt(Math.abs(pending.x2 - pending.x1), 2)} × ${fmt(Math.abs(pending.y2 - pending.y1), 2)} m`, Math.max(a, c) + 6, Math.max(b, d) + 10, C['--accent']); }
@@ -1390,8 +1495,12 @@ function draw() {
     if (pending && LINK_KINDS.includes(pending.type)) {
       const A = byId(pending.a);
       if (A) {
-        const [a, b] = w2s(A.st.x, A.st.y), [c, d] = w2s(mouseW[0], mouseW[1]);
+        const tgt = isBody(hoverObj) && hoverObj !== A ? [hoverObj.st.x, hoverObj.st.y] : snapPt(mouseW);
+        const [a, b] = w2s(A.st.x, A.st.y), [c, d] = w2s(tgt[0], tgt[1]);
         ctx.beginPath(); ctx.moveTo(a, b); ctx.lineTo(c, d); ctx.stroke();
+        ctx.setLineDash([]); handleDot(a, b, C['--accent'], 4);
+        if (!isBody(hoverObj)) { ctx.fillStyle = C['--accent']; ctx.fillRect(c - 6, d - 2, 12, 4); }
+        label(`${fmt(Math.hypot(tgt[0] - A.st.x, tgt[1] - A.st.y), 2)} m${isBody(hoverObj) && hoverObj !== A ? ' → ' + hoverObj.name : ' · 固定点'}`, c + 10, d - 12, C['--accent']);
       }
     }
     ctx.restore();
@@ -1402,7 +1511,8 @@ function draw() {
 /* =====================================================================
  *  交互
  * ===================================================================== */
-let tool = 'select', selId = null, selVec = null, drag = null, mouseW = [0, 0], spaceDown = false;
+let tool = 'select', selId = null, selVec = null, drag = null, mouseW = [0, 0];
+let mouseIn = false, hoverObj = null, snapOff = false;
 const touchPoints = new Map();
 let pinch = null;
 function selected() { return selId != null ? byId(selId) : null; }
@@ -1436,8 +1546,8 @@ function selectVector(bodyId, key, opts = {}) {
   select(bodyId, Object.assign({ keepVec: true, forcePanel: changed }, opts));
 }
 const TOOL_HINT = {
-  select: '选择：点物体，或点速度/力箭头把它当作独立元素；拖箭头末端改大小方向；空白处平移',
-  pan: '平移：拖动画布移动视图，滚轮缩放', ball: '点击画布放置小球（按住 Shift 可连续放置）',
+  select: '',
+  pan: '拖动画布平移 · 滚轮缩放', ball: '点击画布放置小球（按住 Shift 可连续放置）',
   particle: '点击画布放置带电粒子（按住 Shift 可连续放置）', box: '点击画布放置滑块（按住 Shift 可连续放置）',
   ground: '点击画布确定地面高度', wall: '按住拖动画出挡板/极板（线段）', incline: '点击放置斜面（点击处为底角顶点）',
   pointCharge: '点击画布放置点电荷（右侧可改 q）', efield: '拖动画出电场矩形区域；单击 = 全空间电场', bfield_in: '拖动画出磁场 ⊗ 区域；单击 = 全空间',
@@ -1449,12 +1559,14 @@ const TOOL_HINT = {
 function setTool(t) {
   tool = t; pending = null;
   document.querySelectorAll('[data-tool]').forEach(b => b.classList.toggle('active', b.dataset.tool === t));
-  const hint = $('#toolhint'); if (hint) hint.textContent = TOOL_HINT[t] || '';
+  const hint = $('#toolhint');
+  if (hint) hint.innerHTML = TOOL_HINT[t] ? `${escapeHtml(TOOL_HINT[t])}${t !== 'select' && t !== 'pan' ? ' <span class="th-k">Alt 关闭吸附 · Esc 取消</span>' : ''}` : '';
+  hoverObj = null;
   cv.style.cursor = t === 'pan' ? 'grab' : t === 'select' ? 'default' : 'crosshair';
   if (leftTab === 'add') refreshLeft();
   draw();
 }
-function snap(v) { const S = scene.settings; return S.snap ? Math.round(v / S.snapStep) * S.snapStep : v; }
+function snap(v) { const S = scene.settings; return S.snap && !snapOff ? Math.round(v / S.snapStep) * S.snapStep : v; }
 function snapPt(p) { return [+snap(p[0]).toFixed(6), +snap(p[1]).toFixed(6)]; }
 function evPos(e) { const r = cv.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; }
 
@@ -1583,8 +1695,9 @@ cv.addEventListener('pointerdown', e => {
   } else {
     try { cv.setPointerCapture(e.pointerId); } catch { /* ignore */ }
   }
+  snapOff = !!e.altKey;
   const wp = s2w(sx, sy); mouseW = wp;
-  if (e.button === 1 || tool === 'pan' || spaceDown) {
+  if (e.button === 1 || tool === 'pan') {
     drag = { type: 'pan', sx, sy, cx: scene.view.cx, cy: scene.view.cy };
     cv.style.cursor = 'grabbing';
     return;
@@ -1594,18 +1707,18 @@ cv.addEventListener('pointerdown', e => {
   const sp = snapPt(wp);
   // ---- 添加工具 ----
   if (['ball', 'particle', 'box'].includes(tool)) {
-    pushUndo(); if (sim.t > 0) resetSim('添加物体，已重置到 t=0');
+    pushUndo('添加' + KIND_NAME[tool]); if (sim.t > 0) resetSim('添加物体，已重置到 t=0');
     const b = mkBody(tool, { x0: sp[0], y0: sp[1] }); scene.objects.push(b); initState(b);
     afterStructure(); select(b.id); if (!e.shiftKey) setTool('select'); return;
   }
   if (tool === 'pointCharge') {
-    pushUndo(); if (sim.t > 0) resetSim('添加点电荷，已重置');
+    pushUndo('添加点电荷'); if (sim.t > 0) resetSim('添加点电荷，已重置');
     const q = 1e-6;
     const o = mkPointCharge(sp[0], sp[1], { q, color: q >= 0 ? '#c8553d' : '#4a78b0' });
     scene.objects.push(o); afterStructure(); select(o.id); if (!e.shiftKey) setTool('select'); return;
   }
-  if (tool === 'ground') { pushUndo(); const g = mkGround(sp[1]); scene.objects.push(g); afterStructure(); select(g.id); setTool('select'); return; }
-  if (tool === 'incline') { pushUndo(); const o = mkIncline(sp[0], sp[1]); scene.objects.push(o); afterStructure(); select(o.id); setTool('select'); return; }
+  if (tool === 'ground') { pushUndo('添加地面'); const g = mkGround(sp[1]); scene.objects.push(g); afterStructure(); select(g.id); setTool('select'); return; }
+  if (tool === 'incline') { pushUndo('添加斜面'); const o = mkIncline(sp[0], sp[1]); scene.objects.push(o); afterStructure(); select(o.id); setTool('select'); return; }
   if (['efield', 'bfield_in', 'bfield_out'].includes(tool)) { pending = { type: 'rect', x1: sp[0], y1: sp[1], x2: sp[0], y2: sp[1], sx, sy }; drag = { type: 'create' }; return; }
   if (tool === 'wall') { pending = { type: 'line', x1: sp[0], y1: sp[1], x2: sp[0], y2: sp[1], sx, sy }; drag = { type: 'create' }; return; }
   if (LINK_KINDS.includes(tool)) {
@@ -1616,7 +1729,8 @@ cv.addEventListener('pointerdown', e => {
       else toast(`请先点击一个物体作为${label}的一端`);
       return;
     }
-    pushUndo();
+    if (hb && hb.id === pending.a) { toast('不能连接到自身：请点另一个物体，或点空白处作为固定点'); return; }
+    pushUndo('添加' + (KIND_NAME[tool] || '连接'));
     const A = byId(pending.a);
     const L0 = hb && hb.id !== pending.a
       ? +Math.hypot(hb.st.x - A.st.x, hb.st.y - A.st.y).toFixed(3)
@@ -1637,30 +1751,38 @@ cv.addEventListener('pointerdown', e => {
     selectVector(hv.b.id, hv.key, { deferPanel: true });
     const meta = vectorMeta(hv.key);
     if (meta.editable) {
-      pushUndo();
+      pushUndo('调整' + meta.name);
       drag = { type: hv.key === 'F' ? 'F' : hv.key === 'v' ? 'v' : 'v0', b: hv.b, moved: false };
     }
     return;
   }
   if (cur && (cur.kind === 'efield' || cur.kind === 'bfield') && !cur.all) {
     const hs = rectHandles(cur);
-    for (let i = 0; i < 4; i++) if (Math.hypot(sx - hs[i][0], sy - hs[i][1]) < 9) { pushUndo(); drag = { type: 'fieldCorner', o: cur, i }; return; }
+    for (let i = 0; i < 4; i++) if (Math.hypot(sx - hs[i][0], sy - hs[i][1]) < 9) { pushUndo('调整区域'); drag = { type: 'fieldCorner', o: cur, i, moved: false }; return; }
   }
   if (cur && cur.kind === 'wall') {
     const [a, b] = w2s(cur.x1, cur.y1), [c, d] = w2s(cur.x2, cur.y2);
-    if (Math.hypot(sx - a, sy - b) < 9) { pushUndo(); drag = { type: 'wallEnd', o: cur, end: 1 }; return; }
-    if (Math.hypot(sx - c, sy - d) < 9) { pushUndo(); drag = { type: 'wallEnd', o: cur, end: 2 }; return; }
+    if (Math.hypot(sx - a, sy - b) < 9) { pushUndo('调整端点'); drag = { type: 'wallEnd', o: cur, end: 1, moved: false }; return; }
+    if (Math.hypot(sx - c, sy - d) < 9) { pushUndo('调整端点'); drag = { type: 'wallEnd', o: cur, end: 2, moved: false }; return; }
   }
   const hb = hitBody(sx, sy);
+  if (hb && sim.running && !hb.fixed) {
+    // 运行中：直接抓住物体，松手时按鼠标速度甩出（不改初始条件）
+    select(hb.id, { deferPanel: true });
+    hb._grab = { x: hb.st.x, y: hb.st.y, vx: 0, vy: 0, t: performance.now() };
+    drag = { type: 'grab', b: hb, ox: wp[0] - hb.st.x, oy: wp[1] - hb.st.y };
+    cv.style.cursor = 'grabbing';
+    return;
+  }
   if (hb) {
     // 拖拽开始时不要同步重建右侧面板（MathQuill 很重），松手后再建
-    select(hb.id, { deferPanel: true }); pushUndo();
-    drag = { type: 'body', b: hb, ox: wp[0] - hb.st.x, oy: wp[1] - hb.st.y, moved: false, sx, sy };
+    select(hb.id, { deferPanel: true }); pushUndo(`移动「${hb.name}」`);
+    drag = { type: 'body', b: hb, ox: wp[0] - hb.st.x, oy: wp[1] - hb.st.y, moved: false, sx, sy, wasT: sim.t };
     return;
   }
   const ho = hitOther(sx, sy);
   if (ho) {
-    select(ho.id, { deferPanel: true }); pushUndo();
+    select(ho.id, { deferPanel: true }); pushUndo(`移动「${ho.name}」`);
     drag = { type: 'moveObj', o: ho, last: wp, snapLast: sp, moved: false }; return;
   }
   drag = { type: 'pan', sx, sy, cx: scene.view.cx, cy: scene.view.cy, click: true };
@@ -1673,11 +1795,23 @@ cv.addEventListener('pointermove', e => {
     if (!pinch && touchPoints.size === 2) startPinchFromTouches();
     if (pinch) { e.preventDefault(); updatePinch(); return; }
   }
-  const wp = s2w(sx, sy); mouseW = wp;
+  snapOff = !!e.altKey;
+  const wp = s2w(sx, sy); mouseW = wp; mouseIn = true;
   updateStatusMouse();
-  if (!drag) { if (pending && LINK_KINDS.includes(pending.type)) draw(); hoverCursor(sx, sy); return; }
+  if (!drag) { hoverCursor(sx, sy); if (tool !== 'select' && tool !== 'pan') requestDraw(); return; }
   e.preventDefault();
   const sp = snapPt(wp);
+  if (drag.type === 'grab') {
+    const g = drag.b._grab; if (!g) return;
+    const now = performance.now(), dt = Math.max((now - g.t) / 1000, 1e-3);
+    const nx = wp[0] - drag.ox, ny = wp[1] - drag.oy;
+    const k = Math.min(1, dt / 0.06); // 平滑后的鼠标速度
+    g.vx += ((nx - g.x) / dt * scene.settings.speed ** -1 - g.vx) * k;
+    g.vy += ((ny - g.y) / dt * scene.settings.speed ** -1 - g.vy) * k;
+    g.x = nx; g.y = ny; g.t = now;
+    if (!sim.running) { drag.b.st.x = nx; drag.b.st.y = ny; }
+    requestDraw(); return;
+  }
   if (drag.type === 'pan') {
     const v = scene.view; v.cx = drag.cx - (sx - drag.sx) / v.scale; v.cy = drag.cy + (sy - drag.sy) / v.scale;
     if (Math.hypot(sx - drag.sx, sy - drag.sy) > 3) drag.click = false;
@@ -1738,16 +1872,13 @@ cv.addEventListener('pointermove', e => {
     if (i === 0 || i === 1) y2 = sp[1]; else y1 = sp[1];
     o.x = Math.min(x1, x2); o.w = Math.abs(x2 - x1); o.y = Math.min(y1, y2); o.h = Math.abs(y2 - y1);
     if (x2 < x1) drag.i = [1, 0, 3, 2][drag.i]; if (y2 < y1) drag.i = [3, 2, 1, 0][drag.i];
-    liveEditLight(); return;
+    drag.moved = true; liveEditLight(); return;
   }
-  if (drag.type === 'wallEnd') { const o = drag.o; if (drag.end === 1) { o.x1 = sp[0]; o.y1 = sp[1]; } else { o.x2 = sp[0]; o.y2 = sp[1]; } liveEditLight(); return; }
+  if (drag.type === 'wallEnd') { const o = drag.o; drag.moved = true; if (drag.end === 1) { o.x1 = sp[0]; o.y1 = sp[1]; } else { o.x2 = sp[0]; o.y2 = sp[1]; } liveEditLight(); return; }
   if (drag.type === 'moveObj') {
     const dx = sp[0] - drag.snapLast[0], dy = sp[1] - drag.snapLast[1]; if (!dx && !dy) return;
-    drag.snapLast = sp; drag.moved = true; const o = drag.o;
-    if (o.kind === 'ground') o.y = clean(o.y + dy);
-    else if (o.kind === 'wall') { o.x1 = clean(o.x1 + dx); o.x2 = clean(o.x2 + dx); o.y1 = clean(o.y1 + dy); o.y2 = clean(o.y2 + dy); }
-    else if (isLink(o)) { if (o.b == null) { o.ax = clean(o.ax + dx); o.ay = clean(o.ay + dy); } }
-    else { o.x = clean(o.x + dx); o.y = clean(o.y + dy); }
+    drag.snapLast = sp; const o = drag.o;
+    if (translateObject(o, dx, dy)) drag.moved = true;
     liveEditLight(); return;
   }
 });
@@ -1755,11 +1886,22 @@ function finishDrag(e) {
   if (!drag) return;
   const d = drag; drag = null;
   try { if (e && e.pointerId != null) cv.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
+  if (d.type === 'grab') {
+    const b = d.b, g = b._grab; b._grab = null;
+    if (g && b.st) {
+      // 静止松手不额外加速；超过 30 m/s 的甩动限速，避免数值爆炸
+      const sp = Math.hypot(g.vx, g.vy), cap = 30;
+      const f = sp > cap ? cap / sp : 1;
+      b.st.vx = (performance.now() - g.t > 80) ? 0 : g.vx * f;
+      b.st.vy = (performance.now() - g.t > 80) ? 0 : g.vy * f;
+    }
+    cv.style.cursor = 'default'; buildPanel(); requestDraw(); return;
+  }
   if (d.type === 'pan') { cv.style.cursor = tool === 'pan' ? 'grab' : 'default'; if (d.click && tool === 'select') select(null); markDirty(); return; }
   if (d.type === 'create' && pending) {
     const p = pending; pending = null;
     const tiny = Math.abs(p.x2 - p.x1) < 1e-9 && Math.abs(p.y2 - p.y1) < 1e-9;
-    pushUndo();
+    pushUndo(p.type === 'rect' ? '添加' + (tool === 'efield' ? '电场' : '磁场') : '添加挡板');
     if (p.type === 'rect') {
       const r = { x: Math.min(p.x1, p.x2), y: Math.min(p.y1, p.y2), w: Math.abs(p.x2 - p.x1), h: Math.abs(p.y2 - p.y1), all: tiny };
       if (tiny) Object.assign(r, { x: p.x1 - 2, y: p.y1 - 2, w: 4, h: 4 });
@@ -1772,10 +1914,9 @@ function finishDrag(e) {
     if (!(e && e.shiftKey)) setTool('select');
     return;
   }
-  if (d.type === 'body' && !d.moved) undoStack.pop();
-  if (d.type === 'moveObj' && !d.moved) undoStack.pop();
-  if ((d.type === 'v0' || d.type === 'v' || d.type === 'F') && !d.moved) undoStack.pop();
+  if ((d.type === 'body' || d.type === 'moveObj' || d.type === 'v0' || d.type === 'v' || d.type === 'F' || d.type === 'fieldCorner' || d.type === 'wallEnd') && !d.moved) cancelLastUndo();
   // 拖拽结束后再做一次完整同步（场线、面板）
+  if (d.type === 'body' && d.moved && d.wasT > 0) toast('已修改初始位置，回到 t = 0');
   if ((d.type === 'body' || d.type === 'v0') && d.moved !== false) initChanged();
   else if (d.type === 'v' && d.moved && sim.t === 0) initChanged();
   else { markFieldsDirty(); markDirty(); draw(); }
@@ -1815,15 +1956,37 @@ window.addEventListener('blur', resetTouchGesture);
 document.addEventListener('visibilitychange', () => { if (document.hidden) resetTouchGesture(); });
 cv.addEventListener('wheel', e => {
   e.preventDefault();
-  const [sx, sy] = evPos(e), before = s2w(sx, sy), v = scene.view;
-  v.scale = Math.min(1e6, Math.max(0.5, v.scale * Math.exp(-e.deltaY * 0.0015)));
-  const after = s2w(sx, sy); v.cx += before[0] - after[0]; v.cy += before[1] - after[1];
-  draw(); markDirty();
+  const v = scene.view;
+  const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? H : 1;
+  const dx = e.deltaX * unit, dy = e.deltaY * unit;
+  // 触控板双指滑动（有横向分量、非捏合）→ 平移；鼠标滚轮或捏合（ctrlKey）→ 以光标为中心缩放
+  const trackpadPan = !e.ctrlKey && e.deltaMode === 0 && (Math.abs(dx) > 0.5 || (!Number.isInteger(dy) && Math.abs(dy) < 40));
+  if (trackpadPan) {
+    v.cx += dx / v.scale; v.cy -= dy / v.scale;
+  } else {
+    const [sx, sy] = evPos(e), before = s2w(sx, sy);
+    const k = e.ctrlKey ? 0.01 : 0.0015;
+    v.scale = Math.min(1e6, Math.max(0.5, v.scale * Math.exp(-dy * k)));
+    const after = s2w(sx, sy); v.cx += before[0] - after[0]; v.cy += before[1] - after[1];
+  }
+  markFieldsDirty(); requestDraw(); markDirty();
 }, { passive: false });
+cv.addEventListener('pointerenter', () => { mouseIn = true; });
+cv.addEventListener('pointerleave', () => { mouseIn = false; if (hoverObj) { hoverObj = null; } requestDraw(); });
 function hoverCursor(sx, sy) {
-  if (tool !== 'select') return;
-  if (hitVector(sx, sy)) { cv.style.cursor = 'crosshair'; return; }
-  cv.style.cursor = hitBody(sx, sy) || hitOther(sx, sy) ? 'move' : 'default';
+  let h = null;
+  if (tool === 'select') {
+    const hv = hitVector(sx, sy);
+    if (hv) { cv.style.cursor = 'pointer'; h = null; }
+    else {
+      h = hitBody(sx, sy) || hitOther(sx, sy);
+      cv.style.cursor = h ? (sim.running && isBody(h) && !h.fixed ? 'grab' : 'move') : 'default';
+    }
+  } else if (LINK_KINDS.includes(tool)) {
+    h = hitBody(sx, sy);
+    cv.style.cursor = h ? 'pointer' : (pending ? 'crosshair' : 'not-allowed');
+  }
+  if (h !== hoverObj) { hoverObj = h; requestDraw(); }
 }
 function clean(v) { return +(+v).toFixed(6); }
 /** 初始条件被修改：回到 t=0 */
@@ -1895,33 +2058,127 @@ function liveEditLight() { refreshInputs(); markDirty(); draw(); }
 function afterStructure() { ensureStates(); markFieldsDirty(); refreshLeft(); markDirty(); draw(); }
 
 /* ---------------- 键盘 ---------------- */
+const TOOL_KEYS = { 1: 'ball', 2: 'particle', 3: 'box', 4: 'ground', 5: 'wall', 6: 'incline', 7: 'spring', 8: 'rope', 9: 'rod' };
+/** 平移一个对象（不含连接件两端都连着物体的情况） */
+function translateObject(o, dx, dy) {
+  if (isBody(o)) { o.x0 = clean(o.x0 + dx); o.y0 = clean(o.y0 + dy); projectBodyOntoRods(o); return true; }
+  if (o.kind === 'ground') { o.y = clean(o.y + dy); return true; }
+  if (o.kind === 'wall') { o.x1 = clean(o.x1 + dx); o.x2 = clean(o.x2 + dx); o.y1 = clean(o.y1 + dy); o.y2 = clean(o.y2 + dy); return true; }
+  if (isLink(o)) { if (o.b != null) return false; o.ax = clean(o.ax + dx); o.ay = clean(o.ay + dy); return true; }
+  o.x = clean(o.x + dx); o.y = clean(o.y + dy); return true;
+}
+let lastNudge = 0;
+function nudgeSel(dx, dy) {
+  const o = selected(); if (!o) return false;
+  const now = performance.now();
+  if (now - lastNudge > 700) pushUndo(`移动「${o.name}」`);   // 连续按键合并为一步撤销
+  lastNudge = now;
+  if (!translateObject(o, dx, dy)) { toast('两端都连着物体的连接件不能单独移动'); return true; }
+  if (isBody(o)) initChanged(); else liveEdit();
+  updateStatus(true);
+  return true;
+}
+function zoomAt(f, sx = W / 2, sy = H / 2) {
+  const v = scene.view, before = s2w(sx, sy);
+  v.scale = Math.min(1e6, Math.max(0.5, v.scale * f));
+  const after = s2w(sx, sy); v.cx += before[0] - after[0]; v.cy += before[1] - after[1];
+  markFieldsDirty(); requestDraw(); markDirty();
+}
 document.addEventListener('keydown', e => {
-  const tag = (document.activeElement && document.activeElement.tagName) || '';
-  if (['INPUT', 'SELECT', 'TEXTAREA'].includes(tag)) { if (e.key === 'Escape') document.activeElement.blur(); return; }
-  const k = e.key.toLowerCase();
-  if ((e.ctrlKey || e.metaKey) && k === 'z') { e.preventDefault(); undo(); return; }
-  if ((e.ctrlKey || e.metaKey) && k === 'd') { e.preventDefault(); duplicateSel(); return; }
-  if (e.ctrlKey || e.metaKey || e.altKey) return;
-  if (e.key === ' ') { e.preventDefault(); if (!spaceDown) togglePlay(); return; }
-  if (k === 'delete' || k === 'backspace') { deleteSel(); return; }
+  const ae = document.activeElement, tag = (ae && ae.tagName) || '';
+  const isRange = tag === 'INPUT' && (ae.type === 'range' || ae.type === 'checkbox');
+  const typing = !isRange && (['INPUT', 'SELECT', 'TEXTAREA'].includes(tag) || (ae && ae.isContentEditable) || (ae && ae.closest && ae.closest('.mq-editable-field')));
+  if (typing) { if (e.key === 'Escape') ae.blur(); return; }
+  if (isRange && (e.key.startsWith('Arrow') || e.key === 'Home' || e.key === 'End')) return; // 滑块自身处理方向键
+  if (isRange && e.key === ' ') ae.blur();
+  const k = e.key.toLowerCase(), mod = e.ctrlKey || e.metaKey;
+  if (mod && k === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
+  if (mod && k === 'y') { e.preventDefault(); redo(); return; }
+  if (mod && k === 'd') { e.preventDefault(); duplicateSel(); return; }
+  if (mod && k === 'c') { if (selected()) { e.preventDefault(); copySel(); } return; }
+  if (mod && k === 'v') { e.preventDefault(); pasteClip(); return; }
+  if (mod && k === 's') { e.preventDefault(); $('#bSave')?.click(); return; }
+  if (mod && (k === '=' || k === '+')) { e.preventDefault(); zoomAt(1.25); return; }
+  if (mod && k === '-') { e.preventDefault(); zoomAt(0.8); return; }
+  if (mod || e.altKey) return;
+  if (e.key === ' ') { e.preventDefault(); if (!e.repeat) togglePlay(); return; }
+  if (k === 'delete' || k === 'backspace') { e.preventDefault(); deleteSel(); return; }
+  if (k.startsWith('arrow')) {
+    if (!selected() || selVec) return;
+    e.preventDefault();
+    const st = (scene.settings.snapStep || 0.1) * (e.shiftKey ? 10 : 1);
+    nudgeSel(k === 'arrowleft' ? -st : k === 'arrowright' ? st : 0, k === 'arrowup' ? st : k === 'arrowdown' ? -st : 0);
+    return;
+  }
   if (k === 'escape') {
+    if ($('#help').classList.contains('show')) { $('#help').classList.remove('show'); return; }
     $('#moreMenu')?.classList.remove('open');
+    $('#viewFlags')?.classList.remove('show'); $('#bView')?.classList.remove('active');
     hideContextMenu();
     closeMobilePanels();
+    if (pending) { pending = null; draw(); }
     if (tool !== 'select') setTool('select');
     else if (selVec) { selVec = null; syncListSelection(); buildPanel(); draw(); }
     else if (selId != null) select(null);
     return;
   }
-  if (k === 'r') { resetSim('已重置到 t=0'); draw(); return; }
+  if (e.key === '?') { $('#help').classList.toggle('show'); return; }
+  if (k === 'r') { resetSim('已重置到 t = 0'); draw(); updateReadouts(); return; }
   if (k === '.') { stepOnce(); return; }
-  if (k === 'v') setTool('select'); if (k === 'h') setTool('pan'); if (k === 'f') fitView();
+  if (k === ',') { stepBack(); return; }
+  if (k === '=' || k === '+') { zoomAt(1.25); return; }
+  if (k === '-') { zoomAt(0.8); return; }
+  if (k === 'v') { setTool('select'); return; }
+  if (k === 'h') { setTool('pan'); return; }
+  if (k === 'f') { fitView(); return; }
+  if (TOOL_KEYS[e.key]) { setTool(TOOL_KEYS[e.key]); toast(`${KIND_NAME[TOOL_KEYS[e.key]]}：${TOOL_HINT[TOOL_KEYS[e.key]]}`); return; }
+});
+// 鼠标点过的按钮立刻失焦，避免随后按空格时按钮被再次“点击”
+document.addEventListener('pointerup', e => {
+  const b = e.target.closest && e.target.closest('button, select');
+  if (b && b.tagName === 'BUTTON' && e.pointerType !== '') setTimeout(() => b.blur(), 0);
 });
 
 /* ---------------- 撤销 ---------------- */
-const undoStack = [];
-function pushUndo() { undoStack.push(serialize()); if (undoStack.length > 80) undoStack.shift(); }
-function undo() { const s = undoStack.pop(); if (!s) { toast('没有可撤销的操作'); return; } loadScene(JSON.parse(s), true); toast('已撤销'); }
+const undoStack = [], redoStack = [];
+/** 记录一步可撤销操作。label 用于提示「已撤销：xxx」。 */
+function pushUndo(label = '修改参数') {
+  undoStack.push({ s: serialize(), label, redo: redoStack.splice(0) });
+  if (undoStack.length > 120) undoStack.shift();
+  syncHistoryButtons();
+}
+/** 操作最终没有产生改动（例如点了一下没拖动）：撤回刚压入的记录，并恢复重做栈。 */
+function cancelLastUndo() {
+  const it = undoStack.pop();
+  if (it && it.redo) redoStack.push(...it.redo);
+  syncHistoryButtons();
+}
+function restoreSnapshot(json) {
+  const keepSel = selId, keepVec = selVec;
+  loadScene(JSON.parse(json), true);
+  if (keepSel != null && byId(keepSel)) { selId = keepSel; selVec = keepVec && byId(keepVec.bodyId) ? keepVec : null; syncListSelection(); buildPanel(); draw(); }
+}
+function undo() {
+  const it = undoStack.pop();
+  if (!it) { toast('没有可撤销的操作'); return; }
+  redoStack.push({ s: serialize(), label: it.label });
+  restoreSnapshot(it.s);
+  toast(it.label ? `已撤销：${it.label}` : '已撤销');
+  syncHistoryButtons();
+}
+function redo() {
+  const it = redoStack.pop();
+  if (!it) { toast('没有可重做的操作'); return; }
+  undoStack.push({ s: serialize(), label: it.label });
+  restoreSnapshot(it.s);
+  toast(it.label ? `已重做：${it.label}` : '已重做');
+  syncHistoryButtons();
+}
+function syncHistoryButtons() {
+  const u = $('#bUndo'), r = $('#bRedo');
+  if (u) { u.disabled = !undoStack.length; u.title = undoStack.length ? `撤销${undoStack.at(-1).label ? '：' + undoStack.at(-1).label : ''} (Ctrl+Z)` : '没有可撤销的操作'; }
+  if (r) { r.disabled = !redoStack.length; r.title = redoStack.length ? `重做${redoStack.at(-1).label ? '：' + redoStack.at(-1).label : ''} (Ctrl+Shift+Z)` : '没有可重做的操作'; }
+}
 
 /* ---------------- 复制/删除 ---------------- */
 function clearVectorValue(b, key) {
@@ -1952,29 +2209,77 @@ function deleteSel() {
     const meta = vectorMeta(selVec.key);
     if (!b) { selVec = null; return; }
     if (!meta.editable) { toast('这是计算得到的力，不能删除'); return; }
-    pushUndo();
+    pushUndo('清除' + meta.name);
     const msg = clearVectorValue(b, selVec.key);
     buildPanel(); refreshLeft(); draw();
     toast(msg || '已清除');
     return;
   }
-  const s = selected(); if (!s) return; pushUndo();
+  const s = selected(); if (!s) return; pushUndo(`删除「${s.name}」`);
+  const links = scene.objects.filter(o => isLink(o) && (o.a === s.id || o.b === s.id)).length;
   scene.objects = scene.objects.filter(o => o !== s && !(isLink(o) && (o.a === s.id || o.b === s.id)));
-  selId = null; selVec = null; afterStructure(); buildPanel(); toast(`已删除 ${s.name}`);
+  selId = null; selVec = null; afterStructure(); buildPanel();
+  toast(`已删除「${s.name}」${links ? `及 ${links} 个连接` : ''}`, { action: UNDO_ACTION });
+}
+function uniqueName(base) {
+  const names = new Set(scene.objects.map(o => o.name));
+  if (!names.has(base)) return base;
+  for (let i = 2; ; i++) if (!names.has(`${base} ${i}`)) return `${base} ${i}`;
+}
+/** 克隆对象（连接件不单独复制）。dx/dy 为相对原位置的平移。 */
+function cloneObject(src, dx, dy) {
+  const c = JSON.parse(JSON.stringify(Object.assign({}, src, { st: null, _exprErr: null, _hold: null })));
+  c.id = nextId++; c.name = uniqueName(String(src.name).replace(/ 副本( \d+)?$/, '') + ' 副本');
+  if (isBody(c)) { c.x0 = clean(c.x0 + dx); c.y0 = clean(c.y0 + dy); }
+  else if (c.kind === 'wall') { c.x1 = clean(c.x1 + dx); c.x2 = clean(c.x2 + dx); c.y1 = clean(c.y1 + dy); c.y2 = clean(c.y2 + dy); }
+  else if (c.kind === 'ground') c.y = clean(c.y + dy);
+  else { c.x = clean(c.x + dx); c.y = clean(c.y + dy); }
+  return c;
+}
+function insertClone(src, dx, dy, label) {
+  if (isLink(src)) { toast('连接件请用「添加」工具重新连接两端'); return; }
+  pushUndo(label);
+  const c = cloneObject(src, dx, dy);
+  scene.objects.push(c);
+  if (isBody(c)) { if (sim.t > 0) resetSim(); initState(c); }
+  afterStructure(); select(c.id);
+  toast(`已${label}「${c.name}」`, { action: UNDO_ACTION });
 }
 function duplicateSel() {
-  const s = selected(); if (!s) return; pushUndo();
-  const c = JSON.parse(JSON.stringify(Object.assign({}, s, { st: null }))); c.id = nextId++; c.name = s.name + '副本';
-  const off = 0.5;
-  if (isBody(c)) { c.x0 += off; c.y0 += off; } else if (c.kind === 'wall') { c.x1 += off; c.x2 += off; } else if (c.kind === 'ground') c.y += off; else if (!isLink(c)) { c.x += off; c.y -= off; }
-  scene.objects.push(c); if (isBody(c)) { if (sim.t > 0) resetSim(); initState(c); }
-  afterStructure(); select(c.id); toast('已复制');
+  const s = selected(); if (!s) return;
+  const off = Math.max(scene.settings.snapStep || 0.1, 0.5);
+  insertClone(s, off, s.kind === 'ground' ? off : -off, '复制');
+}
+let clipboard = null;
+function copySel() {
+  const s = selected(); if (!s) return;
+  if (isLink(s)) { toast('连接件不能单独复制'); return; }
+  clipboard = JSON.parse(JSON.stringify(Object.assign({}, s, { st: null })));
+  toast(`已复制「${s.name}」· Ctrl+V 粘贴到鼠标处`);
+}
+function pasteClip() {
+  if (!clipboard) { toast('剪贴板是空的'); return; }
+  const c = clipboard;
+  const ox = isBody(c) ? c.x0 : c.kind === 'wall' ? (c.x1 + c.x2) / 2 : c.kind === 'ground' ? 0 : c.x;
+  const oy = isBody(c) ? c.y0 : c.kind === 'wall' ? (c.y1 + c.y2) / 2 : c.y;
+  const p = mouseIn ? snapPt(mouseW) : [ox + 0.5, oy - 0.5];
+  insertClone(c, p[0] - ox, p[1] - oy, '粘贴');
 }
 
 /* ---------------- 播放控制 ---------------- */
 function updatePlayBtn() { const b = $('#bPlay'); if (b) b.innerHTML = `<svg class="ic"><use href="#i-${sim.running ? 'pause' : 'play'}"/></svg>${sim.running ? '暂停' : '播放'}`; }
 function togglePlay() { ensureStates(); sim.running = !sim.running; updatePlayBtn(); lastTs = 0; draw(); updateReadouts(); }
-function stepOnce() { sim.running = false; updatePlayBtn(); advance(1 / 60 * scene.settings.speed); afterFrame(); }
+function stepOnce() {
+  sim.running = false; updatePlayBtn();
+  if (isScrubbed()) restoreFrame(sim.frameIdx + 1);   // 回看中：先沿记录前进
+  else advance(1 / 60 * scene.settings.speed);
+  afterFrame();
+}
+function stepBack() {
+  sim.running = false; updatePlayBtn();
+  if (sim.frameIdx > 0) restoreFrame(sim.frameIdx - 1); else toast('已在记录的起点');
+  afterFrame();
+}
 let lastTs = 0;
 let needsDraw = true;
 function requestDraw() { needsDraw = true; }
@@ -1994,6 +2299,7 @@ function loop(ts) {
 }
 function afterFrame() { requestDraw(); updateReadouts(); }
 function updateBadge() {
+  updateTimeline();
   $('#tbadge').innerHTML = `t = <b>${fmt(sim.t, 3)}</b> s &nbsp;<span class="${sim.running ? 'run' : 'pause'}">${sim.running ? '● 运行中' : sim.t === 0 ? '○ 初始' : '‖ 暂停'}</span>${scene.settings.speed !== 1 ? ` &nbsp;${scene.settings.speed}×` : ''}`;
 }
 function fitView() {
@@ -2034,7 +2340,8 @@ function numRow(parent, lab, get, set, unit = '', o = {}) {
   const formula = owner && owner.expr && owner.expr[key] != null && String(owner.expr[key]).trim() !== ''
     ? String(owner.expr[key]) : '';
   const r = el('div', { class: 'row' + (formula ? ' is-expr' : '') });
-  r.appendChild(el('span', { class: 'lab' }, lab));
+  const labEl = el('span', { class: 'lab' }, lab);
+  r.appendChild(labEl);
   if (o.title) r.title = o.title;
   let pushed = false;
   let input;
@@ -2068,7 +2375,9 @@ function numRow(parent, lab, get, set, unit = '', o = {}) {
       set(v); o.init ? initChanged() : liveEdit(); if (o.after) o.after();
     });
     input.addEventListener('change', () => { input.value = fmtIn(get()); });
+    attachScrub(labEl, input, get, o);
   }
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); input.blur(); } });
   r.appendChild(input);
   if (owner) {
     const fx = el('button', {
@@ -2098,6 +2407,49 @@ function numRow(parent, lab, get, set, unit = '', o = {}) {
   }
   binds.push({ el: input, get: () => (formula ? (owner.expr && owner.expr[key]) ?? '' : get()) });
   return input;
+}
+/**
+ * 拖动标签改数值：左右拖动，Shift ×10、Alt ×0.1。
+ * 步长取当前数值的数量级的 1/100，避免小量（如 1e-6 C）拖一下就飞掉。
+ */
+function attachScrub(labEl, input, get, o) {
+  labEl.classList.add('scrub');
+  labEl.title = (o.title ? o.title + '\n' : '') + '左右拖动可调节数值（Shift 加速，Alt 微调）';
+  labEl.addEventListener('pointerdown', e => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const v0 = Number(get()) || 0;
+    const fixedStep = o.step && o.step !== 'any' ? +o.step : 0;
+    const mag = Math.abs(v0) > 1e-12 ? Math.pow(10, Math.floor(Math.log10(Math.abs(v0))) - 2) : 0.01;
+    const base = fixedStep ? Math.min(fixedStep, Math.max(mag, fixedStep / 10)) : mag;
+    const x0 = e.clientX;
+    let moved = false;
+    input.dispatchEvent(new Event('focus'));   // 让这次拖动成为独立的一步撤销
+    try { labEl.setPointerCapture(e.pointerId); } catch { }
+    document.body.classList.add('scrubbing');
+    const move = ev => {
+      const dx = ev.clientX - x0;
+      if (!moved && Math.abs(dx) < 3) return;
+      moved = true;
+      const k = ev.shiftKey ? 10 : ev.altKey ? 0.1 : 1;
+      let v = v0 + dx * base * k;
+      if (o.min != null) v = Math.max(o.min, v);
+      const dec = Math.max(0, -Math.floor(Math.log10(base * k)));
+      v = +v.toFixed(Math.min(dec, 12));
+      input.value = fmtIn(v);
+      input.dispatchEvent(new Event('input'));
+    };
+    const up = () => {
+      labEl.removeEventListener('pointermove', move);
+      labEl.removeEventListener('pointerup', up);
+      labEl.removeEventListener('pointercancel', up);
+      document.body.classList.remove('scrubbing');
+      if (!moved) input.focus(); else input.dispatchEvent(new Event('change'));
+    };
+    labEl.addEventListener('pointermove', move);
+    labEl.addEventListener('pointerup', up);
+    labEl.addEventListener('pointercancel', up);
+  });
 }
 function chkRow(parent, lab, get, set, o = {}) {
   const r = el('label', { class: 'chk', style: 'margin:4px 10px 4px 0' }); const i = el('input', { type: 'checkbox' }); i.checked = !!get();
@@ -2168,14 +2520,28 @@ function buildPanel() {
   if (isBody(o) && selVec && selVec.bodyId === o.id) return buildVectorInspector(P, o, selVec.key);
 
   const head = el('div', { class: 'insp-head' });
-  const nm = el('input', { type: 'text', value: o.name, 'aria-label': '名称' });
-  nm.addEventListener('input', () => { o.name = nm.value; refreshLeft(); draw(); markDirty(); });
+  const nm = el('input', { type: 'text', value: o.name, 'aria-label': '名称', title: '点击重命名', spellcheck: 'false' });
+  let nmPushed = false;
+  nm.addEventListener('focus', () => { nmPushed = false; });
+  nm.addEventListener('input', () => { if (!nmPushed) { pushUndo('重命名'); nmPushed = true; } o.name = nm.value; refreshLeft(); draw(); markDirty(); });
+  nm.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === 'Escape') { e.preventDefault(); nm.blur(); } });
+  nm.addEventListener('blur', () => {
+    const v = nm.value.trim();
+    if (!v) { o.name = uniqueName(KIND_NAME[o.kind] || '对象'); nm.value = o.name; refreshLeft(); draw(); markDirty(); }
+    else if (v !== nm.value) { o.name = v; nm.value = v; }
+  });
   head.appendChild(nm);
   if (o.color != null) {
     const c = el('input', { type: 'color', value: o.color, title: '颜色' });
-    c.addEventListener('input', () => { o.color = c.value; refreshLeft(); draw(); markDirty(); });
+    let cPushed = false;
+    c.addEventListener('focus', () => { cPushed = false; });
+    c.addEventListener('input', () => { if (!cPushed) { pushUndo('改颜色'); cPushed = true; } o.color = c.value; refreshLeft(); draw(); markDirty(); });
     head.appendChild(c);
   }
+  const acts = el('div', { class: 'insp-actions' });
+  if (!isLink(o)) acts.appendChild(el('button', { type: 'button', title: '复制 (Ctrl+D)', 'aria-label': '复制', onclick: duplicateSel }, '<svg class="ic"><use href="#i-copy"/></svg>'));
+  acts.appendChild(el('button', { type: 'button', class: 'danger', title: '删除 (Delete)', 'aria-label': '删除', onclick: deleteSel }, '<svg class="ic"><use href="#i-trash"/></svg>'));
+  head.appendChild(acts);
   P.appendChild(head);
   const kindExtra = o.kind === 'bfield' ? (o.dir < 0 ? ' · 向里' : ' · 向外') : '';
   P.appendChild(el('div', { class: 'insp-meta' }, KIND_NAME[o.kind] + kindExtra));
@@ -2257,12 +2623,8 @@ function buildVectorInspector(P, b, key) {
 }
 
 function buildNonBodyPanel(P, o) {
-  const tabs = [['props', '属性'], ['actions', '操作']];
-  if (!tabs.some(([id]) => id === propsTab)) propsTab = 'props';
-  P.appendChild(makeTabs(tabs, propsTab, id => { propsTab = id; buildPanel(); }));
   const panels = el('div', { class: 'tab-panels' });
-  const pProps = panelBox('props', propsTab);
-  const pAct = panelBox('actions', propsTab);
+  const pProps = panelBox('props', 'props');
 
   if (o.kind === 'pointCharge') buildPointChargePanel(pProps, o);
   else if (o.kind === 'efield') buildEPanel(pProps, o);
@@ -2293,12 +2655,7 @@ function buildNonBodyPanel(P, o) {
     btn(s2, '在顶端放置滑块', () => placeOnIncline(o));
   } else if (isLink(o)) buildLinkPanel(pProps, o);
 
-  const act = section(pAct, '操作');
-  const br = el('div', { class: 'btnrow' });
-  btn(br, '复制', duplicateSel); btn(br, '删除', deleteSel, 'danger');
-  act.appendChild(br);
-
-  panels.appendChild(pProps); panels.appendChild(pAct);
+  panels.appendChild(pProps);
   P.appendChild(panels);
   syncDesmosKeypadForAnalysis(false);
 }
@@ -2423,7 +2780,6 @@ function buildBodyPanel(P, b) {
     ['live', '实时'],
     ['analysis', '分析'],
     ['chart', '图像'],
-    ['actions', '操作'],
   ];
   if (!tabs.some(([id]) => id === propsTab)) propsTab = 'init';
   P.appendChild(makeTabs(tabs, propsTab, id => { propsTab = id; buildPanel(); }, { className: 'tabs tabs-scroll' }));
@@ -2464,6 +2820,9 @@ function buildBodyPanel(P, b) {
     chkRow(o, '固定', () => b.fixed, v => b.fixed = v, { init: true });
     chkRow(o, '显示轨迹', () => b.trail, v => b.trail = v);
     chkRow(o, '参与碰撞', () => b.collide, v => b.collide = v);
+    const tb = el('div', { class: 'btnrow' });
+    btn(tb, '清除轨迹', () => { if (b.st) b.st.trail = [[b.st.x, b.st.y]]; draw(); });
+    o.appendChild(tb);
     o.appendChild(el('div', { class: 'hint' }, '外力请到「受力」标签页设置。'));
   }
 
@@ -2493,17 +2852,7 @@ function buildBodyPanel(P, b) {
     g.appendChild(el('canvas', { id: 'chart' }));
   }
 
-  const pAct = panelBox('actions', propsTab);
-  {
-    const act = section(pAct, '操作');
-    const br = el('div', { class: 'btnrow' });
-    btn(br, '复制', duplicateSel);
-    btn(br, '删除', deleteSel, 'danger');
-    btn(br, '清除轨迹', () => { b.st.trail = [[b.st.x, b.st.y]]; draw(); });
-    act.appendChild(br);
-  }
-
-  [pInit, pProps, pForce, pLive, pAn, pCh, pAct].forEach(x => panels.appendChild(x));
+  [pInit, pProps, pForce, pLive, pAn, pCh].forEach(x => panels.appendChild(x));
   P.appendChild(panels);
   ensureDesmosKeypadDock(document.getElementById('right'));
   syncDesmosKeypadForAnalysis(propsTab === 'analysis');
@@ -2894,7 +3243,8 @@ function refreshLeft() {
       if (!visibleItems.length) continue;
       grid.appendChild(el('div', { class: 'add-cat' }, block.cat));
       for (const it of visibleItems) {
-        const b = el('button', { type: 'button', title: it.desc }, `<div><b>${it.name}</b><div class="hint" style="margin:0">${it.desc}</div></div>`);
+        const key = Object.keys(TOOL_KEYS).find(k => TOOL_KEYS[k] === it.tool);
+        const b = el('button', { type: 'button', title: it.desc + (key ? `（快捷键 ${key}）` : '') }, `<div><b>${it.name}</b><div class="hint" style="margin:0">${it.desc}</div></div>${key ? `<kbd>${key}</kbd>` : ''}`);
         b.onclick = () => { setTool(it.tool); closeMobilePanels(false); toast('在画布上点击或拖拽以放置'); };
         if (tool === it.tool) b.classList.add('active');
         grid.appendChild(b);
@@ -3332,7 +3682,22 @@ function updateStatusMouse() { const m = document.getElementById('mousepos'); if
 
 /* ---------------- 提示 ---------------- */
 let toastT = 0;
-function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('show'), 2200); }
+/** 轻提示。opts.action = { label, fn } 时显示一个可点的操作（例如「撤销」），停留更久。 */
+function toast(msg, opts = {}) {
+  const t = $('#toast');
+  t.innerHTML = '';
+  t.appendChild(el('span', {}, escapeHtml(msg)));
+  t.classList.toggle('has-action', !!opts.action);
+  if (opts.action) {
+    const b = el('button', { type: 'button', class: 'toast-act' }, opts.action.label);
+    b.addEventListener('click', ev => { ev.stopPropagation(); t.classList.remove('show'); opts.action.fn(); });
+    t.appendChild(b);
+  }
+  t.classList.add('show');
+  clearTimeout(toastT);
+  toastT = setTimeout(() => t.classList.remove('show'), opts.action ? 5000 : 2200);
+}
+const UNDO_ACTION = { label: '撤销', fn: () => undo() };
 
 /* =====================================================================
  *  预设场景
@@ -3771,13 +4136,13 @@ const PRESETS = {
 };
 function loadPreset(key) {
   const p = PRESETS[key]; if (!p) return;
-  pushUndo();
+  pushUndo(`载入「${p.name}」`);
   const sc = p.make(); sc.objects.forEach(o => { if (isBody(o)) o.st = null; });
   sc.info = { key };
   propsTab = 'overview';
   loadScene(sc, false);
   if (!sc.view || W < 640) fitView();
-  toast(`已载入「${p.name}」· 按空格播放`);
+  toast(`已载入「${p.name}」· 空格播放`, { action: UNDO_ACTION });
 }
 
 /* =====================================================================
@@ -3787,7 +4152,7 @@ function serialize() {
   return JSON.stringify({ app: 'physim', version: 1, settings: scene.settings, view: scene.view, info: scene.info || null,
     objects: scene.objects.map(o => {
       const c = Object.assign({}, o);
-      delete c.st; delete c._exprErr; delete c._hold; delete c._Ferr;
+      delete c.st; delete c._exprErr; delete c._hold; delete c._Ferr; delete c._grab; delete c._N;
       return c;
     }) });
 }
@@ -3857,6 +4222,15 @@ function initToolbar() {
   document.querySelectorAll('[data-tool]').forEach(b => b.addEventListener('click', () => setTool(b.dataset.tool)));
   $('#bPlay').onclick = togglePlay;
   $('#bStep').onclick = stepOnce;
+  const tl = $('#tlRange');
+  if (tl) {
+    tl.addEventListener('input', () => {
+      if (sim.running) { sim.running = false; updatePlayBtn(); }
+      restoreFrame(+tl.value);
+    });
+  }
+  $('#tlBack')?.addEventListener('click', stepBack);
+  $('#tlFwd')?.addEventListener('click', stepOnce);
   $('#bReset').onclick = () => { resetSim('已重置到 t=0'); draw(); updateReadouts(); };
   $('#selSpeed').onchange = e => { scene.settings.speed = +e.target.value; markDirty(); draw(); };
   $('#chkG').onchange = e => { scene.settings.gOn = e.target.checked; liveEdit(); };
@@ -3938,6 +4312,8 @@ function initToolbar() {
   });
 
   $('#bUndo').onclick = undo;
+  $('#bRedo') && ($('#bRedo').onclick = redo);
+  syncHistoryButtons();
   $('#bSave').onclick = () => {
     const blob = new Blob([serialize()], { type: 'application/json' });
     const a = el('a', { href: URL.createObjectURL(blob), download: `物理场景_${new Date().toISOString().slice(0, 10)}.json` });
@@ -3950,15 +4326,15 @@ function initToolbar() {
   $('#fileIn').onchange = e => {
     const f = e.target.files[0]; if (!f) return;
     const rd = new FileReader();
-    rd.onload = () => { try { pushUndo(); loadScene(JSON.parse(rd.result), false); toast('已导入'); } catch (err) { toast('导入失败：' + err.message); } };
+    rd.onload = () => { try { const data = JSON.parse(rd.result); pushUndo('导入场景'); loadScene(data, false); toast(`已导入 ${f.name}`, { action: UNDO_ACTION }); } catch (err) { if (undoStack.at(-1)?.label === '导入场景') cancelLastUndo(); toast('导入失败：文件不是有效的场景 JSON'); } };
     rd.readAsText(f); e.target.value = '';
   };
   $('#bClear').onclick = () => {
-    if (!confirm('确定清空场景？')) return;
-    pushUndo();
+    if (!scene.objects.length) { toast('场景已经是空的'); moreMenu?.classList.remove('open'); return; }
+    pushUndo('清空场景');
     const s = scene.settings;
     loadScene({ objects: [], settings: s, view: scene.view }, true);
-    toast('已清空');
+    toast('已清空场景', { action: UNDO_ACTION });
     moreMenu?.classList.remove('open');
   };
   $('#bTheme').onclick = () => {
@@ -4048,6 +4424,7 @@ function ctxItem(label, fn, opts = {}) {
   const b = document.createElement('button');
   b.type = 'button';
   b.textContent = label;
+  if (opts.kbd) { const k = document.createElement('span'); k.className = 'ck'; k.textContent = opts.kbd; b.appendChild(k); }
   if (opts.danger) b.classList.add('danger');
   if (opts.disabled) b.disabled = true;
   b.addEventListener('click', (e) => {
@@ -4096,8 +4473,11 @@ function openContextMenu(clientX, clientY, target, where = 'canvas') {
       syncPanelToggleButtons?.();
     }));
     menu.appendChild(ctxSep());
-    menu.appendChild(ctxItem('复制', () => { select(target.id); duplicateSel(); }));
-    menu.appendChild(ctxItem('删除', () => { select(target.id); deleteSel(); }, { danger: true }));
+    if (!isLink(target)) {
+      menu.appendChild(ctxItem('复制一份', () => { select(target.id); duplicateSel(); }, { kbd: 'Ctrl+D' }));
+      menu.appendChild(ctxItem('拷贝', () => { select(target.id); copySel(); }, { kbd: 'Ctrl+C' }));
+    }
+    menu.appendChild(ctxItem('删除', () => { select(target.id); deleteSel(); }, { danger: true, kbd: 'Del' }));
     if (isBody(target)) {
       menu.appendChild(ctxSep());
       menu.appendChild(ctxItem(target.fixed ? '取消固定' : '固定不动', () => {
@@ -4139,13 +4519,20 @@ function openContextMenu(clientX, clientY, target, where = 'canvas') {
       }));
     }
   } else if (where === 'canvas') {
-    menu.appendChild(ctxItem('取消选择', () => select(null)));
-    menu.appendChild(ctxItem('适配视图', () => fitView()));
+    const at = snapPt(s2w(clientX - cv.getBoundingClientRect().left, clientY - cv.getBoundingClientRect().top));
+    const placeHere = kind => () => {
+      pushUndo('添加' + KIND_NAME[kind]); if (sim.t > 0) resetSim();
+      const b = kind === 'pointCharge' ? mkPointCharge(at[0], at[1]) : mkBody(kind, { x0: at[0], y0: at[1] });
+      scene.objects.push(b); if (isBody(b)) initState(b); afterStructure(); select(b.id);
+    };
+    menu.appendChild(ctxItem('在此放置小球', placeHere('ball'), { kbd: '1' }));
+    menu.appendChild(ctxItem('在此放置带电粒子', placeHere('particle'), { kbd: '2' }));
+    menu.appendChild(ctxItem('在此放置滑块', placeHere('box'), { kbd: '3' }));
+    menu.appendChild(ctxItem('在此放置点电荷', placeHere('pointCharge')));
+    if (clipboard) menu.appendChild(ctxItem('粘贴到此处', () => { mouseW = at; mouseIn = true; pasteClip(); }, { kbd: 'Ctrl+V' }));
     menu.appendChild(ctxSep());
-    menu.appendChild(ctxItem('添加小球', () => setTool('ball')));
-    menu.appendChild(ctxItem('添加弹簧', () => setTool('spring')));
-    menu.appendChild(ctxItem('添加轻绳', () => setTool('rope')));
-    menu.appendChild(ctxItem('添加轻杆', () => setTool('rod')));
+    menu.appendChild(ctxItem('适配视图', () => fitView(), { kbd: 'F' }));
+    if (selId != null) menu.appendChild(ctxItem('取消选择', () => select(null), { kbd: 'Esc' }));
   } else {
     hideContextMenu();
     return;
