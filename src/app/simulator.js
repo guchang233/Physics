@@ -1,4 +1,5 @@
 import { analyzeMotion, sampleAnalyticPath } from '../analysis/motionAnalysis.ts';
+import { collectContacts, solveVelocities, solvePositions, rotationalKE, inertia as rigidInertia, canRotate } from '../engine/rigid.js';
 import { mountMathQuill } from '../ui/mathquill.ts';
 import { syncDesmosKeypadForAnalysis, ensureDesmosKeypadDock } from '../ui/mathKeyboard.ts';
 import {
@@ -90,6 +91,8 @@ const BODY_COMMON = [
   num('mus', '静摩擦因数', 'μₛ', '', { group: '接触', min: 0, def: null, step: 0.05,
     title: '最大静摩擦 fₘ = μₛN。留空等于 μ', check: (o, v) => v < (o.mu || 0) - 1e-12 ? `不能小于动摩擦因数 μ = ${o.mu}` : '' }),
   num('e', '恢复系数', 'e', '', { group: '接触', min: 0, max: 1, def: 0.6, step: 0.1, title: '碰后与碰前法向相对速度之比：1 弹性，0 完全非弹性' }),
+  bool('rotate', '允许转动', { group: '转动', init: true, rebuild: true, title: '关闭后只平动（姿态保持初始倾角）' }),
+  num('omega0', '初始角速度', 'ω₀', 'rad/s', { group: '转动', def: 0, init: true, when: o => o.rotate !== false, title: '逆时针为正' }),
   bool('fixed', '固定（不参与运动）', { group: '行为', init: true }),
   bool('collide', '参与物体间碰撞', { group: '行为' }),
   bool('trail', '记录轨迹', { group: '行为' }),
@@ -107,11 +110,11 @@ const REGION = [
 ];
 const SCHEMA = {
   ball: [...BODY_COMMON.slice(0, 2), num('r', '半径', 'r', 'm', { group: '几何', min: 0, minEx: true, def: 0.25, title: '碰撞与接触用的半径；质点模型下不影响受力' }), ...BODY_COMMON.slice(2)],
-  particle: [...BODY_COMMON.slice(0, 2), num('r', '半径', 'r', 'm', { group: '几何', min: 0, minEx: true, def: 0.08 }), ...BODY_COMMON.slice(2)],
+  particle: [...BODY_COMMON.slice(0, 2), num('r', '半径', 'r', 'm', { group: '几何', min: 0, minEx: true, def: 0.08 }), ...BODY_COMMON.slice(2).filter(d => d.group !== '转动')],
   box: [...BODY_COMMON.slice(0, 2),
     num('w', '宽', 'w', 'm', { group: '几何', min: 0, minEx: true, def: 0.6 }),
     num('h', '高', 'h', 'm', { group: '几何', min: 0, minEx: true, def: 0.4 }),
-    num('ang0', '初始倾角', 'θ₀', '°', { group: '几何', def: 0, init: true, title: '滑块按平动模型处理，不转动；落在斜面上时自动贴合斜面' }),
+    num('ang0', '初始倾角', 'θ₀', '°', { group: '几何', def: 0, init: true, title: '矩形的初始姿态，逆时针为正' }),
     ...BODY_COMMON.slice(2)],
   ground: [num('y', '高度', 'y', 'm', { group: '几何', def: 0 }), ...SURF_COMMON],
   wall: [
@@ -188,7 +191,7 @@ let fieldsDirty = true;
 
 
 function initState(b) {
-  b.st = { x: b.x0, y: b.y0, vx: b.vx0, vy: b.vy0, ang: b.ang0 * DEG, trail: [[b.x0, b.y0, sim.t, b.vx0, b.vy0]], hist: [], forces: [],
+  b.st = { x: b.x0, y: b.y0, vx: b.vx0, vy: b.vy0, ang: (b.ang0 || 0) * DEG, omega: canRotate(b) ? (b.omega0 || 0) : 0, trail: [[b.x0, b.y0, sim.t, b.vx0, b.vy0]], hist: [], forces: [],
     contactN: [0, 0], contactF: [0, 0], cN: 0, ax: 0, ay: 0, pvx: b.vx0, pvy: b.vy0 };
   pushHist(b);
 }
@@ -392,6 +395,8 @@ function readQuantity(id, field) {
     case 'vy0': return o.vy0 || 0;
     case 'v0': return Math.hypot(o.vx0 || 0, o.vy0 || 0);
     case 'ang0': return o.ang0 || 0;
+    case 'omega': return o.st ? (o.st.omega || 0) : (o.omega0 || 0);
+    case 'omega0': return o.omega0 || 0;
     case 'F': return o.F || 0;
     case 'Fang': return o.Fang || 0;
     case 'Fx': return (o.F || 0) * Math.cos((o.Fang || 0) * DEG);
@@ -777,7 +782,7 @@ function substep(h, segs) {
   const F = computeForces(movers, false);
   for (const b of movers) {
     const st = b.st, f = F.get(b), ax = f.x / b.m, ay = f.y / b.m;
-    if (b._grab) { const g = b._grab; st.x = g.x; st.y = g.y; st.vx = g.vx; st.vy = g.vy; continue; }
+    if (b._grab) { const g = b._grab; st.x = g.x; st.y = g.y; st.vx = g.vx; st.vy = g.vy; st.omega = 0; continue; }
     // Boris：半步电/重力 → 磁场旋转 → 半步
     let vx = st.vx + ax * h / 2, vy = st.vy + ay * h / 2;
     if (b.q) {
@@ -794,19 +799,22 @@ function substep(h, segs) {
     sim.wE += (f.ux * mvx + f.uy * mvy) * h;
     sim.wExt += (f.ex * mvx + f.ey * mvy) * h;
     st.x += st.vx * h; st.y += st.vy * h;
+    st.ang += (st.omega || 0) * h;
   }
   // 轻杆：刚性长度约束（SHAKE，在接触前满足约束）
   shakeRods(h, true);
-  // 与静止表面接触
-  // 接触：顺序冲量迭代（Gauss–Seidel）。叠放、挤压等多个接触同时存在时，单遍无法同时满足，需迭代收敛
+  // 接触（engine/rigid.js）：收集穿透点 → 顺序冲量（含转动、静/动摩擦、两点块求解）→ 位置修正
   const bl = bodies().filter(b => b.collide);
-  const iters = bl.length > 1 ? CONTACT_ITERS : 1;
-  for (let it = 0; it < iters; it++) {
-    for (const b of movers) {
-      if (b._grab) continue;
-      for (const sg of segs) contactSeg(b, sg, h);
+  const contacts = collectContacts(movers, bl, segs);
+  if (contacts.length) {
+    const pairs = contacts.some(c => c.a);
+    solveVelocities(contacts, h, pairs ? 16 : 8);
+    for (const c of contacts) {
+      const nx = c.nx * c.jn / h, ny = c.ny * c.jn / h, fx = c.tx * c.jt / h, fy = c.ty * c.jt / h;
+      const B = c.b.st; B.contactN[0] += nx; B.contactN[1] += ny; B.contactF[0] += fx; B.contactF[1] += fy;
+      if (c.a) { const A = c.a.st; A.contactN[0] -= nx; A.contactN[1] -= ny; A.contactF[0] -= fx; A.contactF[1] -= fy; }
     }
-    for (let i = 0; i < bl.length; i++) for (let j = i + 1; j < bl.length; j++) collidePair(bl[i], bl[j], h);
+    solvePositions(() => collectContacts(movers, bl, segs), 3);
   }
   // 接触可能破坏杆长，再做一次 SHAKE
   shakeRods(h, false);
@@ -848,109 +856,6 @@ function curveAt(arr, t) {
   const u = span > 1e-12 ? Math.min(1, Math.max(0, (t - a[2]) / span)) : 0;
   return [a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u, t, a[3] + (b[3] - a[3]) * u, a[4] + (b[4] - a[4]) * u];
 }
-const REST_V = 0.15; // 低于此法向速度视为静止接触，不反弹
-const CONTACT_ITERS = 4;
-function contactSeg(b, sg, h) {
-  const st = b.st;
-  let nx, ny, d, reff;
-  if (sg.ground) {
-    // 地面视为下方实心的半空间：法线恒为 +y，防止物体被挤到地面以下后“穿透”
-    nx = 0; ny = 1; d = st.y - sg.y1; reff = support(b, 0, 1);
-    if (d >= reff || d < -Math.max(2 * reff, 0.5)) return;
-  } else {
-    const cp = closestOnSeg(st.x, st.y, sg);
-    const dx = st.x - cp[0], dy = st.y - cp[1]; d = Math.hypot(dx, dy);
-    if (d < 1e-9) return;
-    nx = dx / d; ny = dy / d; reff = support(b, nx, ny);
-    if (d >= reff) return;
-  }
-  st.x += nx * (reff - d); st.y += ny * (reff - d);
-  const vn = st.vx * nx + st.vy * ny;
-  if (b.kind === 'box' && ny > 0.5) st.ang = Math.atan2(-nx, ny);
-  if (vn >= 0) return;
-  const e = -vn < REST_V ? 0 : Math.min(b.e, sg.e);
-  const dvn = -(1 + e) * vn;
-  st.vx += nx * dvn; st.vy += ny * dvn;
-  st.contactN[0] += b.m * nx * dvn / h; st.contactN[1] += b.m * ny * dvn / h;
-  const muS = b.mus ?? b.mu ?? 0;
-  if (!sg.smooth && (b.mu > 0 || muS > 0)) {
-    // 库仑摩擦（冲量形式）：切向速度能被最大静摩擦冲量抵消则粘住，否则按动摩擦 μN 减速
-    const tx = -ny, ty = nx, vt = st.vx * tx + st.vy * ty;
-    const dvt = Math.abs(vt) <= muS * dvn ? -vt : -Math.sign(vt) * (b.mu || 0) * dvn;
-    st.vx += tx * dvt; st.vy += ty * dvt;
-    // 本子步的位移已按摩擦前的速度走过，补回切向位移，否则静摩擦下会以 g·sinθ·Δt² 每步缓慢蠕滑
-    st.x += tx * dvt * h; st.y += ty * dvt * h;
-    st.contactF[0] += b.m * tx * dvt / h; st.contactF[1] += b.m * ty * dvt / h;
-  }
-}
-/* ---------------- 物体间接触几何：圆–圆、矩形–圆、矩形–矩形（分离轴定理） ---------------- */
-/** 返回从 a 指向 b 的单位法向与穿透深度；不接触返回 null */
-function contactBetween(a, b) {
-  if (a.kind !== 'box' && b.kind !== 'box') {
-    const dx = b.st.x - a.st.x, dy = b.st.y - a.st.y, d = Math.hypot(dx, dy), R = a.r + b.r;
-    if (d >= R) return null;
-    return d < 1e-9 ? { nx: 1, ny: 0, pen: R } : { nx: dx / d, ny: dy / d, pen: R - d };
-  }
-  if (a.kind === 'box' && b.kind === 'box') return boxBox(a, b);
-  if (a.kind === 'box') return boxCircle(a, b);
-  const c = boxCircle(b, a); if (c) { c.nx = -c.nx; c.ny = -c.ny; } return c;
-}
-function boxCircle(box, c) {
-  const s = box.st, ca = Math.cos(s.ang), sa = Math.sin(s.ang), hw = box.w / 2, hh = box.h / 2;
-  const dx = c.st.x - s.x, dy = c.st.y - s.y, lx = dx * ca + dy * sa, ly = -dx * sa + dy * ca;
-  let nlx, nly, pen;
-  if (Math.abs(lx) <= hw && Math.abs(ly) <= hh) {
-    const px = hw - Math.abs(lx), py = hh - Math.abs(ly);
-    if (px < py) { nlx = lx >= 0 ? 1 : -1; nly = 0; pen = px + c.r; } else { nlx = 0; nly = ly >= 0 ? 1 : -1; pen = py + c.r; }
-  } else {
-    const ex = lx - Math.max(-hw, Math.min(hw, lx)), ey = ly - Math.max(-hh, Math.min(hh, ly)), d = Math.hypot(ex, ey);
-    if (d >= c.r) return null;
-    nlx = ex / d; nly = ey / d; pen = c.r - d;
-  }
-  return { nx: nlx * ca - nly * sa, ny: nlx * sa + nly * ca, pen };
-}
-function boxBox(a, b) {
-  const A = a.st, B = b.st, dx = B.x - A.x, dy = B.y - A.y;
-  const ax = [[Math.cos(A.ang), Math.sin(A.ang)], [-Math.sin(A.ang), Math.cos(A.ang)]];
-  const bx = [[Math.cos(B.ang), Math.sin(B.ang)], [-Math.sin(B.ang), Math.cos(B.ang)]];
-  const rad = (box, axes, u) => box.w / 2 * Math.abs(axes[0][0] * u[0] + axes[0][1] * u[1]) + box.h / 2 * Math.abs(axes[1][0] * u[0] + axes[1][1] * u[1]);
-  let best = null;
-  for (const u of [...ax, ...bx]) {
-    const dist = dx * u[0] + dy * u[1];
-    const ov = rad(a, ax, u) + rad(b, bx, u) - Math.abs(dist);
-    if (ov <= 0) return null;
-    if (!best || ov < best.pen) { const sgn = dist >= 0 ? 1 : -1; best = { nx: u[0] * sgn, ny: u[1] * sgn, pen: ov }; }
-  }
-  return best;
-}
-function collidePair(a, b, h = 0) {
-  if ((a.fixed || a._grab) && (b.fixed || b._grab)) return;
-  const A = a.st, B = b.st;
-  const bound = o => o.kind === 'box' ? Math.hypot(o.w, o.h) / 2 : o.r;
-  if (Math.hypot(B.x - A.x, B.y - A.y) >= bound(a) + bound(b)) return; // 外接圆粗筛
-  const ct = contactBetween(a, b);
-  if (!ct) return;
-  const nx = ct.nx, ny = ct.ny;
-  const ia = a.fixed || a._grab ? 0 : 1 / a.m, ib = b.fixed || b._grab ? 0 : 1 / b.m, is = ia + ib;
-  if (is <= 0) return;
-  const pen = ct.pen;
-  A.x -= nx * pen * ia / is; A.y -= ny * pen * ia / is; B.x += nx * pen * ib / is; B.y += ny * pen * ib / is;
-  const vrel = (B.vx - A.vx) * nx + (B.vy - A.vy) * ny;
-  if (vrel >= 0) return;
-  const e = -vrel < REST_V * 0.5 ? 0 : Math.min(a.e, b.e);
-  const j = -(1 + e) * vrel / is;
-  A.vx -= j * ia * nx; A.vy -= j * ia * ny; B.vx += j * ib * nx; B.vy += j * ib * ny;
-  // 物体间库仑摩擦（两者都有 μ 时才生效，取较小值；静摩擦同理）
-  const mu = Math.min(a.mu || 0, b.mu || 0), muS = Math.min(a.mus ?? a.mu ?? 0, b.mus ?? b.mu ?? 0);
-  if (mu > 0 || muS > 0) {
-    const tx = -ny, ty = nx, vt = (B.vx - A.vx) * tx + (B.vy - A.vy) * ty;
-    const stick = -vt / is;
-    const jt = Math.abs(stick) <= muS * j ? stick : Math.sign(stick) * mu * j;
-    A.vx -= jt * ia * tx; A.vy -= jt * ia * ty; B.vx += jt * ib * tx; B.vy += jt * ib * ty;
-    A.x -= jt * ia * tx * h; A.y -= jt * ia * ty * h; B.x += jt * ib * tx * h; B.y += jt * ib * ty * h;
-  }
-}
-
 /* ---------------- 能量与功 ---------------- */
 function uniformEAt(x, y) {
   let Ex = 0, Ey = 0;
@@ -972,7 +877,7 @@ function systemEnergy() {
   for (const b of list) {
     if (b.fixed) continue;
     const p = pos(b), v2 = (p.vx || 0) ** 2 + (p.vy || 0) ** 2;
-    Ek += 0.5 * b.m * v2; px += b.m * (p.vx || 0); py += b.m * (p.vy || 0); M += b.m;
+    Ek += 0.5 * b.m * v2 + rotationalKE(b); px += b.m * (p.vx || 0); py += b.m * (p.vy || 0); M += b.m;
     if (S.gOn) Ug += b.m * S.g * p.y;
   }
   for (const s of scene.objects) {
@@ -1016,7 +921,7 @@ function pushEnergy() {
 /* ---------------- 时间轴快照 ---------------- */
 function snapshotFrame() {
   sim.frames.push({ t: sim.t, wE: sim.wE, wExt: sim.wExt, e: sim.eHist.length + sim.eDrop,
-    b: bodies().filter(b => b.st).map(b => { const st = b.st; return [b.id, st.x, st.y, st.vx, st.vy, st.ang, st.trail.length + (st.trailDrop || 0), st.hist.length + (st.histDrop || 0), st.ax || 0, st.ay || 0]; }) });
+    b: bodies().filter(b => b.st).map(b => { const st = b.st; return [b.id, st.x, st.y, st.vx, st.vy, st.ang, st.trail.length + (st.trailDrop || 0), st.hist.length + (st.histDrop || 0), st.ax || 0, st.ay || 0, st.omega || 0]; }) });
   if (sim.frames.length > MAX_FRAMES) sim.frames.shift();
   sim.frameIdx = sim.frames.length - 1;
 }
@@ -1028,7 +933,7 @@ function restoreFrame(i) {
   for (const r of f.b) {
     const o = byId(r[0]); if (!o || !o.st) continue;
     const st = o.st;
-    st.x = r[1]; st.y = r[2]; st.vx = r[3]; st.vy = r[4]; st.ang = r[5]; st.ax = r[8]; st.ay = r[9];
+    st.x = r[1]; st.y = r[2]; st.vx = r[3]; st.vy = r[4]; st.ang = r[5]; st.ax = r[8]; st.ay = r[9]; st.omega = r[10] || 0;
     st.trail.length = Math.max(1, Math.min(st.trail.length, r[6] - (st.trailDrop || 0)));
     st.hist.length = Math.max(1, Math.min(st.hist.length, r[7] - (st.histDrop || 0)));
     st.contactN = [0, 0]; st.contactF = [0, 0];
@@ -1317,6 +1222,11 @@ function drawBodyShape(b, x, y, ang, ghost) {
   } else {
     const r = bodyScreenR(b);
     ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill(); ctx.stroke();
+    if (canRotate(b) && r > 5) {
+      // 姿态标记：一条半径，转动时随之旋转
+      ctx.save(); ctx.strokeStyle = 'rgba(255,255,255,.75)'; ctx.lineWidth = Math.max(1.2, r * 0.08); ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + Math.cos(ang) * r * 0.82, y - Math.sin(ang) * r * 0.82); ctx.stroke(); ctx.restore();
+    }
     if (!ghost && r > 6) { ctx.fillStyle = 'rgba(255,255,255,.22)'; ctx.beginPath(); ctx.arc(x - r * 0.3, y - r * 0.3, r * 0.3, 0, 7); ctx.fill(); }
   }
   ctx.restore();
@@ -1625,7 +1535,7 @@ function drawAnalyticPath(b) {
  *  数值预测：用同一个引擎从当前状态向前积分，结束后完整还原状态
  * ===================================================================== */
 const PRED_MAX_STEPS = 20000;
-const ST_KEYS = ['x', 'y', 'vx', 'vy', 'ang', 'ax', 'ay', 'pvx', 'pvy', '_ox', '_oy', 'cN'];
+const ST_KEYS = ['x', 'y', 'vx', 'vy', 'ang', 'omega', 'ax', 'ay', 'pvx', 'pvy', '_ox', '_oy', 'cN'];
 function saveSimState() {
   return {
     t: sim.t, wE: sim.wE, wExt: sim.wExt,
@@ -2504,7 +2414,7 @@ function syncInitialLive(b) {
   if (b) {
     if (!b.st) initState(b);
     else {
-      b.st.x = b.x0; b.st.y = b.y0; b.st.vx = b.vx0; b.st.vy = b.vy0; b.st.ang = b.ang0 * DEG;
+      b.st.x = b.x0; b.st.y = b.y0; b.st.vx = b.vx0; b.st.vy = b.vy0; b.st.ang = (b.ang0 || 0) * DEG; b.st.omega = canRotate(b) ? (b.omega0 || 0) : 0;
       b.st.trail = [[b.x0, b.y0, 0, b.vx0, b.vy0]]; b.st.hist = []; pushHist(b);
     }
   } else {
@@ -3186,7 +3096,11 @@ function derivedOf(o) {
   if (isBody(o)) {
     if (g) add('重力 G = mg', () => `${fmt(o.m * g)} N`);
     if (o.q) add('比荷 q/m', () => `${fmt(o.q / o.m)} C/kg`);
-    if (o.kind === 'box') add('临界倾角 arctan μₛ', () => `${fmt(Math.atan(o.mus ?? o.mu ?? 0) / DEG, 3)}°`);
+    if (canRotate(o)) add(o.kind === 'box' ? '转动惯量 m(w²+h²)/12' : '转动惯量 2mr²/5（实心球）', () => `${fmt(rigidInertia(o))} kg·m²`);
+    if (canRotate(o)) add('角速度 ω', () => `${fmt(o.st ? o.st.omega || 0 : o.omega0 || 0)} rad/s`);
+    if (canRotate(o)) add('转动动能 ½Iω²', () => `${fmt(rotationalKE(o))} J`);
+    if (o.kind === 'box') add('临界滑动倾角 arctan μₛ', () => `${fmt(Math.atan(o.mus ?? o.mu ?? 0) / DEG, 3)}°`);
+    if (o.kind === 'box' && canRotate(o)) add('临界倾倒倾角 arctan(w/h)', () => `${fmt(Math.atan(o.w / o.h) / DEG, 3)}°`);
     if (o.q) for (const f of scene.objects) {
       if (f.kind === 'bfield' && f.B) {
         add(`「${f.name}」中周期 T = 2πm/|qB|`, () => `${fmt(2 * Math.PI * o.m / Math.abs(o.q * f.B))} s`);
@@ -3257,9 +3171,9 @@ function updateDerived(force = false) {
   }
 }
 const MODEL_NOTE = {
-  ball: '质点模型：受力作用于质心，不考虑转动；与其他物体按圆形求接触。',
+  ball: '刚性圆盘/实心球：平动 + 转动（I = 2mr²/5）。接触点处的摩擦产生力矩，可以滚动；关闭“允许转动”则只滑动。',
   particle: '带电质点：受电场力 qE 与洛伦兹力 qv×B（Boris 推进，磁场中不做功）。默认不与其他物体碰撞。',
-  box: '平动刚体：不转动，接触时贴合接触面；与其他物体按有向矩形（分离轴定理）求碰撞。',
+  box: '矩形刚体：平动 + 转动（I = m(w²+h²)/12）。以四个角点与表面、其他物体接触，可以倾倒、翻滚；物体间按有向矩形（分离轴定理）求接触。',
   ground: '水平半空间：下方为实体，物体不会穿过。',
   wall: '有限长线段（挡板、极板、荧光屏）。两侧都可接触。',
   incline: '三角形楔块，三条边都是接触面。滑块落在斜面上会自动贴合斜面。',
@@ -3499,7 +3413,7 @@ function buildBodyPanel(P, b) {
   const pLive = panelBox('live', propsTab);
   {
     const r = section(pLive, '瞬时状态');
-    readRow(r, [['位置', 'r_pos'], ['速度', 'r_vel'], ['速率', 'r_v'], ['方向', 'r_ang'], ['加速度', 'r_a'], ['动能', 'r_ek'], ['动量', 'r_p'], ['重力势能', 'r_ep'], ['机械能', 'r_e']]);
+    readRow(r, [['位置', 'r_pos'], ['速度', 'r_vel'], ['速率', 'r_v'], ['方向', 'r_ang'], ['加速度', 'r_a'], ['动能', 'r_ek'], ['角速度', 'r_w'], ['动量', 'r_p'], ['重力势能', 'r_ep'], ['机械能', 'r_e']]);
     const ps = section(pLive, '轨迹标记点');
     const mine = pins.filter(p => p.bodyId === b.id).sort((u, v) => u.t - v.t);
     if (!mine.length) ps.appendChild(el('div', { class: 'hint' }, '把鼠标移到轨迹或预测曲线上会显示该时刻的读数，点击即可钉住一个标记点。'));
@@ -3982,7 +3896,8 @@ function updateReadouts() {
   setTxt('r_pos', `(${fmt(st.x)}, ${fmt(st.y)}) m`); setTxt('r_vel', `(${fmt(st.vx)}, ${fmt(st.vy)}) m/s`);
   setTxt('r_v', `${fmt(v)} m/s`); setTxt('r_ang', v > 1e-9 ? `${fmt(Math.atan2(st.vy, st.vx) / DEG, 2)}°` : '—');
   setTxt('r_a', sim.t > 0 ? `${fmt(Math.hypot(st.ax, st.ay))} m/s²` : '—');
-  setTxt('r_ek', `${fmt(Ek)} J`); setTxt('r_p', `${fmt(b.m * v)} kg·m/s`); setTxt('r_ep', S.gOn ? `${fmt(Ep)} J（以 y=0 为零势面）` : '—'); setTxt('r_e', `${fmt(Ek + Ep)} J`);
+  setTxt('r_ek', `${fmt(Ek + rotationalKE(b))} J${canRotate(b) && st.omega ? `（含转动 ${fmt(rotationalKE(b))} J）` : ''}`);
+  setTxt('r_w', canRotate(b) ? `${fmt(st.omega || 0)} rad/s · θ = ${fmt((st.ang || 0) / DEG, 2)}°` : '—（不转动）'); setTxt('r_p', `${fmt(b.m * v)} kg·m/s`); setTxt('r_ep', S.gOn ? `${fmt(Ep)} J（以 y=0 为零势面）` : '—'); setTxt('r_e', `${fmt(Ek + Ep)} J`);
   // Throttle MathQuill remount while running — force only when paused / tab switch
   if (selVec && selVec.bodyId === b.id) {
     const g = vectorScreen(b, selVec.key);
@@ -4348,6 +4263,9 @@ const PRESET_META = {
   recoil: { cat: '力学', tags: ['反冲', '动量守恒', '弹簧'], fresh: true },
   newton: { cat: '力学', tags: ['牛顿摆', '碰撞'], fresh: true },
   vcircle: { cat: '力学', tags: ['竖直圆周', '临界速度', '轻绳'], fresh: true },
+  rolling: { cat: '力学', tags: ['滚动', '转动惯量', '斜面'], fresh: true },
+  topple: { cat: '力学', tags: ['倾倒', '力矩', '斜面'], fresh: true },
+  dominoes: { cat: '力学', tags: ['多米诺', '转动', '碰撞'], fresh: true },
   springosc: { cat: '振动', tags: ['弹簧振子', '简谐'] },
   damped: { cat: '振动', tags: ['阻尼', '弹簧'], fresh: true },
   forced: { cat: '振动', tags: ['受迫振动', '共振'], fresh: true },
@@ -4490,6 +4408,51 @@ const PRESETS = {
       const b = mkBody('ball', { name: '√(3gL)', m: 0.5, r: 0.15, x0: 2.2, y0: 2 - L, vx0: +Math.sqrt(3 * g * L).toFixed(4), color: '#4a78b0' });
       return sceneOf([a, mkRope(a.id, null, { name: '绳1', ax: -2.2, ay: 2, L0: L, k: 20000 }), b, mkRope(b.id, null, { name: '绳2', ax: 2.2, ay: 2, L0: L, k: 20000 })],
         { vPx: 10, maxDt: 0.0005 }, { cx: 0, cy: 2, scale: 80 });
+    } },
+  rolling: { name: '滚动与滑动',
+    desc: '三个物体从同一斜面同时释放：光滑斜面上的小球只滑不转；粗糙斜面上的实心球纯滚动，部分重力势能变成转动动能，所以更慢；滑块在 μ = 0.2 时边滑边减少加速度。',
+    formulas: [['a = g sinθ', '光滑：只平动'], ['a = g sinθ / (1 + I/mr²) = 5/7 · g sinθ', '实心球纯滚动'], ['v = ωr', '纯滚动约束']],
+    tips: ['选中滚动的小球，在「属性 → 派生量」里看转动动能。', '把它的 μ 调到 0.05，会变成“又滚又滑”。'],
+    make() {
+      nextId = 1;
+      const th = 20 * DEG, L = 9;
+      const mkInc = (y, smooth, name) => mkIncline(-4.5, y, { name, L, ang: 20, dir: -1, smooth, e: 0 });
+      const top = (y) => [-4.5 - L, y + L * Math.tan(th)];
+      const out = [];
+      const rows = [[9, true, '光滑斜面', 'ball', '滑动的球', '#4a78b0', 0], [4.5, false, '粗糙斜面', 'ball', '滚动的球', '#d97757', 1], [0, false, '粗糙斜面 2', 'box', '滑块 μ=0.2', '#5e8c4a', 0.2]];
+      for (const [y, smooth, iname, kind, bname, color, mu] of rows) {
+        out.push(mkInc(y, smooth, iname));
+        const [tx, ty] = top(y), r = 0.3, along = 0.6;
+        const nx = Math.sin(th), ny = Math.cos(th);  // 斜面朝左上，法向
+        const cx = tx + Math.cos(th) * along, cy = ty - Math.sin(th) * along;
+        if (kind === 'ball') out.push(mkBody('ball', { name: bname, r, mu, mus: mu, e: 0, color, x0: +(cx + nx * r).toFixed(6), y0: +(cy + ny * r).toFixed(6), collide: false }));
+        else out.push(mkBody('box', { name: bname, w: 0.6, h: 0.4, mu, mus: mu, e: 0, color, ang0: -20, x0: +(cx + Math.cos(th) * 0.3 + nx * 0.2).toFixed(6), y0: +(cy - Math.sin(th) * 0.3 + ny * 0.2).toFixed(6), collide: false }));
+      }
+      return sceneOf([mkGround(0), ...out], { showAnalytic: false, vPx: 8 }, { cx: -9, cy: 6.4, scale: 40 });
+    } },
+  topple: { name: '倾倒还是滑动',
+    desc: '两个质量相同的木块放在 30° 粗糙斜面上（μₛ = 1.2，不会滑动）。重力作用线若落在底面之外就会倾倒：判据是 tanθ > w/h。高瘦的木块倾倒，矮胖的保持静止。',
+    formulas: [['tanθ > w / h', '倾倒判据（不滑动时）'], ['tanθ > μₛ', '滑动判据'], ['I = m(w² + h²)/12', '矩形绕质心的转动惯量']],
+    tips: ['把斜面倾角改为 20°（tan20° = 0.36 < 0.4），高瘦木块也不倒了。', '打开「显示 → 受力分析」，观察支持力的作用点向下坡角移动。'],
+    make() {
+      nextId = 1;
+      const th = 30 * DEG, inc = mkIncline(-3, 0, { L: 6, ang: 30, dir: 1, smooth: false, e: 0 });
+      const place = (s, w, h, name, color) => {
+        const bx = -3 + s * Math.cos(th), by = s * Math.sin(th), nx = -Math.sin(th), ny = Math.cos(th);
+        return mkBody('box', { name, w, h, m: 1, mu: 1.2, mus: 1.2, e: 0, color, ang0: 30, x0: +(bx + nx * h / 2).toFixed(6), y0: +(by + ny * h / 2).toFixed(6) });
+      };
+      return sceneOf([mkGround(0), inc, place(2.2, 0.4, 1.2, '高瘦 w/h=0.33', '#d97757'), place(4.8, 0.8, 0.5, '矮胖 w/h=1.6', '#4a78b0')],
+        { showAnalytic: false }, { cx: 0.5, cy: 1.8, scale: 80 });
+    } },
+  dominoes: { name: '多米诺骨牌',
+    desc: '一排竖立的骨牌，第一块以绕右下角转动的初速度推出（ω = −1.6 rad/s，v = ω×r），每一块倒下时撞击下一块，转动一路传下去。这是平动、转动与碰撞耦合的典型例子。',
+    formulas: [['倾倒条件：重心越过支点', ''], ['ΔE = mg·Δh_重心', '每块骨牌释放的势能']],
+    tips: ['调整骨牌间距（选中后改 x₀），间距约为高度的一半时传播最快。', '把最后一块换成很重的木块，看能否推倒它。'],
+    make() {
+      nextId = 1;
+      const out = [mkGround(0)];
+      for (let i = 0; i < 9; i++) out.push(mkBody('box', { name: `骨牌${i + 1}`, w: 0.16, h: 1, m: 0.3, mu: 0.5, mus: 0.6, e: 0.1, color: i === 0 ? '#d97757' : '#6b6a64', x0: +(i * 0.55).toFixed(2), y0: 0.5, ...(i === 0 ? { omega0: -1.6, vx0: 0.8, vy0: 0.128 } : {}) }));   // 第一块：绕右下角支点转动的相容初速度 v = ω×r
+      return sceneOf(out, { showAnalytic: false, showVel: false, showLabels: false, maxDt: 0.0005 }, { cx: 2.4, cy: 0.9, scale: 115 });
     } },
   springosc: { name: '弹簧振子',
     desc: '光滑水平面上的弹簧振子，从偏离平衡位置 1 m 处静止释放，做简谐运动。周期只取决于 m 与 k，与振幅无关。',

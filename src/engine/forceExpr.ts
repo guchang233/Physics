@@ -37,7 +37,7 @@ const ALLOWED = new Set<string>([
 
 /** 可写在「物体.量」后面的量。长名字在前，避免 vx 吃掉 vx0。 */
 export const EXPR_FIELDS = [
-  'softRadius', 'snapStep', 'maxDt', 'FaimX', 'FaimY', 'v0ang', 'vang',
+  'softRadius', 'snapStep', 'maxDt', 'FaimX', 'FaimY', 'v0ang', 'vang', 'omega0', 'omega',
   'vx0', 'vy0', 'x0', 'y0', 'x1', 'y1', 'x2', 'y2', 'ang0', 'Fang', 'Fx', 'Fy',
   'vx', 'vy', 'ax', 'ay', 'mu', 'ang', 'L0',
   'v0', 'vPx', 'FPx',

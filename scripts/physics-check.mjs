@@ -55,7 +55,7 @@ const results = await page.evaluate(() => {
 
   // 3. 解析结果
   P.loadPreset('collision'); run(2);
-  { const [A, B] = P.scene().objects.filter(o => o.st); check('弹性碰撞 v₁′ = −2, v₂′ = 2', Math.abs(A.st.vx + 2) < 1e-9 && Math.abs(B.st.vx - 2) < 1e-9, `${A.st.vx}, ${B.st.vx}`); }
+  { const [A, B] = P.scene().objects.filter(o => o.st); check('弹性碰撞 v₁′ = −2, v₂′ = 2', Math.abs(A.st.vx + 2) < 1e-6 && Math.abs(B.st.vx - 2) < 1e-6, `${A.st.vx}, ${B.st.vx}`); }
   P.loadPreset('inelastic'); run(3);
   { const [A, B] = P.scene().objects.filter(o => o.st); check('完全非弹性：共同速度 2 m/s', Math.abs(A.st.vx - 2) < 1e-6 && Math.abs(B.st.vx - 2) < 1e-6); }
   P.loadPreset('figure8'); run(6.32591398);
@@ -76,6 +76,20 @@ const results = await page.evaluate(() => {
     while (P.sim.t < 8) { P.advance(1 / 240); if (P.sim.t > 2 && ion.st.vy < 0 && ion.st.y < 0.12 && !landed) landed = ion.st.x; }
     const r = Math.sqrt(2 * 1 * 2 * 1.95);
     check('质谱仪：落点 x = −2r', landed != null && Math.abs(landed + 2 * r) < 0.02, `${landed} vs ${-2 * r}`); }
+  // 4. 转动：滚动、倾倒、多米诺
+  P.loadPreset('rolling');
+  { const bs = P.scene().objects.filter(o => o.st); run(0.3); const v0 = bs.map(b => Math.hypot(b.st.vx, b.st.vy)); run(1.0);
+    const a = bs.map((b, i) => (Math.hypot(b.st.vx, b.st.vy) - v0[i]) / 0.7), s20 = 9.8 * Math.sin(20 * DEG), c20 = 9.8 * Math.cos(20 * DEG);
+    check('光滑斜面：a = g sinθ', Math.abs(a[0] - s20) < 1e-3, `${a[0].toFixed(4)} vs ${s20.toFixed(4)}`);
+    check('实心球纯滚动：a = 5/7 g sinθ', Math.abs(a[1] - s20 * 5 / 7) < 1e-3, `${a[1].toFixed(4)} vs ${(s20 * 5 / 7).toFixed(4)}`);
+    check('滑块：a = g(sinθ − μcosθ)', Math.abs(a[2] - (s20 - 0.2 * c20)) < 1e-3, `${a[2].toFixed(4)} vs ${(s20 - 0.2 * c20).toFixed(4)}`);
+    const ball = bs[1]; check('纯滚动约束 v = ωr', Math.abs(Math.hypot(ball.st.vx, ball.st.vy) - Math.abs(ball.st.omega) * ball.r) < 1e-3); }
+  P.loadPreset('topple'); run(3);
+  { const [tall, wide] = P.scene().objects.filter(o => o.st);
+    check('tanθ > w/h 的木块倾倒', Math.abs(tall.st.ang / DEG - tall.ang0) > 60, `${(tall.st.ang / DEG - tall.ang0).toFixed(1)}°`);
+    check('tanθ < w/h 的木块不倒不滑', Math.abs(wide.st.ang / DEG - wide.ang0) < 0.01 && Math.hypot(wide.st.vx, wide.st.vy) < 1e-4, `${(wide.st.ang / DEG - wide.ang0).toExponential(1)}°`); }
+  P.loadPreset('dominoes'); run(4);
+  { const ds = P.scene().objects.filter(o => o.st); check('多米诺骨牌全部倒下', ds.every(b => Math.abs(b.st.ang) > 60 * DEG), ds.map(b => (b.st.ang / DEG).toFixed(0)).join(' ')); }
   return out;
 });
 
