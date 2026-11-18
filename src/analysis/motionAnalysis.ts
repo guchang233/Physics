@@ -302,7 +302,7 @@ export function analyzeMotion(ctx: AnalysisContext): MotionAnalysis {
   if (Fext.x || Fext.y) forcesInModel.push('恒定外力 F');
   if (springs.length) {
     const kinds = new Set(springs.map(s => s.kind || (s.rope ? 'rope' : s.rod ? 'rod' : 'spring')));
-    if (kinds.has('rod')) forcesInModel.push('青杆约束');
+    if (kinds.has('rod')) forcesInModel.push('轻杆约束');
     if (kinds.has('rope')) forcesInModel.push('轻绳张力');
     if (kinds.has('spring')) forcesInModel.push('弹簧力');
   }
@@ -427,7 +427,7 @@ export function analyzeMotion(ctx: AnalysisContext): MotionAnalysis {
     return analyzeSpring(ctx, forcesInModel);
   }
 
-  // —— 轻绳 / 青杆单摆 ——
+  // —— 轻绳 / 轻杆单摆 ——
   if (hasSpring && springs.length === 1 && (linkKind === 'rope' || linkKind === 'rod') && gOn) {
     return analyzePendulum(ctx, forcesInModel);
   }
@@ -906,9 +906,9 @@ function analyzePendulum(ctx: AnalysisContext, forcesInModel: string[]): MotionA
   const isRod = kind === 'rod';
   return {
     regimeId: 'pendulum',
-    title: isRod ? '单摆（青杆）' : '单摆（轻绳）',
+    title: isRod ? '单摆（轻杆）' : '单摆（轻绳）',
     summary: isRod
-      ? '青杆定长约束 + 重力；可压可拉，杆本身不变形。'
+      ? '轻杆定长约束 + 重力；可压可拉，杆本身不变形。'
       : '轻绳约束 + 重力；大角度为椭圆积分，小角度近似简谐。',
     assumptions: isRod
       ? ['杆长恒定（刚性约束）', '固定悬点', '平面摆', s.m ? `杆质量 m=${s.m}` : '杆质量可忽略']
@@ -934,7 +934,7 @@ function analyzePendulum(ctx: AnalysisContext, forcesInModel: string[]): MotionA
       { name: '摆角 θ', formula: '\\theta=\\mathrm{atan2}(x-x_a,y_a-y)', value: `${fmtTex(theta / DEG, 2)}^\\circ` },
     ],
     validity: isRod
-      ? '青杆不可松弛；两端皆可动时为二体刚杆系统。'
+      ? '轻杆不可松弛；两端皆可动时为二体刚杆系统。'
       : '绳松弛（T=0）后变为抛体；刚度不足时会有弹性拉伸误差。',
     forcesInModel,
   };

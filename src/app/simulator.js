@@ -20,6 +20,8 @@ import {
  *        接触/碰撞使用冲量法（含恢复系数、动/静摩擦）
  * ===================================================================== */
 const $ = s => document.querySelector(s);
+const UI_FONT = '-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif';
+const MONO_FONT = '"JetBrains Mono",ui-monospace,Menlo,Consolas,monospace';
 const DEG = Math.PI / 180;
 const K_COULOMB = 8.99e9;
 const STORE_KEY = 'physim.scene.v1';
@@ -28,14 +30,16 @@ const STORE_KEY = 'physim.scene.v1';
 let nextId = 1;
 const BODY_KINDS = ['ball', 'particle', 'box'];
 const KIND_NAME = { ball: '小球', particle: '带电粒子', box: '滑块', ground: '地面', wall: '挡板', incline: '斜面',
-  efield: '电场', bfield: '磁场', spring: '弹簧', rope: '轻绳', rod: '青杆', pointCharge: '点电荷' };
+  efield: '电场', bfield: '磁场', spring: '弹簧', rope: '轻绳', rod: '轻杆', pointCharge: '点电荷' };
 const LINK_KINDS = ['spring', 'rope', 'rod'];
 function isLink(o) { return o && LINK_KINDS.includes(o.kind); }
-const PALETTE = ['#2f6fed', '#e5484d', '#1f9d55', '#f59e0b', '#8b5cf6', '#0ea5e9', '#ec4899', '#14b8a6'];
+const PALETTE = ['#d97757', '#4a78b0', '#5e8c4a', '#c2973e', '#8a6bbe', '#3d8f86', '#c46a7a', '#6b6a64'];
 
 function defaultSettings() {
   return { gOn: true, g: 9.8, drag: 0, coulomb: false, kc: K_COULOMB, maxDt: 0.001, vPx: 20, FPx: 12, snap: true, snapStep: 0.1,
-    showLabels: true, showGrid: true, showTrail: true, showVel: true, showForce: false, showAnalytic: true, showFieldLines: true, coulombLaw: 'coulomb3d', contactBackend: 'native', speed: 1 };
+    showLabels: true, showGrid: true, showTrail: true, showVel: true, showForce: false, showAnalytic: true, showFieldLines: true, coulombLaw: 'coulomb3d', contactBackend: 'native', speed: 1,
+    /* 物体间万有引力（教学用缩放常量） */
+    gravity: false, Gc: 1, gravSoft: 0.05 };
 }
 let scene = { settings: defaultSettings(), objects: [], view: { cx: 0, cy: 2, scale: 60 } };
 
@@ -51,8 +55,8 @@ function mkBody(kind, p = {}) {
     F: 0, Fang: 0, Fmode: 'const', Fexpr: '', FangExpr: '0',
     FaimId: null, FaimX: 0, FaimY: 0, _Ferr: '',
     fixed: false, trail: true, collide: true };
-  if (kind === 'particle') Object.assign(base, { m: 0.01, q: 0.01, r: 0.08, color: '#e5484d', collide: false, e: 1 });
-  if (kind === 'box') Object.assign(base, { mu: 0.3, e: 0.2, color: '#f59e0b', m: 1 });
+  if (kind === 'particle') Object.assign(base, { m: 0.01, q: 0.01, r: 0.08, color: '#c8553d', collide: false, e: 1 });
+  if (kind === 'box') Object.assign(base, { mu: 0.3, e: 0.2, color: '#d08a3c', m: 1 });
   const b = Object.assign(base, p);
   b.st = null; return b;
 }
@@ -63,16 +67,18 @@ function mkE(p = {}) { return Object.assign({ id: nextId++, kind: 'efield', name
 function mkB(p = {}) { return Object.assign({ id: nextId++, kind: 'bfield', name: '磁场', B: 1, dir: -1, all: false, x: 0, y: -2, w: 4, h: 4 }, p); }
 function mkPointCharge(x = 0, y = 0, p = {}) {
   return Object.assign({
-    id: nextId++, kind: 'pointCharge', name: '点电荷', x, y, q: 1e-6, softRadius: 0.08, fixed: true, color: '#e5484d',
+    id: nextId++, kind: 'pointCharge', name: '点电荷', x, y, q: 1e-6, softRadius: 0.08, fixed: true, color: '#c8553d',
   }, p);
 }
 function mkSpring(a, b, p = {}) { return Object.assign({ id: nextId++, kind: 'spring', name: '弹簧', a, b, ax: 0, ay: 0, k: 20, L0: 1, m: 0 }, p); }
 function mkRope(a, b, p = {}) { return Object.assign({ id: nextId++, kind: 'rope', name: '轻绳', a, b, ax: 0, ay: 0, k: 5000, L0: 1, m: 0 }, p); }
-/** 青杆：不可伸缩的刚性杆（长度约束），质量默认 0 */
-function mkRod(a, b, p = {}) { return Object.assign({ id: nextId++, kind: 'rod', name: '青杆', a, b, ax: 0, ay: 0, L0: 1, m: 0 }, p); }
+/** 轻杆：不可伸缩的刚性杆（长度约束），质量默认 0 */
+function mkRod(a, b, p = {}) { return Object.assign({ id: nextId++, kind: 'rod', name: '轻杆', a, b, ax: 0, ay: 0, L0: 1, m: 0 }, p); }
 
 /* ---------------- 仿真状态 ---------------- */
-const sim = { t: 0, running: false, accum: 0 };
+const sim = { t: 0, running: false, accum: 0,
+  /* 功的账本：匀强电场做功、外力与阻力做功；能量历史 [t, Ek, Ep, E, E−W] */
+  wE: 0, wExt: 0, eHist: [], E0: null };
 let leftTab = 'objects'; // objects | add | presets
 let leftQuery = '';
 let leftChip = 'all';
@@ -93,6 +99,7 @@ function resetSim(msg) {
   resolveExprs();
   bodies().forEach(initState);
   resolveExprs();
+  resetEnergyLedger();
   updatePlayBtn();
   if (msg) toast(msg);
 }
@@ -221,7 +228,7 @@ function applyLinkWeight(out, e, m, g, record) {
   const addW = (body, fy) => {
     const f = out.get(body); if (!f) return;
     f.y += fy;
-    if (record && fy) f.parts.push({ fx: 0, fy, label: 'G连', color: '#94a3b8' });
+    if (record && fy) f.parts.push({ fx: 0, fy, label: 'G连', color: '#a8a398' });
   };
   if (shareA) addW(e.A, -each);
   if (shareB) addW(e.B, -each);
@@ -329,6 +336,7 @@ function applySlot(owner, key, value) {
     owner[key] = value;
     return;
   }
+  if ((owner.kind === 'efield' || owner.kind === 'bfield' || owner.kind === 'pointCharge') && owner[key] !== value) fieldsDirty = true;
   switch (key) {
     case 'x':
       if (isBody(owner)) { holdState(owner, 'x', value); if (sim.t === 0) owner.x0 = value; return; }
@@ -372,7 +380,7 @@ function applySlot(owner, key, value) {
     case 'm': owner.m = isBody(owner) ? Math.max(1e-40, value) : Math.max(0, value); return;
     case 'q':
       owner.q = value;
-      if (owner.kind === 'pointCharge') owner.color = value >= 0 ? '#e5484d' : '#2f6fed';
+      if (owner.kind === 'pointCharge') owner.color = value >= 0 ? '#c8553d' : '#4a78b0';
       return;
     case 'r': owner.r = Math.max(1e-4, value); return;
     case 'w': owner.w = Math.max(0, value); return;
@@ -496,9 +504,9 @@ function resolveAimPoint(b) {
 }
 
 /** 用户外力（恒定 / 表达式 / 指向目标）→ { fx, fy, F, ang, ok, err } */
-function appliedForceOn(b) {
+function appliedForceOn(b, skipResolve = false) {
   ensureForceFields(b);
-  resolveExprs();
+  if (!skipResolve) resolveExprs();
   const st = b.st || { x: b.x0, y: b.y0 };
   let F = b.F || 0;
   let ang = b.Fang || 0;
@@ -531,18 +539,34 @@ function computeForces(list, record) {
   for (const b of list) {
     const f = { x: 0, y: 0, parts: record ? [] : null }; out.set(b, f);
     const add = (fx, fy, label, color) => { f.x += fx; f.y += fy; if (record && (fx || fy)) f.parts.push({ fx, fy, label, color }); };
-    if (S.gOn) add(0, -b.m * S.g, 'G', '#e5484d');
+    f.ux = 0; f.uy = 0; f.ex = 0; f.ey = 0;
+    if (S.gOn) add(0, -b.m * S.g, 'G', '#c8553d');
     if (b.q) {
       const F = fieldAtExcluding(b.st.x, b.st.y, b.id);
-      if (F.Ex || F.Ey) add(b.q * F.Ex, b.q * F.Ey, 'F电', '#e08600');
+      if (F.Ex || F.Ey) add(b.q * F.Ex, b.q * F.Ey, 'F电', '#c48a2a');
+      const U = uniformEAt(b.st.x, b.st.y);
+      f.ux = b.q * U[0]; f.uy = b.q * U[1];
     }
-    const af = appliedForceOn(b);
-    if (af.fx || af.fy) add(af.fx, af.fy, 'F', '#8b5cf6');
-    if (S.drag) add(-S.drag * b.st.vx, -S.drag * b.st.vy, 'F阻', '#6b7385');
+    const af = appliedForceOn(b, true);
+    if (af.fx || af.fy) { add(af.fx, af.fy, 'F', '#8a6bbe'); f.ex += af.fx; f.ey += af.fy; }
+    if (S.drag) { const dx = -S.drag * b.st.vx, dy = -S.drag * b.st.vy; add(dx, dy, 'F阻', '#7c796f'); f.ex += dx; f.ey += dy; }
+    if (S.gravity) {
+      let gx = 0, gy = 0;
+      const G = S.Gc || 0, e2 = (S.gravSoft || 0) ** 2;
+      for (const o of bodies()) {
+        if (o === b || !(o.m > 0)) continue;
+        const p = o.st || { x: o.x0, y: o.y0 };
+        const dx = p.x - b.st.x, dy = p.y - b.st.y, r2 = dx * dx + dy * dy + e2;
+        if (r2 < 1e-18) continue;
+        const k = G * b.m * o.m / (r2 * Math.sqrt(r2));
+        gx += k * dx; gy += k * dy;
+      }
+      if (gx || gy) add(gx, gy, 'F引', '#9b6b9e');
+    }
   }
   // 弹簧：胡克定律（可拉可压）
   // 轻绳：只拉不压（松弛时张力为 0）
-  // 青杆：长度由约束投影保证，这里只计自重；张力/压力在 applyRodConstraints 中估出
+  // 轻杆：长度由约束投影保证，这里只计自重；张力/压力在 applyRodConstraints 中估出
   for (const s of scene.objects) {
     if (!isLink(s)) continue;
     const e = linkEnds(s); if (!e) continue;
@@ -553,7 +577,7 @@ function computeForces(list, record) {
     if (s.kind === 'rope' && T < 0) T = 0;
     const fx = T * dx / L, fy = T * dy / L;
     const lab = s.kind === 'rope' ? 'T' : 'F弹';
-    const col = s.kind === 'rope' ? '#0ea5e9' : '#14b8a6';
+    const col = s.kind === 'rope' ? '#3f8fb0' : '#3d8f86';
     const fa = out.get(e.A); if (fa) { fa.x += fx; fa.y += fy; if (record && T) fa.parts.push({ fx, fy, label: lab, color: col }); }
     const fb = e.B && out.get(e.B); if (fb) { fb.x -= fx; fb.y -= fy; if (record && T) fb.parts.push({ fx: -fx, fy: -fy, label: lab, color: col }); }
   }
@@ -561,7 +585,7 @@ function computeForces(list, record) {
 }
 
 /**
- * 青杆刚性长度约束：位置 + 速度投影（可压可拉，长度恒为 L₀）。
+ * 轻杆刚性长度约束：位置 + 速度投影（可压可拉，长度恒为 L₀）。
  * 自重已在 computeForces 中处理；此处估出约束力供受力显示。
  */
 function applyRodConstraints(h, recordMap) {
@@ -604,12 +628,44 @@ function applyRodConstraints(h, recordMap) {
       const Fx = (j / h) * nx, Fy = (j / h) * ny;
       if (Math.hypot(Fx, Fy) > 1e-9) {
         const fa = recordMap.get(e.A);
-        if (fa && fa.parts) fa.parts.push({ fx: Fx, fy: Fy, label: 'N杆', color: '#0f766e' });
+        if (fa && fa.parts) fa.parts.push({ fx: Fx, fy: Fy, label: 'N杆', color: '#4d6470' });
         const fb = e.B && recordMap.get(e.B);
-        if (fb && fb.parts) fb.parts.push({ fx: -Fx, fy: -Fy, label: 'N杆', color: '#0f766e' });
+        if (fb && fb.parts) fb.parts.push({ fx: -Fx, fy: -Fy, label: 'N杆', color: '#4d6470' });
       }
     }
     s._N = j / (h || 1e-6); // signed axial force estimate
+  }
+}
+
+/**
+ * SHAKE：沿上一子步的杆方向施加约束冲量，使 |B − A| = L₀，并把位移同步记入速度。
+ * 与蛙跳积分配合是辛的，长期能量漂移远小于“投影 + 速度修正”。可处理多杆串联（迭代）。
+ */
+function shakeRods(h, reset) {
+  const rods = scene.objects.filter(s => s.kind === 'rod');
+  if (!rods.length) return;
+  if (reset) rods.forEach(s => { s._N = 0; });
+  for (let it = 0; it < 12; it++) {
+    let worst = 0;
+    for (const s of rods) {
+      const e = linkEnds(s); if (!e) continue;
+      const mRod = s.m || 0;
+      const inv = body => (!body || body.fixed) ? 0 : 1 / Math.max(body.m + mRod * 0.5, 1e-12);
+      const iA = inv(e.A), iB = e.B ? inv(e.B) : 0, S = iA + iB;
+      if (S < 1e-18) continue;
+      const A = e.A.st, B = e.B ? e.B.st : null;
+      const ox = (B ? (B._ox ?? B.x) : s.ax) - (A._ox ?? A.x), oy = (B ? (B._oy ?? B.y) : s.ay) - (A._oy ?? A.y);
+      const dx = e.x2 - A.x, dy = e.y2 - A.y;
+      const diff = dx * dx + dy * dy - s.L0 * s.L0;
+      worst = Math.max(worst, Math.abs(diff) / Math.max(s.L0 * s.L0, 1e-12));
+      const dr = dx * ox + dy * oy;
+      if (Math.abs(dr) < 1e-12) continue;
+      const g = diff / (2 * S * dr);
+      if (iA) { A.x += g * iA * ox; A.y += g * iA * oy; A.vx += g * iA * ox / h; A.vy += g * iA * oy / h; }
+      if (B && iB) { B.x -= g * iB * ox; B.y -= g * iB * oy; B.vx -= g * iB * ox / h; B.vy -= g * iB * oy / h; }
+      s._N = (s._N || 0) + g * Math.hypot(ox, oy) / (h * h);
+    }
+    if (worst < 1e-12) break;
   }
 }
 
@@ -618,6 +674,7 @@ function substep(h, segs) {
   resolveExprs();
   const S = scene.settings;
   const movers = bodies().filter(b => !b.fixed);
+  for (const b of bodies()) { b.st._ox = b.st.x; b.st._oy = b.st.y; }
   const F = computeForces(movers, false);
   for (const b of movers) {
     const st = b.st, f = F.get(b), ax = f.x / b.m, ay = f.y / b.m;
@@ -631,11 +688,15 @@ function substep(h, segs) {
         vx = vx + py * s; vy = vy - px * s;
       }
     }
+    const ovx = st.vx, ovy = st.vy;
     st.vx = vx + ax * h / 2; st.vy = vy + ay * h / 2;
+    const mvx = (ovx + st.vx) / 2, mvy = (ovy + st.vy) / 2;
+    sim.wE += (f.ux * mvx + f.uy * mvy) * h;
+    sim.wExt += (f.ex * mvx + f.ey * mvy) * h;
     st.x += st.vx * h; st.y += st.vy * h;
   }
-  // 青杆：刚性长度约束（在接触前投影，避免穿透后再强拧）
-  applyRodConstraints(h, null);
+  // 轻杆：刚性长度约束（SHAKE，在接触前满足约束）
+  shakeRods(h, true);
   // 与静止表面接触
   for (const b of movers) {
     for (const sg of segs) contactSeg(b, sg, h);
@@ -643,8 +704,8 @@ function substep(h, segs) {
   // 物体间碰撞
   const bl = bodies().filter(b => b.collide);
   for (let i = 0; i < bl.length; i++) for (let j = i + 1; j < bl.length; j++) collidePair(bl[i], bl[j]);
-  // 接触后再投影一次，稳住杆长
-  applyRodConstraints(h, null);
+  // 接触可能破坏杆长，再做一次 SHAKE
+  shakeRods(h, false);
   reapplyHolds();
   // 轨迹
   for (const b of movers) {
@@ -699,6 +760,75 @@ function collidePair(a, b) {
   const e = -vrel < REST_V * 0.5 ? 0 : Math.min(a.e, b.e);
   const j = -(1 + e) * vrel / is;
   A.vx -= j * ia * nx; A.vy -= j * ia * ny; B.vx += j * ib * nx; B.vy += j * ib * ny;
+  // 物体间库仑摩擦（两者都有 μ 时才生效，取较小值）
+  const mu = Math.min(a.mu || 0, b.mu || 0);
+  if (mu > 0) {
+    const tx = -ny, ty = nx, vt = (B.vx - A.vx) * tx + (B.vy - A.vy) * ty;
+    const jt = Math.max(-mu * j, Math.min(mu * j, -vt / is));
+    A.vx -= jt * ia * tx; A.vy -= jt * ia * ty; B.vx += jt * ib * tx; B.vy += jt * ib * ty;
+  }
+}
+
+/* ---------------- 能量与功 ---------------- */
+function uniformEAt(x, y) {
+  let Ex = 0, Ey = 0;
+  for (const o of scene.objects) {
+    if (o.kind !== 'efield' || !inRect(o, x, y)) continue;
+    Ex += o.E * Math.cos(o.ang * DEG); Ey += o.E * Math.sin(o.ang * DEG);
+  }
+  return [Ex, Ey];
+}
+/**
+ * 系统能量：动能 + 重力势能 + 弹性势能 + 静电势能(点电荷/带电体) + 引力势能。
+ * 匀强电场区域有界，不存在全局势函数，改记为「电场力做功」W_E；外力与阻力做功记为 W_ext。
+ * 若只有保守力，E 守恒；否则 ΔE = W_E + W_ext − 耗散（碰撞、摩擦）。
+ */
+function systemEnergy() {
+  const S = scene.settings, list = bodies();
+  let Ek = 0, Ug = 0, Us = 0, Ue = 0, Ugr = 0, px = 0, py = 0, M = 0;
+  const pos = b => b.st || { x: b.x0, y: b.y0, vx: b.vx0 || 0, vy: b.vy0 || 0 };
+  for (const b of list) {
+    if (b.fixed) continue;
+    const p = pos(b), v2 = (p.vx || 0) ** 2 + (p.vy || 0) ** 2;
+    Ek += 0.5 * b.m * v2; px += b.m * (p.vx || 0); py += b.m * (p.vy || 0); M += b.m;
+    if (S.gOn) Ug += b.m * S.g * p.y;
+  }
+  for (const s of scene.objects) {
+    if (s.kind !== 'spring' && s.kind !== 'rope') continue;
+    const e = linkEnds(s); if (!e) continue;
+    const dL = Math.hypot(e.x2 - e.x1, e.y2 - e.y1) - s.L0;
+    if (s.kind === 'rope' && dL <= 0) continue;
+    Us += 0.5 * (s.k || 0) * dL * dL;
+  }
+  const law = S.coulombLaw || 'coulomb3d', kc = S.kc || K_COULOMB;
+  const phi = (q, r) => law === 'coulomb2d' ? -2 * kc * q * Math.log(Math.max(r, 1e-6)) : kc * q / Math.max(r, 1e-9);
+  const charges = scene.objects.filter(o => o.kind === 'pointCharge');
+  for (const b of list) {
+    if (!b.q) continue;
+    const p = pos(b);
+    for (const c of charges) Ue += b.q * phi(c.q, Math.hypot(p.x - c.x, p.y - c.y, c.softRadius || 0.08));
+  }
+  for (let i = 0; i < list.length; i++) for (let j = i + 1; j < list.length; j++) {
+    const a = list[i], b = list[j];
+    if (a.fixed && b.fixed) continue;
+    const pa = pos(a), pb = pos(b), dx = pb.x - pa.x, dy = pb.y - pa.y;
+    if (S.coulomb && a.q && b.q) Ue += a.q * phi(b.q, Math.hypot(dx, dy, 0.02));
+    if (S.gravity) Ugr += -(S.Gc || 0) * a.m * b.m / Math.sqrt(dx * dx + dy * dy + (S.gravSoft || 0) ** 2);
+  }
+  const Ep = Ug + Us + Ue + Ugr, E = Ek + Ep;
+  return { Ek, Ug, Us, Ue, Ugr, Ep, E, W: sim.wE + sim.wExt, wE: sim.wE, wExt: sim.wExt, px, py, M };
+}
+function resetEnergyLedger() {
+  sim.wE = 0; sim.wExt = 0; sim.eHist = [];
+  const en = systemEnergy();
+  sim.E0 = en.E;
+  sim.eHist.push([0, en.Ek, en.Ep, en.E, en.E - en.W]);
+}
+function pushEnergy() {
+  const en = systemEnergy();
+  if (sim.E0 == null) sim.E0 = en.E;
+  sim.eHist.push([sim.t, en.Ek, en.Ep, en.E, en.E - en.W]);
+  if (sim.eHist.length > 6000) sim.eHist.splice(0, sim.eHist.length - 6000);
 }
 
 /* ---------------- 前进一帧 ---------------- */
@@ -713,6 +843,7 @@ function advance(dtFrame) {
     substep(h, segs);
   }
   sim.t += dtFrame;
+  pushEnergy();
   for (const b of bodies()) {
     const st = b.st; st.contactN[0] /= n; st.contactN[1] /= n; st.contactF[0] /= n; st.contactF[1] /= n;
     st.ax = (st.vx - st.pvx) / dtFrame; st.ay = (st.vy - st.pvy) / dtFrame;
@@ -721,7 +852,7 @@ function advance(dtFrame) {
 }
 function pushHist(b) {
   const st = b.st, v2 = st.vx * st.vx + st.vy * st.vy;
-  st.hist.push([sim.t, st.x, st.y, st.vx, st.vy, Math.sqrt(v2), 0.5 * b.m * v2]);
+  st.hist.push([sim.t, st.x, st.y, st.vx, st.vy, Math.sqrt(v2), 0.5 * b.m * v2, Math.hypot(st.ax || 0, st.ay || 0)]);
   if (st.hist.length > 6000) st.hist.splice(0, st.hist.length - 6000);
 }
 
@@ -761,7 +892,7 @@ function arrow(x1, y1, x2, y2, color, width = 2, head = 9, dash) {
   ctx.restore();
 }
 function label(text, x, y, color, align = 'left', bg = true) {
-  ctx.save(); ctx.font = '12px -apple-system,"PingFang SC","Microsoft YaHei",sans-serif'; ctx.textAlign = align; ctx.textBaseline = 'middle';
+  ctx.save(); ctx.font = '12px ' + UI_FONT; ctx.textAlign = align; ctx.textBaseline = 'middle';
   if (bg) {
     const w = ctx.measureText(text).width + 8, x0 = align === 'center' ? x - w / 2 : align === 'right' ? x - w + 4 : x - 4;
     ctx.globalAlpha = 0.85; ctx.fillStyle = C['--panel']; ctx.fillRect(x0, y - 9, w, 18); ctx.globalAlpha = 1;
@@ -789,7 +920,7 @@ function drawGrid() {
   if (oy > 0 && oy < H) { ctx.moveTo(0, oy); ctx.lineTo(W, oy); }
   if (ox > 0 && ox < W) { ctx.moveTo(ox, 0); ctx.lineTo(ox, H); }
   ctx.stroke();
-  ctx.fillStyle = C['--muted']; ctx.font = '10.5px sans-serif';
+  ctx.fillStyle = C['--muted']; ctx.font = '10.5px ' + MONO_FONT;
   const ly = Math.min(Math.max(oy + 12, 12), H - 6), lx = Math.min(Math.max(ox + 4, 4), W - 40);
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   for (let x = Math.floor(x0 / step) * step; x <= x1; x += step) { if (Math.abs(x) < step / 2) continue; ctx.fillText(fmt(x, 4), w2s(x, 0)[0], ly); }
@@ -884,7 +1015,7 @@ function drawLink(s) {
   const e = linkEnds(s); if (!e) return;
   const [x1, y1] = w2s(e.x1, e.y1), [x2, y2] = w2s(e.x2, e.y2), sel = s === selected();
   const kind = s.kind;
-  const base = kind === 'rod' ? '#0f766e' : kind === 'rope' ? '#0284c7' : '#14b8a6';
+  const base = kind === 'rod' ? '#4d6470' : kind === 'rope' ? '#4f7faf' : '#3d8f86';
   ctx.save();
   ctx.strokeStyle = sel ? C['--accent'] : base;
   ctx.lineWidth = sel ? (kind === 'rod' ? 3.2 : 2.5) : (kind === 'rod' ? 2.6 : 1.8);
@@ -901,7 +1032,7 @@ function drawLink(s) {
     }
     ctx.lineTo(x2 - ux * lead, y2 - uy * lead); ctx.lineTo(x2, y2);
   } else {
-    // 轻绳 / 青杆：直线；青杆略粗已在 lineWidth 体现
+    // 轻绳 / 轻杆：直线；轻杆略粗已在 lineWidth 体现
     ctx.lineTo(x2, y2);
   }
   ctx.stroke();
@@ -924,7 +1055,7 @@ function bodyScreenR(b) { return Math.max(bodyRadius(b) * scene.view.scale, b.ki
 function drawBodyShape(b, x, y, ang, ghost) {
   const s = scene.view.scale;
   ctx.save(); ctx.globalAlpha = ghost ? 0.35 : 1;
-  ctx.fillStyle = b.color; ctx.strokeStyle = 'rgba(0,0,0,.35)'; ctx.lineWidth = 1;
+  ctx.fillStyle = b.color; ctx.strokeStyle = 'rgba(20,20,19,.32)'; ctx.lineWidth = 1;
   if (ghost) ctx.setLineDash([4, 3]);
   if (b.kind === 'box') {
     ctx.translate(x, y); ctx.rotate(-ang);
@@ -933,7 +1064,7 @@ function drawBodyShape(b, x, y, ang, ghost) {
   } else {
     const r = bodyScreenR(b);
     ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill(); ctx.stroke();
-    if (!ghost && r > 6) { ctx.fillStyle = 'rgba(255,255,255,.35)'; ctx.beginPath(); ctx.arc(x - r * 0.3, y - r * 0.3, r * 0.3, 0, 7); ctx.fill(); }
+    if (!ghost && r > 6) { ctx.fillStyle = 'rgba(255,255,255,.22)'; ctx.beginPath(); ctx.arc(x - r * 0.3, y - r * 0.3, r * 0.3, 0, 7); ctx.fill(); }
   }
   ctx.restore();
   if (b.q && !ghost) {
@@ -959,11 +1090,11 @@ function drawBody(b) {
 }
 /** 可单独选取的矢量：初速度、瞬时速度、外力，以及受力图里的分力。零矢量不画箭头。 */
 function vectorMeta(key) {
-  if (key === 'v0') return { key, name: '初速度', color: '#1f9d55', editable: true, unit: 'm/s' };
-  if (key === 'v') return { key, name: '速度', color: '#1f9d55', editable: true, unit: 'm/s' };
-  if (key === 'F') return { key, name: '外力', color: '#8b5cf6', editable: true, unit: 'N' };
+  if (key === 'v0') return { key, name: '初速度', color: '#4a8a4f', editable: true, unit: 'm/s' };
+  if (key === 'v') return { key, name: '速度', color: '#4a8a4f', editable: true, unit: 'm/s' };
+  if (key === 'F') return { key, name: '外力', color: '#8a6bbe', editable: true, unit: 'N' };
   const label = String(key).startsWith('part:') ? key.slice(5) : key;
-  return { key, name: label, color: '#64748b', editable: false, unit: 'N', part: true };
+  return { key, name: label, color: '#6b6a64', editable: false, unit: 'N', part: true };
 }
 function vectorScreen(b, key) {
   const st = b.st || { x: b.x0, y: b.y0, vx: b.vx0 || 0, vy: b.vy0 || 0 };
@@ -972,14 +1103,14 @@ function vectorScreen(b, key) {
     const S = scene.settings;
     const vx = b.vx0 || 0, vy = b.vy0 || 0;
     const mag = Math.hypot(vx, vy);
-    return { x, y, hx: x + vx * S.vPx, hy: y - vy * S.vPx, mag, zero: mag < 1e-9, color: '#1f9d55', ang: Math.atan2(vy, vx) / DEG };
+    return { x, y, hx: x + vx * S.vPx, hy: y - vy * S.vPx, mag, zero: mag < 1e-9, color: '#4a8a4f', ang: Math.atan2(vy, vx) / DEG };
   }
   if (key === 'v') {
     const [x, y] = w2s(st.x, st.y);
     const S = scene.settings;
     const vx = st.vx || 0, vy = st.vy || 0;
     const mag = Math.hypot(vx, vy);
-    return { x, y, hx: x + vx * S.vPx, hy: y - vy * S.vPx, mag, zero: mag < 1e-9, color: '#1f9d55', ang: Math.atan2(vy, vx) / DEG };
+    return { x, y, hx: x + vx * S.vPx, hy: y - vy * S.vPx, mag, zero: mag < 1e-9, color: '#4a8a4f', ang: Math.atan2(vy, vx) / DEG };
   }
   if (key === 'F') {
     ensureForceFields(b);
@@ -987,7 +1118,7 @@ function vectorScreen(b, key) {
     const af = appliedForceOn(b);
     const FPx = scene.settings.FPx || 12;
     const mag = Math.hypot(af.fx, af.fy);
-    return { x, y, hx: x + af.fx * FPx, hy: y - af.fy * FPx, mag, zero: mag < 1e-6, color: '#8b5cf6', ang: af.ang, af };
+    return { x, y, hx: x + af.fx * FPx, hy: y - af.fy * FPx, mag, zero: mag < 1e-6, color: '#8a6bbe', ang: af.ang, af };
   }
   if (String(key).startsWith('part:')) {
     const label = key.slice(5);
@@ -1029,9 +1160,9 @@ function visibleVectorKeys(b) {
 }
 function listVectors(b) {
   const items = [
-    { key: 'v0', name: '初速度', color: '#1f9d55' },
-    { key: 'v', name: '速度', color: '#1f9d55' },
-    { key: 'F', name: '外力', color: '#8b5cf6' },
+    { key: 'v0', name: '初速度', color: '#4a8a4f' },
+    { key: 'v', name: '速度', color: '#4a8a4f' },
+    { key: 'F', name: '外力', color: '#8a6bbe' },
   ];
   if (scene.settings.showForce && b.st) {
     for (const p of forceParts(b)) {
@@ -1073,9 +1204,9 @@ function drawOneVector(b, key) {
   if (key === 'F' && (b.Fmode === 'aim') && sel) {
     const aim = resolveAimPoint(b);
     const [ax, ay] = w2s(aim.x, aim.y);
-    ctx.save(); ctx.strokeStyle = 'rgba(139,92,246,.45)'; ctx.setLineDash([3, 3]); ctx.lineWidth = 1;
+    ctx.save(); ctx.strokeStyle = 'rgba(138,107,190,.45)'; ctx.setLineDash([3, 3]); ctx.lineWidth = 1;
     ctx.beginPath(); ctx.moveTo(g.x, g.y); ctx.lineTo(ax, ay); ctx.stroke();
-    ctx.fillStyle = '#8b5cf6'; ctx.beginPath(); ctx.arc(ax, ay, 3, 0, 7); ctx.fill();
+    ctx.fillStyle = '#8a6bbe'; ctx.beginPath(); ctx.arc(ax, ay, 3, 0, 7); ctx.fill();
     ctx.restore();
   }
 }
@@ -1118,7 +1249,7 @@ function hitVector(sx, sy) {
 function forceParts(b) {
   const fmap = computeForces([b], true);
   const f = fmap.get(b), parts = f.parts.slice(), st = b.st;
-  // 估测青杆约束力（用最近一次 _N；无则瞬时投影一次）
+  // 估测轻杆约束力（用最近一次 _N；无则瞬时投影一次）
   for (const s of scene.objects) {
     if (s.kind !== 'rod') continue;
     if (s.a !== b.id && s.b !== b.id) continue;
@@ -1128,15 +1259,15 @@ function forceParts(b) {
     const N = s._N || 0;
     if (Math.abs(N) < 1e-9) continue;
     const sign = s.a === b.id ? 1 : -1;
-    parts.push({ fx: sign * N * nx, fy: sign * N * ny, label: 'N杆', color: '#0f766e' });
+    parts.push({ fx: sign * N * nx, fy: sign * N * ny, label: 'N杆', color: '#4d6470' });
   }
   if (b.q) {
     const Bz = fieldAt(st.x, st.y).Bz;
-    if (Bz) parts.push({ fx: b.q * st.vy * Bz, fy: -b.q * st.vx * Bz, label: 'F洛', color: '#2f6fed' });
+    if (Bz) parts.push({ fx: b.q * st.vy * Bz, fy: -b.q * st.vx * Bz, label: 'F洛', color: '#4a78b0' });
   }
   if (sim.t > 0) {
-    if (Math.hypot(...st.contactN) > 1e-6) parts.push({ fx: st.contactN[0], fy: st.contactN[1], label: 'N', color: '#0ea5e9' });
-    if (Math.hypot(...st.contactF) > 1e-6) parts.push({ fx: st.contactF[0], fy: st.contactF[1], label: 'f', color: '#a16207' });
+    if (Math.hypot(...st.contactN) > 1e-6) parts.push({ fx: st.contactN[0], fy: st.contactN[1], label: 'N', color: '#3f8fb0' });
+    if (Math.hypot(...st.contactF) > 1e-6) parts.push({ fx: st.contactF[0], fy: st.contactF[1], label: 'f', color: '#9a6a2a' });
   }
   return parts;
 }
@@ -1153,10 +1284,10 @@ function drawV0(b) {
   const H0 = v0Handle(b), ghost = sim.t > 0;
   if (ghost) drawBodyShape(b, H0.x, H0.y, b.ang0 * DEG, true);
   const v = Math.hypot(b.vx0, b.vy0), ang = Math.atan2(b.vy0, b.vx0) / DEG;
-  if (!H0.zero) arrow(H0.x, H0.y, H0.hx, H0.hy, '#1f9d55', 3, 12, ghost ? [5, 4] : null);
-  handleDot(H0.hx, H0.hy, '#1f9d55', 7);
+  if (!H0.zero) arrow(H0.x, H0.y, H0.hx, H0.hy, '#4a8a4f', 3, 12, ghost ? [5, 4] : null);
+  handleDot(H0.hx, H0.hy, '#4a8a4f', 7);
   const txt = H0.zero ? '拖动设置 v₀' : `v₀ = ${fmt(v, 2)} m/s  ${fmt(ang, 1)}°`;
-  label(txt, H0.hx + 12, H0.hy - 12, '#1f9d55');
+  label(txt, H0.hx + 12, H0.hy - 12, '#4a8a4f');
 }
 
 
@@ -1164,7 +1295,7 @@ function drawElectricFieldLines() {
   const lines = fieldSys.getFieldLines();
   if (!lines.length) return;
   ctx.save();
-  ctx.strokeStyle = C['--efield-line'] || '#b45f14';
+  ctx.strokeStyle = C['--efield-line'] || '#b5762a';
   ctx.globalAlpha = 0.55;
   ctx.lineWidth = 1.2;
   for (const line of lines) {
@@ -1179,7 +1310,7 @@ function drawElectricFieldLines() {
       const a = line[Math.floor(line.length * 0.55)];
       const b = line[Math.floor(line.length * 0.58)];
       const [x1, y1] = w2s(a.x, a.y), [x2, y2] = w2s(b.x, b.y);
-      arrow(x1, y1, x2, y2, C['--efield-line'] || '#b45f14', 1.2, 6);
+      arrow(x1, y1, x2, y2, C['--efield-line'] || '#b5762a', 1.2, 6);
     }
   }
   ctx.restore();
@@ -1189,7 +1320,7 @@ function drawPointCharge(o) {
   const r = Math.max(8, (o.softRadius || 0.08) * scene.view.scale);
   const pos = o.q >= 0;
   ctx.save();
-  ctx.fillStyle = o.color || (pos ? '#e5484d' : '#2f6fed');
+  ctx.fillStyle = o.color || (pos ? '#c8553d' : '#4a78b0');
   ctx.strokeStyle = 'rgba(0,0,0,.35)';
   ctx.lineWidth = 1.5;
   ctx.beginPath(); ctx.arc(sx, sy, r, 0, 7); ctx.fill(); ctx.stroke();
@@ -1209,7 +1340,7 @@ function drawAnalyticPath(b) {
   const sampled = sampleAnalyticPath(buildAnalysisContext(b), {});
   if (!sampled || sampled.points.length < 2) return;
   ctx.save();
-  ctx.strokeStyle = C['--accent'] || '#2f6fed';
+  ctx.strokeStyle = C['--accent'] || '#4a78b0';
   ctx.globalAlpha = 0.55;
   ctx.lineWidth = 2;
   ctx.setLineDash([7, 5]);
@@ -1313,7 +1444,7 @@ const TOOL_HINT = {
   bfield_out: '拖动画出磁场 ⊙ 区域；单击 = 全空间',
   spring: '弹簧：先点物体 A，再点物体 B（或空白处作为固定点）',
   rope: '轻绳：只拉不压。先点物体 A，再点物体 B（或空白固定点）',
-  rod: '青杆：不可伸缩。先点物体 A，再点物体 B（或空白固定点）',
+  rod: '轻杆：不可伸缩。先点物体 A，再点物体 B（或空白固定点）',
 };
 function setTool(t) {
   tool = t; pending = null;
@@ -1470,7 +1601,7 @@ cv.addEventListener('pointerdown', e => {
   if (tool === 'pointCharge') {
     pushUndo(); if (sim.t > 0) resetSim('添加点电荷，已重置');
     const q = 1e-6;
-    const o = mkPointCharge(sp[0], sp[1], { q, color: q >= 0 ? '#e5484d' : '#2f6fed' });
+    const o = mkPointCharge(sp[0], sp[1], { q, color: q >= 0 ? '#c8553d' : '#4a78b0' });
     scene.objects.push(o); afterStructure(); select(o.id); if (!e.shiftKey) setTool('select'); return;
   }
   if (tool === 'ground') { pushUndo(); const g = mkGround(sp[1]); scene.objects.push(g); afterStructure(); select(g.id); setTool('select'); return; }
@@ -1595,7 +1726,7 @@ cv.addEventListener('pointermove', e => {
     drag.moved = true;
     const b = drag.b, p = snapPt([wp[0] - drag.ox, wp[1] - drag.oy]);
     b.x0 = p[0]; b.y0 = p[1];
-    // Shift：拖动物体时同步拉长/缩短相连青杆；默认保持杆长，把位置投影到圆周上
+    // Shift：拖动物体时同步拉长/缩短相连轻杆；默认保持杆长，把位置投影到圆周上
     if (e.shiftKey) stretchRodsToBody(b);
     else projectBodyOntoRods(b);
     syncInitialLive(b); return;
@@ -1720,7 +1851,7 @@ function syncInitialLive(b) {
   }
   refreshInputs(); markDirty(); draw();
 }
-/** 青杆：编辑初态时把物体投影到定长圆周（保持杆不变形） */
+/** 轻杆：编辑初态时把物体投影到定长圆周（保持杆不变形） */
 function projectBodyOntoRods(b) {
   for (let iter = 0; iter < 4; iter++) {
     for (const s of scene.objects) {
@@ -1742,7 +1873,7 @@ function projectBodyOntoRods(b) {
     }
   }
 }
-/** Shift 拖：用当前距离更新相连青杆长度 */
+/** Shift 拖：用当前距离更新相连轻杆长度 */
 function stretchRodsToBody(b) {
   for (const s of scene.objects) {
     if (s.kind !== 'rod') continue;
@@ -1841,7 +1972,7 @@ function duplicateSel() {
 }
 
 /* ---------------- 播放控制 ---------------- */
-function updatePlayBtn() { const b = $('#bPlay'); if (b) b.textContent = sim.running ? '暂停' : '播放'; }
+function updatePlayBtn() { const b = $('#bPlay'); if (b) b.innerHTML = `<svg class="ic"><use href="#i-${sim.running ? 'pause' : 'play'}"/></svg>${sim.running ? '暂停' : '播放'}`; }
 function togglePlay() { ensureStates(); sim.running = !sim.running; updatePlayBtn(); lastTs = 0; draw(); updateReadouts(); }
 function stepOnce() { sim.running = false; updatePlayBtn(); advance(1 / 60 * scene.settings.speed); afterFrame(); }
 let lastTs = 0;
@@ -1863,7 +1994,7 @@ function loop(ts) {
 }
 function afterFrame() { requestDraw(); updateReadouts(); }
 function updateBadge() {
-  $('#tbadge').innerHTML = `t = <b>${fmt(sim.t, 3)}</b> s &nbsp; <span class="${sim.running ? 'run' : 'pause'}">${sim.running ? '● 运行中' : sim.t === 0 ? '■ 初始状态' : '❚❚ 已暂停'}</span> &nbsp; ${scene.settings.speed}×`;
+  $('#tbadge').innerHTML = `t = <b>${fmt(sim.t, 3)}</b> s &nbsp;<span class="${sim.running ? 'run' : 'pause'}">${sim.running ? '● 运行中' : sim.t === 0 ? '○ 初始' : '‖ 暂停'}</span>${scene.settings.speed !== 1 ? ` &nbsp;${scene.settings.speed}×` : ''}`;
 }
 function fitView() {
   const pts = [];
@@ -1873,6 +2004,13 @@ function fitView() {
     else if (o.kind === 'incline') pts.push(...inclinePts(o));
     else if ((o.kind === 'efield' || o.kind === 'bfield') && !o.all) pts.push([o.x, o.y], [o.x + o.w, o.y + o.h]);
     else if (o.kind === 'ground') pts.push([0, o.y]);
+    else if (o.kind === 'pointCharge') pts.push([o.x, o.y]);
+    else if (isLink(o) && o.b == null) {
+      // 摆：把以悬点为圆心、可达半径内的范围都纳入视野
+      const chain = scene.objects.filter(l => (l.kind === 'rod' || l.kind === 'rope') && l.b != null).reduce((a, l) => a + (l.L0 || 0), 0);
+      const R = o.kind === 'spring' ? 0 : (o.L0 || 0) + chain;
+      pts.push([o.ax - R, o.ay - R], [o.ax + R, o.ay + Math.min(R, 0.3)]);
+    }
   }
   if (!pts.length) { scene.view.cx = 0; scene.view.cy = 0; scene.view.scale = 60; draw(); return; }
   let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
@@ -2348,7 +2486,7 @@ function buildBodyPanel(P, b) {
   const pCh = panelBox('chart', propsTab);
   {
     const sel = el('select', { id: 'chartSel' });
-    [['v', 'v–t'], ['vx', 'vx–t'], ['vy', 'vy–t'], ['x', 'x–t'], ['y', 'y–t'], ['ek', 'Ek–t'], ['xy', 'y–x']].forEach(([v, t]) => sel.appendChild(el('option', { value: v }, t)));
+    [['v', 'v–t 速率'], ['vx', 'vx–t'], ['vy', 'vy–t'], ['a', 'a–t 加速度'], ['x', 'x–t'], ['y', 'y–t'], ['ek', 'Ek–t 动能'], ['xy', 'y–x 轨迹'], ['px', 'vx–x 相图'], ['py', 'vy–y 相图']].forEach(([v, t]) => sel.appendChild(el('option', { value: v }, t)));
     sel.value = chartMode;
     sel.addEventListener('change', () => { chartMode = sel.value; drawChart(); });
     const g = section(pCh, '图像', '', sel);
@@ -2376,12 +2514,12 @@ function buildPointChargePanel(P, o) {
   const s = section(P, '点电荷');
   numRow(s, '位置 x', () => o.x, v => o.x = v, 'm', { slot: [o, 'x'] });
   numRow(s, '位置 y', () => o.y, v => o.y = v, 'm', { slot: [o, 'y'] });
-  numRow(s, '电荷 q', () => o.q, v => { o.q = v; o.color = v >= 0 ? '#e5484d' : '#2f6fed'; }, 'C', { title: '如 1e-6；负号表示负电', slot: [o, 'q'] });
+  numRow(s, '电荷 q', () => o.q, v => { o.q = v; o.color = v >= 0 ? '#c8553d' : '#4a78b0'; }, 'C', { title: '如 1e-6；负号表示负电', slot: [o, 'q'] });
   numRow(s, '软化半径', () => o.softRadius, v => o.softRadius = v, 'm', { min: 1e-4, slot: [o, 'softRadius'] });
   const br = el('div', { class: 'btnrow' });
-  btn(br, '+1 μC', () => { pushUndo(); o.q = 1e-6; o.color = '#e5484d'; liveEdit(); buildPanel(); });
-  btn(br, '−1 μC', () => { pushUndo(); o.q = -1e-6; o.color = '#2f6fed'; liveEdit(); buildPanel(); });
-  btn(br, '取反', () => { pushUndo(); o.q = -o.q; o.color = o.q >= 0 ? '#e5484d' : '#2f6fed'; liveEdit(); buildPanel(); });
+  btn(br, '+1 μC', () => { pushUndo(); o.q = 1e-6; o.color = '#c8553d'; liveEdit(); buildPanel(); });
+  btn(br, '−1 μC', () => { pushUndo(); o.q = -1e-6; o.color = '#4a78b0'; liveEdit(); buildPanel(); });
+  btn(br, '取反', () => { pushUndo(); o.q = -o.q; o.color = o.q >= 0 ? '#c8553d' : '#4a78b0'; liveEdit(); buildPanel(); });
   s.appendChild(br);
   s.appendChild(el('div', { class: 'hint' }, `力律：${scene.settings.coulombLaw === 'coulomb2d' ? '二维/线电荷截面 (1/r)' : '三维点电荷 (1/r²)'}。电场线由 FieldSystem 积分绘制。`));
   const f = fieldAt(o.x + (o.softRadius || 0.08) * 2, o.y);
@@ -2441,7 +2579,7 @@ function buildLinkPanel(P, o) {
   } else if (o.kind === 'rod') {
     numRow(s, '杆长 L₀', () => o.L0, v => o.L0 = v, 'm', { min: 0, slot: [o, 'L0'] });
     numRow(s, '质量 m', () => o.m || 0, v => o.m = Math.max(0, v), 'kg', { min: 0, step: 0.01, slot: [o, 'm'] });
-    s.appendChild(el('div', { class: 'hint' }, '青杆长度恒定（刚性约束，可压可拉，自身不变形）。质量默认 0，自重均分到两端。'));
+    s.appendChild(el('div', { class: 'hint' }, '轻杆长度恒定（刚性约束，可压可拉，自身不变形）。质量默认 0，自重均分到两端。'));
   }
   if (o.b == null) {
     numRow(s, '固定点 x', () => o.ax, v => o.ax = v, 'm', { slot: [o, 'ax'] });
@@ -2455,64 +2593,185 @@ function buildLinkPanel(P, o) {
   });
 }
 
+function lessonCard(parent) {
+  const info = scene.info && PRESETS[scene.info.key];
+  if (!info) return null;
+  const meta = PRESET_META[scene.info.key] || {};
+  const card = el('div', { class: 'lesson' });
+  card.appendChild(el('div', { class: 'l-kicker' }, `${meta.cat || '实验'} · 原理`));
+  card.appendChild(el('div', { class: 'l-title' }, info.name));
+  if (info.desc) card.appendChild(el('div', { class: 'l-desc' }, info.desc));
+  if (info.formulas && info.formulas.length) {
+    const fl = el('div', { class: 'l-formulas' });
+    info.formulas.forEach(([f, note]) => fl.appendChild(el('div', { class: 'l-formula' }, `${f}${note ? `<span>${note}</span>` : ''}`)));
+    card.appendChild(fl);
+  }
+  if (info.tips && info.tips.length) {
+    const ul = el('ul', { class: 'l-tips' });
+    info.tips.forEach(t => ul.appendChild(el('li', {}, t)));
+    card.appendChild(ul);
+  }
+  parent.appendChild(card);
+  return card;
+}
+
+const ENERGY_COLORS = { Ek: '#d97757', Ep: '#4a78b0', E: 'text', EW: '#5e8c4a' };
+function buildEnergySection(parent) {
+  const s = section(parent, '系统能量');
+  const g = el('div', { class: 'energy-grid' });
+  const cell = (id, k, color, cls = '') => {
+    const c = el('div', { class: 'energy-cell ' + cls });
+    c.appendChild(el('div', { class: 'ek' }, `${color ? `<i style="background:${color}"></i>` : ''}${k}`));
+    c.appendChild(el('div', { class: 'ev', id }, '—'));
+    g.appendChild(c);
+  };
+  cell('en_k', '动能 Eₖ', ENERGY_COLORS.Ek);
+  cell('en_p', '势能 Eₚ', ENERGY_COLORS.Ep);
+  cell('en_g', '重力势能');
+  cell('en_s', '弹性势能');
+  cell('en_e', '静电势能');
+  cell('en_gr', '引力势能');
+  cell('en_w', '电场 / 外力做功');
+  cell('en_p_tot', '总动量 |p|');
+  cell('en_tot', '机械能 E = Eₖ + Eₚ', 'var(--text)', 'total');
+  s.appendChild(g);
+  s.appendChild(el('div', { class: 'energy-drift', id: 'en_drift' }));
+  s.appendChild(el('canvas', { id: 'energyChart', style: 'margin-top:12px' }));
+  s.appendChild(el('div', { class: 'hint', style: 'margin-top:8px' },
+    '<b style="color:#d97757">—</b> 动能 &nbsp;<b style="color:#4a78b0">—</b> 势能 &nbsp;<b>—</b> 机械能 &nbsp;<b style="color:#5e8c4a">‐‐</b> E − W（扣除非保守力做功）。只有保守力时，机械能曲线应保持水平。'));
+  return s;
+}
+let lastEnergyTs = 0;
+function updateEnergyReadout(force = false) {
+  if (!document.getElementById('en_tot')) return;
+  const now = performance.now();
+  if (!force && sim.running && now - lastEnergyTs < 120) return;
+  lastEnergyTs = now;
+  const S = scene.settings, en = systemEnergy();
+  const J = v => `${fmt(v, 4)} J`;
+  setTxt('en_k', J(en.Ek)); setTxt('en_p', J(en.Ep));
+  setTxt('en_g', S.gOn ? J(en.Ug) : '—');
+  setTxt('en_s', J(en.Us));
+  setTxt('en_e', J(en.Ue));
+  setTxt('en_gr', S.gravity ? J(en.Ugr) : '—');
+  setTxt('en_w', J(en.W));
+  setTxt('en_p_tot', `${fmt(Math.hypot(en.px, en.py), 4)} kg·m/s`);
+  setTxt('en_tot', J(en.E));
+  const E0 = sim.E0 ?? en.E, base = Math.max(Math.abs(E0), 1e-9);
+  const drift = (en.E - en.W) - E0;
+  setTxt('en_drift', sim.t > 0
+    ? `ΔE = ${fmt(en.E - E0, 4)} J · ΔE − W = ${fmt(drift, 4)} J（${fmt(drift / base * 100, 3)}%）`
+    : '播放后记录能量随时间的变化。');
+  drawEnergyChart();
+}
+function drawEnergyChart() {
+  const c = document.getElementById('energyChart'); if (!c) return;
+  const r = c.getBoundingClientRect(); if (!r.width) return;
+  const d = window.devicePixelRatio || 1; c.width = r.width * d; c.height = r.height * d;
+  const g = c.getContext('2d'); g.setTransform(d, 0, 0, d, 0, 0);
+  const w = r.width, h = r.height, H_ = sim.eHist;
+  g.fillStyle = C['--muted']; g.font = '10px ' + MONO_FONT;
+  if (H_.length < 2) { g.textAlign = 'center'; g.fillText('播放后显示能量曲线', w / 2, h / 2); return; }
+  const step = Math.max(1, Math.floor(H_.length / 800));
+  let t0 = H_[0][0], t1 = H_[H_.length - 1][0], y0 = Infinity, y1 = -Infinity;
+  for (let i = 0; i < H_.length; i += step) for (let k = 1; k <= 4; k++) { y0 = Math.min(y0, H_[i][k]); y1 = Math.max(y1, H_[i][k]); }
+  y0 = Math.min(y0, 0); y1 = Math.max(y1, 0);
+  if (y1 - y0 < 1e-12) { y1 += 1; y0 -= 1; } if (t1 - t0 < 1e-12) t1 = t0 + 1;
+  const pad = (y1 - y0) * 0.08; y0 -= pad; y1 += pad;
+  const L = 44, R = 8, T = 10, B = 18, X = v => L + (v - t0) / (t1 - t0) * (w - L - R), Y = v => h - B - (v - y0) / (y1 - y0) * (h - T - B);
+  g.strokeStyle = C['--border']; g.lineWidth = 1; g.beginPath(); g.moveTo(L, T); g.lineTo(L, h - B); g.lineTo(w - R, h - B); g.stroke();
+  g.setLineDash([3, 3]); g.beginPath(); g.moveTo(L, Y(0)); g.lineTo(w - R, Y(0)); g.stroke(); g.setLineDash([]);
+  g.textAlign = 'right'; g.textBaseline = 'middle'; g.fillText(fmt(y1, 2), L - 4, T + 4); g.fillText(fmt(y0, 2), L - 4, h - B - 4);
+  g.textAlign = 'center'; g.textBaseline = 'top'; g.fillText(fmt(t0, 2), L, h - B + 3); g.fillText(fmt(t1, 2) + ' s', w - R - 14, h - B + 3);
+  const series = [[1, ENERGY_COLORS.Ek, 1.6, null], [2, ENERGY_COLORS.Ep, 1.6, null], [3, C['--text'], 2, null], [4, ENERGY_COLORS.EW, 1.4, [4, 3]]];
+  for (const [k, col, lw, dash] of series) {
+    g.strokeStyle = col; g.lineWidth = lw; g.setLineDash(dash || []); g.beginPath();
+    for (let i = 0; i < H_.length; i += step) { const p = H_[i]; i ? g.lineTo(X(p[0]), Y(p[k])) : g.moveTo(X(p[0]), Y(p[k])); }
+    const p = H_[H_.length - 1]; g.lineTo(X(p[0]), Y(p[k]));
+    g.stroke();
+  }
+  g.setLineDash([]);
+}
+
 function buildScenePanel(P) {
   const S = scene.settings;
-  propsTab = propsTab === 'init' ? 'scene' : propsTab;
-  const tabs = [['scene', '场景'], ['display', '显示'], ['help', '指引']];
-  if (!tabs.some(([id]) => id === propsTab)) propsTab = 'scene';
+  if (!['overview', 'physics', 'display'].includes(propsTab)) propsTab = 'overview';
+  const tabs = [['overview', '概览'], ['physics', '物理'], ['display', '显示']];
   const head = el('div', { class: 'insp-head' });
-  head.appendChild(el('div', { style: 'font-weight:600' }, '场景'));
+  head.appendChild(el('div', { class: 'insp-title' }, '场景'));
   P.appendChild(head);
+  P.appendChild(el('div', { class: 'insp-meta' }, `${bodies().length} 个物体 · ${scene.objects.length - bodies().length} 个场 / 表面 / 约束`));
   P.appendChild(makeTabs(tabs, propsTab, id => { propsTab = id; buildPanel(); }));
   const panels = el('div', { class: 'tab-panels' });
 
-  const pScene = panelBox('scene', propsTab);
+  const pOv = panelBox('overview', propsTab);
   {
-    const s = section(pScene, '全局物理');
-    chkRow(s, '开启重力', () => S.gOn, v => { S.gOn = v; syncToolbar(); });
+    if (!lessonCard(pOv)) {
+      const s = section(pOv, '开始');
+      s.appendChild(el('div', { class: 'hint' }, `从左侧「实验」载入一个经典模型，或在「添加」里自己搭建。选中物体可设置初态、外力，并查看运动分析。`));
+      const br = el('div', { class: 'btnrow' });
+      btn(br, '浏览实验库', () => { leftTab = 'presets'; leftChip = 'all'; document.querySelectorAll('#leftTabs button').forEach(b => b.classList.toggle('active', b.dataset.leftTab === 'presets')); if (window.matchMedia('(max-width: 820px)').matches) openMobile('presets'); else { $('#main').classList.remove('noleft'); syncPanelToggleButtons(); refreshLeft(); } });
+      btn(br, '使用说明', () => $('#help').classList.add('show'));
+      s.appendChild(br);
+    }
+    buildEnergySection(pOv);
+  }
+
+  const pPhy = panelBox('physics', propsTab);
+  {
+    const s = section(pPhy, '重力与阻力');
+    chkRow(s, '均匀重力场', () => S.gOn, v => { S.gOn = v; syncToolbar(); });
     numRow(s, '重力加速度 g', () => S.g, v => { S.g = v; syncToolbar(); }, 'm/s²', { slot: [S, 'g'] });
     const br = el('div', { class: 'btnrow' });
     btn(br, 'g = 9.8', () => { S.g = 9.8; syncToolbar(); liveEdit(); });
     btn(br, 'g = 10', () => { S.g = 10; syncToolbar(); liveEdit(); });
+    btn(br, '月球 1.62', () => { S.g = 1.62; syncToolbar(); liveEdit(); });
     s.appendChild(br);
-    numRow(s, '空气阻力', () => S.drag, v => S.drag = v, 'N·s/m', { min: 0, slot: [S, 'drag'] });
-    chkRow(s, '带电体发射库仑场', () => S.coulomb, v => { S.coulomb = v; markFieldsDirty(); });
-    numRow(s, '静电力常量 k', () => S.kc, v => { S.kc = v; markFieldsDirty(); }, 'N·m²/C²', { slot: [S, 'kc'] });
+    numRow(s, '线性阻力 b', () => S.drag, v => S.drag = v, 'N·s/m', { min: 0, slot: [S, 'drag'], title: 'F = −b v' });
+
+    const gs = section(pPhy, '万有引力');
+    chkRow(gs, '物体之间相互吸引', () => S.gravity, v => { S.gravity = v; }, { rebuild: true });
+    numRow(gs, '引力常量 G', () => S.Gc, v => S.Gc = v, 'N·m²/kg²', { slot: [S, 'Gc'], title: '真实值 6.674e-11；教学场景常用 G = 1' });
+    numRow(gs, '软化长度 ε', () => S.gravSoft, v => S.gravSoft = Math.max(0, v), 'm', { min: 0, slot: [S, 'gravSoft'] });
+    gs.appendChild(el('div', { class: 'hint' }, 'F = G m₁m₂ / (r² + ε²)。ε 避免近距离发散；行星、双星、三体实验会自动开启。'));
+
+    const es = section(pPhy, '静电');
+    chkRow(es, '带电物体之间的库仑力', () => S.coulomb, v => { S.coulomb = v; markFieldsDirty(); });
+    numRow(es, '静电力常量 k', () => S.kc, v => { S.kc = v; markFieldsDirty(); }, 'N·m²/C²', { slot: [S, 'kc'] });
     const lawRow = el('div', { class: 'btnrow' });
-    btn(lawRow, '力律 1/r²', () => { S.coulombLaw = 'coulomb3d'; markFieldsDirty(); liveEdit(); buildPanel(); }, S.coulombLaw !== 'coulomb2d' ? 'active' : '');
-    btn(lawRow, '力律 1/r', () => { S.coulombLaw = 'coulomb2d'; markFieldsDirty(); liveEdit(); buildPanel(); }, S.coulombLaw === 'coulomb2d' ? 'active' : '');
-    s.appendChild(lawRow);
-    chkRow(s, '显示电场线', () => S.showFieldLines, v => { S.showFieldLines = v; markFieldsDirty(); });
+    btn(lawRow, '点电荷 1/r²', () => { S.coulombLaw = 'coulomb3d'; markFieldsDirty(); liveEdit(); buildPanel(); }, S.coulombLaw !== 'coulomb2d' ? 'active' : '');
+    btn(lawRow, '线电荷 1/r', () => { S.coulombLaw = 'coulomb2d'; markFieldsDirty(); liveEdit(); buildPanel(); }, S.coulombLaw === 'coulomb2d' ? 'active' : '');
+    es.appendChild(lawRow);
+    chkRow(es, '显示电场线', () => S.showFieldLines, v => { S.showFieldLines = v; markFieldsDirty(); syncToolbar(); });
+
+    const ns = section(pPhy, '数值积分');
+    numRow(ns, '最大步长 Δt', () => S.maxDt, v => S.maxDt = v, 's', { min: 1e-9, slot: [S, 'maxDt'] });
+    const nb = el('div', { class: 'btnrow' });
+    [[0.002, '快速'], [0.001, '标准'], [0.0002, '精细']].forEach(([v, t]) => btn(nb, t, () => { S.maxDt = v; liveEdit(); buildPanel(); }, Math.abs(S.maxDt - v) < 1e-12 ? 'active' : ''));
+    ns.appendChild(nb);
+    ns.appendChild(el('div', { class: 'hint' }, '每帧拆成若干子步，用 Boris 蛙跳格式推进（二阶、辛），磁场中能量严格守恒；碰撞与摩擦用冲量法。步长越小越准，但更耗时。'));
   }
 
   const pDisp = panelBox('display', propsTab);
   {
-    const d = section(pDisp, '显示与精度');
-    numRow(d, '速度箭头比例', () => S.vPx, v => S.vPx = v, 'px/(m/s)', { min: 0.0001, slot: [S, 'vPx'] });
-    numRow(d, '外力箭头比例', () => S.FPx || 12, v => S.FPx = v, 'px/N', { min: 0.0001, slot: [S, 'FPx'] });
-    numRow(d, '积分步长', () => S.maxDt, v => S.maxDt = v, 's', { min: 1e-9, slot: [S, 'maxDt'] });
-    chkRow(d, '吸附网格', () => S.snap, v => S.snap = v);
-    numRow(d, '吸附步长', () => S.snapStep, v => S.snapStep = v, 'm', { min: 1e-6, slot: [S, 'snapStep'] });
-    chkRow(d, '显示名称', () => S.showLabels, v => S.showLabels = v);
+    const d = section(pDisp, '矢量比例');
+    numRow(d, '速度箭头', () => S.vPx, v => S.vPx = v, 'px/(m/s)', { min: 0.0001, slot: [S, 'vPx'] });
+    numRow(d, '外力箭头', () => S.FPx || 12, v => S.FPx = v, 'px/N', { min: 0.0001, slot: [S, 'FPx'] });
+    const g = section(pDisp, '画布');
+    chkRow(g, '显示名称', () => S.showLabels, v => S.showLabels = v);
+    chkRow(g, '吸附网格', () => S.snap, v => S.snap = v);
+    numRow(g, '吸附步长', () => S.snapStep, v => S.snapStep = v, 'm', { min: 1e-6, slot: [S, 'snapStep'] });
     const view = el('div', { class: 'btnrow' });
     btn(view, '适配视图', fitView);
     btn(view, '回到原点', () => { scene.view.cx = 0; scene.view.cy = 0; draw(); });
-    d.appendChild(view);
+    btn(view, '清除所有轨迹', () => { bodies().forEach(b => { if (b.st) b.st.trail = [[b.st.x, b.st.y]]; }); draw(); });
+    g.appendChild(view);
   }
 
-  const pHelp = panelBox('help', propsTab);
-  {
-    const h = section(pHelp, '流程');
-    h.appendChild(el('div', { class: 'hint' }, `
-      1. 在左侧「添加」放入物体与场；<br>
-      2. 数值旁的 ƒ 可改成公式，例如小球1的外力写 小球2.vx；<br>
-      3. 播放观察，于「分析」查看参数方程；<br>
-      4. 当前：${bodies().length} 个物体，${scene.objects.length - bodies().length} 个场/表面/约束。`));
-  }
-
-  [pScene, pDisp, pHelp].forEach(x => panels.appendChild(x));
+  [pOv, pPhy, pDisp].forEach(x => panels.appendChild(x));
   P.appendChild(panels);
   syncDesmosKeypadForAnalysis(false);
+  requestAnimationFrame(() => updateEnergyReadout(true));
 }
 
 const ADD_CATALOG = [
@@ -2535,7 +2794,7 @@ const ADD_CATALOG = [
   { cat: '约束', items: [
     { tool: 'spring', name: '弹簧', desc: '胡克定律 · 可拉可压' },
     { tool: 'rope', name: '轻绳', desc: '只拉不压 · 可设质量' },
-    { tool: 'rod', name: '青杆', desc: '刚性定长 · 可设质量' },
+    { tool: 'rod', name: '轻杆', desc: '刚性定长 · 可设质量' },
   ]},
 ];
 
@@ -2576,7 +2835,7 @@ function refreshLeft() {
       const ul = el('ul', { class: 'objlist' });
       for (const o of items) {
         const li = el('li', { class: (!selVec && o.id === selId) ? 'sel' : '' });
-        const col = o.color || (o.kind === 'efield' ? '#b45f14' : o.kind === 'bfield' ? '#0f6e6a' : isLink(o) ? (o.kind === 'rope' ? '#0284c7' : o.kind === 'rod' ? '#0f766e' : '#14b8a6') : '#6b7280');
+        const col = o.color || (o.kind === 'efield' ? '#b5762a' : o.kind === 'bfield' ? '#4f7faf' : isLink(o) ? (o.kind === 'rope' ? '#4f7faf' : o.kind === 'rod' ? '#4d6470' : '#3d8f86') : '#7c796f');
         li.appendChild(el('span', { class: 'dot', style: `background:${col}` }));
         li.appendChild(el('span', {}, o.name));
         const kindLabel = o.kind === 'bfield' ? (o.dir < 0 ? 'B⊗' : 'B⊙')
@@ -2648,7 +2907,7 @@ function refreshLeft() {
 
   if (leftTab === 'presets') {
     const chips = el('div', { class: 'chips' });
-    const cats = ['全部', '力学', '电磁', '振动'];
+    const cats = ['全部', ...PRESET_CATS];
     const cur = leftChip === 'all' ? '全部' : leftChip;
     cats.forEach(c => {
       const id = c === '全部' ? 'all' : c;
@@ -2668,14 +2927,19 @@ function refreshLeft() {
     for (const key of Object.keys(PRESETS)) {
       const meta = PRESET_META[key] || { cat: '其他', tags: [] };
       if (leftChip !== 'all' && meta.cat !== leftChip) continue;
-      const name = PRESETS[key].name;
-      const blob = [name, meta.cat, ...(meta.tags || [])].join(' ');
+      const P_ = PRESETS[key], name = P_.name;
+      const blob = [name, meta.cat, ...(meta.tags || []), P_.desc || ''].join(' ');
       if (!matchQuery(blob, q)) continue;
       any = true;
-      const item = el('div', { class: 'preset-item' });
-      item.appendChild(el('div', { class: 'p-name' }, name));
-      item.appendChild(el('div', { class: 'p-cat' }, `${meta.cat}${(meta.tags || []).length ? ' · ' + meta.tags.join(' ') : ''}`));
+      const item = el('div', { class: 'preset-item' + (scene.info && scene.info.key === key ? ' sel' : ''), role: 'button', tabindex: '0' });
+      const top = el('div', { class: 'p-top' });
+      top.appendChild(el('div', { class: 'p-name' }, `${name}${meta.fresh ? '<span class="p-new">新</span>' : ''}`));
+      top.appendChild(el('div', { class: 'p-cat' }, meta.cat));
+      item.appendChild(top);
+      const short = (P_.desc || '').split('。')[0];
+      if (short) item.appendChild(el('div', { class: 'p-desc' }, short.length > 46 ? short.slice(0, 45) + '…' : short + '。'));
       item.onclick = () => { loadPreset(key); closeMobilePanels(); };
+      item.onkeydown = e => { if (e.key === 'Enter') item.onclick(); };
       wrap.appendChild(item);
     }
     if (!any) wrap.appendChild(el('div', { class: 'empty-hint' }, '无匹配预设。'));
@@ -2730,6 +2994,7 @@ function openMobile(which) {
 function setTxt(id, t) { const e = document.getElementById(id); if (e) e.innerHTML = t; }
 function updateReadouts() {
   updateStatus();
+  if (!selected() && propsTab === 'overview') updateEnergyReadout(!sim.running);
   const b = selected(); if (!isBody(b) || !b.st) return;
   const st = b.st, S = scene.settings, v = Math.hypot(st.vx, st.vy), Ek = 0.5 * b.m * v * v, Ep = S.gOn ? b.m * S.g * st.y : 0;
   setTxt('r_pos', `(${fmt(st.x)}, ${fmt(st.y)}) m`); setTxt('r_vel', `(${fmt(st.vx)}, ${fmt(st.vy)}) m/s`);
@@ -2874,7 +3139,39 @@ function buildAnalysisContext(b) {
     kCoulomb: scene.settings.kc || K_COULOMB,
     hasUniformE,
     hasUniformB,
+    ...gravityAsCentralCharge(b, { x, y }),
   };
+}
+/**
+ * 万有引力 ↔ 库仑吸引的等价映射：k·q·Q = −G·m·M。
+ * 只有一个固定的大质量物体、本物体不带电且无其它场时，借用有心力（开普勒）分析。
+ */
+function gravityAsCentralCharge(b, p) {
+  const S = scene.settings;
+  if (!S.gravity || b.q || b.fixed) return {};
+  if (scene.objects.some(o => o.kind === 'efield' || o.kind === 'bfield' || o.kind === 'pointCharge')) return {};
+  const others = bodies().filter(o => o !== b && o.m > 0);
+  const fixed = others.filter(o => o.fixed);
+  if (fixed.length !== 1) return {};
+  const c = fixed[0];
+  // 其余可动物体质量远小于中心体时才近似为单中心问题
+  const rest = others.filter(o => !o.fixed).reduce((a, o) => a + o.m, 0);
+  if (rest > 0.05 * c.m) return {};
+  const k = scene.settings.kc || K_COULOMB;
+  return {
+    body: { id: b.id, name: b.name, kind: b.kind, m: b.m, q: 1, x: p.x, y: p.y,
+      vx: analysisRefMode === 'initial' ? b.vx0 : b.st.vx, vy: analysisRefMode === 'initial' ? b.vy0 : b.st.vy, t: sim.t, fixed: false },
+    pointCharges: [{ id: c.id, x: c.st ? c.st.x : c.x0, y: c.st ? c.st.y : c.y0, q: -(S.Gc || 0) * b.m * c.m / k, fixed: true }],
+    coulombLaw: 'coulomb3d',
+    field: { Ex: 0, Ey: 0, Bz: 0, phi: 0 },
+    _gravityMapped: true,
+  };
+}
+function gravityText(v) {
+  if (typeof v === 'string') return v.replace(/固定点电荷/g, '固定中心天体').replace(/点电荷/g, '中心天体').replace(/库仑中心力/g, '万有引力 · 有心力').replace(/库仑力（非匀强）/g, '万有引力').replace(/库仑/g, '引力').replace(/电势能/g, '引力势能').replace(/k\s*q\s*Q/g, '−GMm');
+  if (Array.isArray(v)) return v.map(gravityText);
+  if (v && typeof v === 'object') { const o = {}; for (const k in v) o[k] = (k === 'latex' || k === 'sym' || k === 'num' || k === 'symbolic' || k === 'numeric' || k === 'regimeId') ? v[k] : gravityText(v[k]); return o; }
+  return v;
 }
 
 function escapeHtml(s) {
@@ -2918,7 +3215,9 @@ function renderMotionAnalysis(b, force = false) {
   if (prevScratch && prevScratch.mq && typeof prevScratch.mq.latex === 'function') {
     try { analysisScratchLatex = prevScratch.mq.latex(); } catch { /* keep */ }
   }
-  const report = analyzeMotion(buildAnalysisContext(b));
+  const actx = buildAnalysisContext(b);
+  let report = analyzeMotion(actx);
+  if (actx._gravityMapped) report = gravityText(report);
   const editableNumeric = !sim.running;
   const derHtml = report.derived.map(d => `
     <div class="der-row">
@@ -2992,19 +3291,21 @@ function drawChart() {
   const r = c.getBoundingClientRect(); if (!r.width) return;
   const d = window.devicePixelRatio || 1; c.width = r.width * d; c.height = r.height * d;
   const g = c.getContext('2d'); g.setTransform(d, 0, 0, d, 0, 0); const w = r.width, h = r.height;
-  const hist = b.st.hist; const idx = { v: 5, vx: 3, vy: 4, x: 1, y: 2, ek: 6 };
-  const pts = chartMode === 'xy' ? hist.map(p => [p[1], p[2]]) : hist.map(p => [p[0], p[idx[chartMode]]]);
-  g.fillStyle = C['--muted']; g.font = '10px sans-serif';
+  const hist = b.st.hist; const idx = { v: 5, vx: 3, vy: 4, x: 1, y: 2, ek: 6, a: 7 };
+  const XY = { xy: [1, 2], px: [1, 3], py: [2, 4] }[chartMode];
+  const spatial = !!XY;
+  const pts = XY ? hist.map(p => [p[XY[0]], p[XY[1]]]) : hist.map(p => [p[0], p[idx[chartMode]] ?? 0]);
+  g.fillStyle = C['--muted']; g.font = '10px ' + MONO_FONT;
   if (pts.length < 2) { g.fillText('播放后显示图像', 10, h / 2); return; }
   let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
   pts.forEach(p => { x0 = Math.min(x0, p[0]); x1 = Math.max(x1, p[0]); y0 = Math.min(y0, p[1]); y1 = Math.max(y1, p[1]); });
-  if (chartMode !== 'xy') { y0 = Math.min(y0, 0); y1 = Math.max(y1, 0); }
+  if (!spatial) { y0 = Math.min(y0, 0); y1 = Math.max(y1, 0); }
   if (y1 - y0 < 1e-12) { y1 += 1; y0 -= 1; } if (x1 - x0 < 1e-12) x1 = x0 + 1;
   const L = 38, R = 8, T = 8, B = 18, X = v => L + (v - x0) / (x1 - x0) * (w - L - R), Y = v => h - B - (v - y0) / (y1 - y0) * (h - T - B);
   g.strokeStyle = C['--border']; g.lineWidth = 1; g.beginPath(); g.moveTo(L, T); g.lineTo(L, h - B); g.lineTo(w - R, h - B); g.stroke();
   if (y0 < 0 && y1 > 0) { g.setLineDash([3, 3]); g.beginPath(); g.moveTo(L, Y(0)); g.lineTo(w - R, Y(0)); g.stroke(); g.setLineDash([]); }
   g.textAlign = 'right'; g.textBaseline = 'middle'; g.fillText(fmt(y1, 2), L - 3, T + 4); g.fillText(fmt(y0, 2), L - 3, h - B - 4);
-  g.textAlign = 'center'; g.textBaseline = 'top'; g.fillText(fmt(x0, 2), L, h - B + 3); g.fillText(fmt(x1, 2) + (chartMode === 'xy' ? ' m' : ' s'), w - R - 12, h - B + 3);
+  g.textAlign = 'center'; g.textBaseline = 'top'; g.fillText(fmt(x0, 2), L, h - B + 3); g.fillText(fmt(x1, 2) + (spatial ? ' m' : ' s'), w - R - 12, h - B + 3);
   g.strokeStyle = b.color; g.lineWidth = 1.6; g.beginPath(); pts.forEach((p, i) => i ? g.lineTo(X(p[0]), Y(p[1])) : g.moveTo(X(p[0]), Y(p[1]))); g.stroke();
 }
 let lastStatusTs = 0;
@@ -3037,131 +3338,453 @@ function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.ad
  *  预设场景
  * ===================================================================== */
 function sceneOf(objects, settings = {}, view = null) { return { settings: Object.assign(defaultSettings(), settings), objects, view }; }
+const PRESET_CATS = ['力学', '振动', '引力', '电磁'];
 const PRESET_META = {
   welcome: { cat: '力学', tags: ['斜抛', '摩擦'] },
   projectile: { cat: '力学', tags: ['平抛'] },
-  vertical: { cat: '力学', tags: ['竖直上抛'] },
+  anglerange: { cat: '力学', tags: ['斜抛', '射程', '45°'], fresh: true },
+  dragcompare: { cat: '力学', tags: ['空气阻力', '平方阻力'], fresh: true },
+  vertical: { cat: '力学', tags: ['竖直上抛', '恢复系数'] },
   incline: { cat: '力学', tags: ['斜面', '摩擦'] },
-  collision: { cat: '力学', tags: ['碰撞'] },
-  selector: { cat: '电磁', tags: ['速度选择器'] },
-  edeflect: { cat: '电磁', tags: ['电场偏转'] },
-  bbound: { cat: '电磁', tags: ['有界磁场'] },
-  accel: { cat: '电磁', tags: ['加速', '偏转'] },
-  cycloid: { cat: '电磁', tags: ['摆线'] },
-  springosc: { cat: '振动', tags: ['弹簧'] },
+  collision: { cat: '力学', tags: ['弹性碰撞', '动量守恒'] },
+  inelastic: { cat: '力学', tags: ['完全非弹性', '动量守恒'], fresh: true },
+  recoil: { cat: '力学', tags: ['反冲', '动量守恒', '弹簧'], fresh: true },
+  newton: { cat: '力学', tags: ['牛顿摆', '碰撞'], fresh: true },
+  vcircle: { cat: '力学', tags: ['竖直圆周', '临界速度', '轻绳'], fresh: true },
+  springosc: { cat: '振动', tags: ['弹簧振子', '简谐'] },
+  damped: { cat: '振动', tags: ['阻尼', '弹簧'], fresh: true },
+  forced: { cat: '振动', tags: ['受迫振动', '共振'], fresh: true },
+  coupled: { cat: '振动', tags: ['耦合振子', '拍'], fresh: true },
   pendulum: { cat: '振动', tags: ['单摆', '轻绳'] },
-  rodpendulum: { cat: '振动', tags: ['单摆', '青杆'] },
-  coulomb: { cat: '电磁', tags: ['库仑'] },
+  rodpendulum: { cat: '振动', tags: ['单摆', '轻杆'] },
+  pendlen: { cat: '振动', tags: ['单摆', '周期', '摆长'], fresh: true },
+  doublepend: { cat: '振动', tags: ['双摆', '混沌', '轻杆'], fresh: true },
+  kepler: { cat: '引力', tags: ['开普勒', '行星', '椭圆轨道'], fresh: true },
+  cosmic: { cat: '引力', tags: ['宇宙速度', '卫星', '逃逸'], fresh: true },
+  binary: { cat: '引力', tags: ['双星', '质心'], fresh: true },
+  figure8: { cat: '引力', tags: ['三体', '8 字形'], fresh: true },
+  selector: { cat: '电磁', tags: ['速度选择器'] },
+  edeflect: { cat: '电磁', tags: ['电场偏转', '示波管'] },
+  accel: { cat: '电磁', tags: ['加速', '偏转'] },
+  bbound: { cat: '电磁', tags: ['有界磁场', '圆周'] },
+  massspec: { cat: '电磁', tags: ['质谱仪', '同位素'], fresh: true },
+  cyclotron: { cat: '电磁', tags: ['回旋加速器', '交变电场'], fresh: true },
+  cycloid: { cat: '电磁', tags: ['摆线', '正交场'] },
+  coulomb: { cat: '电磁', tags: ['库仑', '绕核'] },
+  rutherford: { cat: '电磁', tags: ['卢瑟福', 'α 散射'], fresh: true },
   dipole: { cat: '电磁', tags: ['偶极', '场线'] },
+  samecharge: { cat: '电磁', tags: ['同种电荷', '场线'], fresh: true },
 };
 const PRESETS = {
-  welcome: { name: '斜抛与滑块', make() {
-    nextId = 1;
-    return sceneOf([mkGround(0), mkBody('ball', { name: '小球', x0: -4, y0: 0.25, vx0: 6, vy0: 8, e: 0.5 }),
-      mkBody('box', { name: '滑块', x0: -6, y0: 0.2, vx0: 5, vy0: 0, mu: 0.3, color: '#f59e0b' })], {}, { cx: 3, cy: 2.6, scale: 42 });
-  } },
-  projectile: { name: '平抛运动', make() {
-    nextId = 1;
-    return sceneOf([mkGround(0), mkWall(-3, 4.85, 0, 4.85, { name: '平台', smooth: true }),
-      mkBody('ball', { name: '小球', x0: 0, y0: 5, r: 0.15, vx0: 3, vy0: 0, e: 0.5 })]);
-  } },
-  vertical: { name: '竖直上抛', make() {
-    nextId = 1;
-    return sceneOf([mkGround(0), mkBody('ball', { name: '小球', x0: 0, y0: 0.2, r: 0.2, vx0: 0, vy0: 10, e: 0.6 })], {}, null);
-  } },
-  incline: { name: '斜面滑块', make() {
-    nextId = 1;
-    const inc = mkIncline(-2, 0, { L: 4, ang: 37, dir: 1, smooth: false });
-    const th = 37 * DEG, top = inclinePts(inc)[2], h = 0.4, along = 0.6;
-    const b = mkBody('box', { name: '滑块', w: 0.6, h, m: 1, mu: 0.5, e: 0, ang0: 37,
-      x0: +(top[0] - Math.sin(th) * h / 2 - Math.cos(th) * along).toFixed(3), y0: +(top[1] + Math.cos(th) * h / 2 - Math.sin(th) * along).toFixed(3) });
-    return sceneOf([mkGround(0), inc, b], { showForce: true, g: 9.8 });
-  } },
-  collision: { name: '弹性碰撞', make() {
-    nextId = 1;
-    return sceneOf([mkGround(0, { smooth: true }),
-      mkBody('ball', { name: 'A (1kg)', m: 1, r: 0.3, x0: -3, y0: 0.3, vx0: 4, e: 1, color: '#2f6fed' }),
-      mkBody('ball', { name: 'B (3kg)', m: 3, r: 0.3, x0: 0, y0: 0.3, vx0: 0, e: 1, color: '#e5484d' })]);
-  } },
-  selector: { name: '速度选择器', make() {
-    nextId = 1;
-    return sceneOf([
-      mkE({ name: '电场 E↓', E: 5, ang: -90, x: 0, y: -2, w: 10, h: 4 }), mkB({ name: '磁场 ⊗', B: 1, dir: -1, x: 0, y: -2, w: 10, h: 4 }),
-      mkWall(0, 2, 10, 2, { name: '上极板(−)' }), mkWall(0, -2, 10, -2, { name: '下极板(+)' }),
-      mkBody('particle', { name: 'v=5 (=E/B)', x0: -2, y0: 0, vx0: 5, color: '#1f9d55' }),
-      mkBody('particle', { name: 'v=8', x0: -2, y0: 0, vx0: 8, color: '#e5484d' }),
-      mkBody('particle', { name: 'v=3', x0: -2, y0: 0, vx0: 3, color: '#2f6fed' })], { gOn: false, showLabels: false });
-  } },
-  edeflect: { name: '电场偏转', make() {
-    nextId = 1;
-    return sceneOf([mkE({ name: '偏转电场', E: 1, ang: -90, x: 0, y: -1, w: 4, h: 2 }),
-      mkWall(0, 1, 4, 1, { name: '上极板' }), mkWall(0, -1, 4, -1, { name: '下极板' }), mkWall(8, -3, 8, 3, { name: '荧光屏', e: 0 }),
-      mkBody('particle', { name: '粒子', x0: -1, y0: 0, vx0: 4, m: 0.01, q: 0.01 })], { gOn: false });
-  } },
-  bbound: { name: '有界磁场', make() {
-    nextId = 1;
-    return sceneOf([mkB({ name: '磁场 ⊗', B: 1, dir: -1, x: 0, y: -3, w: 6, h: 9 }),
-      mkBody('particle', { name: '粒子 q/m=1', m: 1, q: 1, r: 0.1, x0: -2, y0: 0, vx0: 2 }),
-      mkBody('particle', { name: '斜射入', m: 1, q: 1, r: 0.1, x0: -2, y0: -2, vx0: 1.732, vy0: 1, color: '#8b5cf6' })], { gOn: false });
-  } },
-  accel: { name: '加速后偏转', make() {
-    nextId = 1;
-    return sceneOf([mkE({ name: '加速电场', E: 2, ang: 0, x: -4, y: -1, w: 3, h: 2 }),
-      mkB({ name: '偏转磁场 ⊗', B: 1, dir: -1, x: 0, y: -1, w: 10, h: 9 }),
-      mkBody('particle', { name: '粒子 q/m=1', m: 1, q: 1, r: 0.1, x0: -3.9, y0: 0 })], { gOn: false });
-  } },
-  cycloid: { name: '正交电磁场摆线', make() {
-    nextId = 1;
-    return sceneOf([mkE({ name: '电场 E↓', E: 2, ang: -90, all: true }), mkB({ name: '磁场 ⊗', B: 1, dir: -1, all: true }),
-      mkBody('particle', { name: '粒子 q/m=1', m: 1, q: 1, r: 0.1, x0: 0, y0: 0 })], { gOn: false }, { cx: 8, cy: -2, scale: 45 });
-  } },
-  springosc: { name: '弹簧振子', make() {
-    nextId = 1;
-    const b = mkBody('box', { name: '振子', w: 0.5, h: 0.5, m: 1, mu: 0, x0: 1, y0: 0.25 });
-    return sceneOf([mkGround(0, { smooth: true }), mkWall(-3, 0, -3, 1.5, { name: '墙' }), b,
-      mkSpring(b.id, null, { ax: -3, ay: 0.25, k: 20, L0: 3 })]);
-  } },
-  pendulum: { name: '单摆（轻绳）', make() {
-    nextId = 1;
-    const b = mkBody('ball', { name: '摆球', m: 0.5, r: 0.15, x0: 1, y0: 2.268 });
-    return sceneOf([b, mkRope(b.id, null, { name: '轻绳', ax: 0, ay: 4, L0: 2, k: 5000 })], {}, { cx: 0, cy: 2.5, scale: 90 });
-  } },
-  rodpendulum: { name: '单摆（青杆）', make() {
-    nextId = 1;
-    const b = mkBody('ball', { name: '摆球', m: 0.5, r: 0.15, x0: 1, y0: 2.268 });
-    return sceneOf([b, mkRod(b.id, null, { name: '青杆', ax: 0, ay: 4, L0: 2, m: 0 })], {}, { cx: 0, cy: 2.5, scale: 90 });
-  } },
-  dipole: { name: '电偶极子场线', make() {
-    nextId = 1;
-    return sceneOf([
-      mkPointCharge(-1, 0, { name: '+q', q: 1e-6, color: '#e5484d' }),
-      mkPointCharge(1, 0, { name: '−q', q: -1e-6, color: '#2f6fed' }),
-      mkBody('particle', { name: '试探电荷', m: 0.01, q: 1e-8, r: 0.06, x0: 0, y0: 1.2, vx0: 0.8 }),
-    ], { gOn: false, showFieldLines: true, coulomb: false }, { cx: 0, cy: 0, scale: 80 });
-  } },
-  coulomb: { name: '库仑绕核', make() {
-    nextId = 1;
-    // v = √(k|qQ|/(m r)) ≈ 2.120 with k=8.99e9, |qQ|=1e-9, m=1, r=2
-    return sceneOf([
-      mkBody('ball', { name: '+Q 固定', fixed: true, q: 1e-4, m: 1, r: 0.2, x0: 0, y0: 0, color: '#e5484d' }),
-      mkBody('ball', { name: '−q', q: -1e-5, m: 1, r: 0.1, x0: 2, y0: 0, vx0: 0, vy0: 2.12, color: '#2f6fed' }),
-    ], { gOn: false, coulomb: true, showFieldLines: true, showAnalytic: true }, { cx: 0, cy: 0, scale: 80 });
-  } },
+  welcome: { name: '斜抛与滑块',
+    desc: '小球以 10 m/s、53° 斜抛并在地面弹跳；滑块在粗糙地面上匀减速直到停下。两种最常见的运动放在一起对照。',
+    formulas: [['x = v₀cosθ · t,  y = v₀sinθ · t − ½gt²', '斜抛'], ['a = μg,  s = v₀² / 2μg', '滑块减速']],
+    tips: ['选中小球，在「分析」页查看抛物线参数方程。', '把滑块的 μ 改成 0，观察它匀速滑出画面。'],
+    make() {
+      nextId = 1;
+      return sceneOf([mkGround(0), mkBody('ball', { name: '小球', x0: -4, y0: 0.25, vx0: 6, vy0: 8, e: 0.5 }),
+        mkBody('box', { name: '滑块', x0: -6, y0: 0.2, vx0: 5, vy0: 0, mu: 0.3, color: '#d08a3c' })], {}, { cx: 3, cy: 2.6, scale: 42 });
+    } },
+  projectile: { name: '平抛运动',
+    desc: '小球从 5 m 高的平台以 3 m/s 水平抛出。水平方向匀速，竖直方向自由落体，两者互不影响。',
+    formulas: [['t = √(2h / g)', '落地时间只由高度决定'], ['x = v₀ √(2h / g)', '水平射程']],
+    tips: ['打开「显示 → 受力分析」，可以看到全程只受重力。', '改变 v₀，落地时间不变。'],
+    make() {
+      nextId = 1;
+      return sceneOf([mkGround(0), mkWall(-3, 4.85, 0, 4.85, { name: '平台', smooth: true }),
+        mkBody('ball', { name: '小球', x0: 0, y0: 5, r: 0.15, vx0: 3, vy0: 0, e: 0.5 })]);
+    } },
+  anglerange: { name: '抛射角与射程',
+    desc: '五个小球以相同速率 10 m/s、不同仰角同时抛出。不计空气阻力时，45° 射程最远，互余的两个角度（如 30° 与 60°）射程相同。',
+    formulas: [['R = v₀² sin2θ / g', '水平射程'], ['H = v₀² sin²θ / 2g', '最大高度']],
+    tips: ['比较 30° 与 60° 两条轨迹的落点。', '在「物理」页加入线性阻力，最远射程的角度会小于 45°。'],
+    make() {
+      nextId = 1;
+      const angs = [15, 30, 45, 60, 75], cols = ['#4a78b0', '#5e8c4a', '#d97757', '#8a6bbe', '#c2973e'];
+      const balls = angs.map((a, i) => mkBody('ball', { name: `${a}°`, r: 0.12, x0: 0, y0: 0.12, vx0: +(10 * Math.cos(a * DEG)).toFixed(4), vy0: +(10 * Math.sin(a * DEG)).toFixed(4), e: 0, mu: 0.8, collide: false, color: cols[i] }));
+      return sceneOf([mkGround(0), ...balls], { showAnalytic: false, vPx: 10 }, { cx: 5.2, cy: 2.6, scale: 62 });
+    } },
+  dragcompare: { name: '空气阻力下的抛体',
+    desc: '两个小球以同样的初速度抛出。蓝色小球受到与速度平方成正比、方向与速度相反的阻力，轨迹不再对称：上升段较长、下落段更陡。',
+    formulas: [['F阻 = c v²', '方向与 v 相反'], ['m dv/dt = mg − c|v|v', '无解析解，需数值积分']],
+    tips: ['选中「有阻力」，在「受力」页可以看到公式 F = 0.02·v·v 与 θ = atan2(−vy, −vx)。', '把系数改大，观察轨迹趋近“竖直下落”。'],
+    make() {
+      nextId = 1;
+      const a = mkBody('ball', { name: '无阻力', r: 0.15, x0: 0, y0: 0.15, vx0: 12, vy0: 12, e: 0, mu: 0.8, collide: false, color: '#d97757' });
+      const b = mkBody('ball', { name: '有阻力', r: 0.15, x0: 0, y0: 0.15, vx0: 12, vy0: 12, e: 0, mu: 0.8, collide: false, color: '#4a78b0',
+        Fmode: 'expr', Fexpr: '0.02*v*v', FangExpr: 'atan2(-vy,-vx)*180/pi' });
+      return sceneOf([mkGround(0), a, b], { showAnalytic: false, vPx: 8 }, { cx: 13, cy: 4, scale: 34 });
+    } },
+  vertical: { name: '竖直上抛',
+    desc: '小球以 10 m/s 竖直上抛，落地后按恢复系数 e = 0.6 反弹，每次反弹速度变为原来的 0.6 倍，最高点按 e² 衰减。',
+    formulas: [['h = v₀² / 2g', '最大高度'], ['v′ = e·v,  h′ = e²·h', '碰撞反弹']],
+    tips: ['在「图像」页选 v–t，可以看到斜率恒为 −g 的锯齿线。'],
+    make() {
+      nextId = 1;
+      return sceneOf([mkGround(0), mkBody('ball', { name: '小球', x0: 0, y0: 0.2, r: 0.2, vx0: 0, vy0: 10, e: 0.6 })], {}, null);
+    } },
+  incline: { name: '斜面滑块',
+    desc: '滑块从 37° 粗糙斜面顶端由静止释放。当 tanθ > μ 时下滑；受力图显示重力、支持力与摩擦力的合成。',
+    formulas: [['a = g(sinθ − μcosθ)', '下滑加速度'], ['N = mg cosθ,  f = μN', '支持力与滑动摩擦']],
+    tips: ['把 μ 调到 0.8（> tan37° ≈ 0.75），滑块将保持静止。'],
+    make() {
+      nextId = 1;
+      const inc = mkIncline(-2, 0, { L: 4, ang: 37, dir: 1, smooth: false });
+      const th = 37 * DEG, top = inclinePts(inc)[2], h = 0.4, along = 0.6;
+      const b = mkBody('box', { name: '滑块', w: 0.6, h, m: 1, mu: 0.5, e: 0, ang0: 37,
+        x0: +(top[0] - Math.sin(th) * h / 2 - Math.cos(th) * along).toFixed(3), y0: +(top[1] + Math.cos(th) * h / 2 - Math.sin(th) * along).toFixed(3) });
+      return sceneOf([mkGround(0), inc, b], { showForce: true, g: 9.8 });
+    } },
+  collision: { name: '弹性碰撞',
+    desc: '1 kg 的 A 以 4 m/s 撞向静止的 3 kg 的 B，恢复系数 e = 1。碰后 A 以 2 m/s 反弹，B 以 2 m/s 前进，动量与动能都守恒。',
+    formulas: [['v₁′ = (m₁ − m₂)v₁ / (m₁ + m₂)', ''], ['v₂′ = 2m₁v₁ / (m₁ + m₂)', '']],
+    tips: ['不选中任何物体，在「概览」里看系统总动量和动能保持不变。'],
+    make() {
+      nextId = 1;
+      return sceneOf([mkGround(0, { smooth: true }),
+        mkBody('ball', { name: 'A (1kg)', m: 1, r: 0.3, x0: -3, y0: 0.3, vx0: 4, e: 1, color: '#4a78b0' }),
+        mkBody('ball', { name: 'B (3kg)', m: 3, r: 0.3, x0: 0, y0: 0.3, vx0: 0, e: 1, color: '#d97757' })]);
+    } },
+  inelastic: { name: '完全非弹性碰撞',
+    desc: '恢复系数 e = 0：两球碰后以共同速度运动。动量守恒，但动能有一部分转化为内能。',
+    formulas: [['v = m₁v₁ / (m₁ + m₂)', '共同速度'], ['ΔE = ½ · m₁m₂/(m₁+m₂) · v₁²', '损失的动能']],
+    tips: ['在「概览」的能量曲线上，碰撞瞬间动能突然下降，总动量不变。'],
+    make() {
+      nextId = 1;
+      return sceneOf([mkGround(0, { smooth: true }),
+        mkBody('ball', { name: 'A (2kg)', m: 2, r: 0.3, x0: -4, y0: 0.3, vx0: 3, e: 0, color: '#4a78b0' }),
+        mkBody('ball', { name: 'B (1kg)', m: 1, r: 0.3, x0: -0.5, y0: 0.3, vx0: 0, e: 0, color: '#d97757' })]);
+    } },
+  recoil: { name: '反冲：弹簧连接的两滑块',
+    desc: '光滑水平面上，两滑块之间夹一根被压缩的弹簧，静止释放。系统所受合外力为零：任何时刻两者动量大小相等、方向相反，质心始终不动。',
+    formulas: [['m₁v₁ + m₂v₂ = 0', '动量守恒'], ['½kΔx² = ½m₁v<sub>1,max</sub>² + ½m₂v<sub>2,max</sub>²', '弹簧恢复原长时速度最大']],
+    tips: ['弹簧原长 2 m、初始长 0.8 m。由于弹簧仍连着两者，它们会来回振动。', '速度之比始终等于质量的反比 3 : 1。'],
+    make() {
+      nextId = 1;
+      const a = mkBody('box', { name: '甲 (1kg)', w: 0.5, h: 0.5, m: 1, mu: 0, x0: -0.4, y0: 0.25, color: '#4a78b0' });
+      const b = mkBody('box', { name: '乙 (3kg)', w: 0.7, h: 0.7, m: 3, mu: 0, x0: 0.4, y0: 0.35, color: '#d97757' });
+      const sp = mkSpring(a.id, b.id, { k: 30, L0: 2 });
+      return sceneOf([mkGround(0, { smooth: true }), a, b, sp], { vPx: 25 }, { cx: 0, cy: 1, scale: 65 });
+    } },
+  newton: { name: '牛顿摆',
+    desc: '五个相同的钢球并排悬挂、彼此接触。拉起最左边的球释放，它把动量与动能“传递”给最右边的球，中间的球几乎不动。',
+    formulas: [['m₁ = m₂, e = 1 ⇒ v₁′ = 0, v₂′ = v₁', '等质量弹性碰撞交换速度']],
+    tips: ['这里用冲量法逐对处理碰撞，存在微小的数值偏差；把步长调到「精细」效果更好。'],
+    make() {
+      nextId = 1;
+      const objs = [], r = 0.2, L = 2.4, top = 4;
+      for (let i = 0; i < 5; i++) {
+        const px = (i - 2) * 2 * r;
+        let x0 = px, y0 = top - L;
+        if (i === 0) { const a = 40 * DEG; x0 = px - L * Math.sin(a); y0 = top - L * Math.cos(a); }
+        const b = mkBody('ball', { name: `球${i + 1}`, m: 1, r, e: 1, x0: +x0.toFixed(4), y0: +y0.toFixed(4), color: i === 0 ? '#d97757' : '#6b6a64' });
+        objs.push(b, mkRod(b.id, null, { name: `杆${i + 1}`, ax: +px.toFixed(4), ay: top, L0: L }));
+      }
+      return sceneOf([mkWall(-1.8, top, 1.8, top, { name: '横梁' }), ...objs], { showLabels: false, showVel: false, maxDt: 0.0002 }, { cx: -0.4, cy: 2.6, scale: 110 });
+    } },
+  vcircle: { name: '竖直面内的圆周运动',
+    desc: '两个用轻绳系住的小球在最低点获得水平速度。左侧 v₀ = √(5gL)，恰好能过最高点；右侧 v₀ = √(3gL)，在上半圈绳子松弛，小球改做斜抛。',
+    formulas: [['v<sub>顶</sub> ≥ √(gL)', '绳模型过最高点的条件'], ['v₀ ≥ √(5gL)', '最低点所需速度'], ['T − mg = mv²/L', '最低点张力']],
+    tips: ['打开受力分析，看张力 T 在最高点趋于零。', '把轻绳换成轻杆（可压），过最高点只需 v_top ≥ 0。'],
+    make() {
+      nextId = 1;
+      const L = 1.5, g = 9.8;
+      const a = mkBody('ball', { name: '√(5gL)', m: 0.5, r: 0.15, x0: -2.2, y0: 2 - L, vx0: +Math.sqrt(5 * g * L).toFixed(4), color: '#d97757' });
+      const b = mkBody('ball', { name: '√(3gL)', m: 0.5, r: 0.15, x0: 2.2, y0: 2 - L, vx0: +Math.sqrt(3 * g * L).toFixed(4), color: '#4a78b0' });
+      return sceneOf([a, mkRope(a.id, null, { name: '绳1', ax: -2.2, ay: 2, L0: L, k: 20000 }), b, mkRope(b.id, null, { name: '绳2', ax: 2.2, ay: 2, L0: L, k: 20000 })],
+        { vPx: 10, maxDt: 0.0005 }, { cx: 0, cy: 2, scale: 80 });
+    } },
+  springosc: { name: '弹簧振子',
+    desc: '光滑水平面上的弹簧振子，从偏离平衡位置 1 m 处静止释放，做简谐运动。周期只取决于 m 与 k，与振幅无关。',
+    formulas: [['x = A cos(ωt),  ω = √(k/m)', ''], ['T = 2π√(m/k)', '周期']],
+    tips: ['在「图像」页选 vx–x 相图，得到一个椭圆。', '「概览」里动能与弹性势能此消彼长，总和不变。'],
+    make() {
+      nextId = 1;
+      const b = mkBody('box', { name: '振子', w: 0.5, h: 0.5, m: 1, mu: 0, x0: 1, y0: 0.25 });
+      return sceneOf([mkGround(0, { smooth: true }), mkWall(-3, 0, -3, 1.5, { name: '墙' }), b,
+        mkSpring(b.id, null, { ax: -3, ay: 0.25, k: 20, L0: 3 })]);
+    } },
+  damped: { name: '阻尼振动',
+    desc: '在弹簧振子上加入线性阻力 F = −bv。振幅按指数规律衰减，机械能逐渐耗散；阻尼过大时不再振动（过阻尼）。',
+    formulas: [['x = A e<sup>−βt</sup> cos(ω′t),  β = b / 2m', ''], ['ω′ = √(ω₀² − β²)', '阻尼使频率略降低']],
+    tips: ['在「物理」页把阻力 b 改为 8.9（≈ 2√(km)），观察临界阻尼。', '能量曲线中 E − W（绿色虚线）保持水平，说明耗散全部来自阻力做功。'],
+    make() {
+      nextId = 1;
+      const b = mkBody('box', { name: '振子', w: 0.5, h: 0.5, m: 1, mu: 0, x0: 1.2, y0: 0.25 });
+      return sceneOf([mkGround(0, { smooth: true }), mkWall(-3, 0, -3, 1.5, { name: '墙' }), b,
+        mkSpring(b.id, null, { ax: -3, ay: 0.25, k: 20, L0: 3 })], { drag: 0.6 });
+    } },
+  forced: { name: '受迫振动与共振',
+    desc: '振子受到周期性驱动力 F = F₀ sin(ωt)，驱动频率恰好等于固有频率 ω₀ = √(k/m) ≈ 4.47 rad/s。弱阻尼下振幅持续增大——共振。',
+    formulas: [['m ẍ + b ẋ + kx = F₀ sin ωt', ''], ['A = F₀ / √((k − mω²)² + (bω)²)', '稳态振幅']],
+    tips: ['选中振子，在「受力」页把 4.47 改成 3 或 6，振幅明显变小。', '在「图像」页看 x–t 的包络线。'],
+    make() {
+      nextId = 1;
+      const b = mkBody('box', { name: '振子', w: 0.5, h: 0.5, m: 1, mu: 0, x0: 0, y0: 0.25,
+        Fmode: 'expr', Fexpr: 'sin(4.472*t)', FangExpr: '0' });
+      return sceneOf([mkGround(0, { smooth: true }), mkWall(-3, 0, -3, 1.5, { name: '墙' }), b,
+        mkSpring(b.id, null, { ax: -3, ay: 0.25, k: 20, L0: 3 })], { drag: 0.15, FPx: 30 }, { cx: 0, cy: 1, scale: 70 });
+    } },
+  coupled: { name: '耦合振子与拍',
+    desc: '两个振子由一根弱弹簧相连。只拉开左侧振子释放，振动能量在两者之间来回转移，出现“拍”现象。',
+    formulas: [['ω₁ = √(k/m),  ω₂ = √((k + 2k<sub>c</sub>)/m)', '两个简正模式'], ['T拍 = 2π / (ω₂ − ω₁)', '能量交换周期']],
+    tips: ['把左右两个振子初始位移设为相同（同相）或相反（反相），分别只激发一种简正模式。'],
+    make() {
+      nextId = 1;
+      const a = mkBody('box', { name: '左', w: 0.5, h: 0.5, m: 1, mu: 0, x0: -1.5, y0: 0.25, color: '#d97757' });
+      const b = mkBody('box', { name: '右', w: 0.5, h: 0.5, m: 1, mu: 0, x0: 1.5, y0: 0.25, color: '#4a78b0' });
+      return sceneOf([mkGround(0, { smooth: true }), mkWall(-4.5, 0, -4.5, 1.5, { name: '左墙' }), mkWall(4.5, 0, 4.5, 1.5, { name: '右墙' }), a, b,
+        mkSpring(a.id, null, { name: '弹簧1', ax: -4.5, ay: 0.25, k: 20, L0: 2.5 }),
+        mkSpring(a.id, b.id, { name: '耦合弹簧', k: 3, L0: 3 }),
+        mkSpring(b.id, null, { name: '弹簧2', ax: 4.5, ay: 0.25, k: 20, L0: 3 })], {}, { cx: 0, cy: 1, scale: 70 });
+    } },
+  pendulum: { name: '单摆（轻绳）',
+    desc: '摆长 2 m 的单摆从约 30° 处释放。小角度时近似简谐运动，周期与振幅、摆球质量无关。',
+    formulas: [['T ≈ 2π√(L/g)', '小角度近似'], ['T − mg cosθ = mv²/L', '绳中张力']],
+    tips: ['把初始角度加大到 60°，周期会比公式稍长。'],
+    make() {
+      nextId = 1;
+      const b = mkBody('ball', { name: '摆球', m: 0.5, r: 0.15, x0: 1, y0: 2.268 });
+      return sceneOf([b, mkRope(b.id, null, { name: '轻绳', ax: 0, ay: 4, L0: 2, k: 5000 })], {}, { cx: 0, cy: 2.5, scale: 90 });
+    } },
+  rodpendulum: { name: '单摆（轻杆）',
+    desc: '用不可伸缩的轻杆代替轻绳：杆既能拉也能推，因此摆球可以完成整圈运动。',
+    formulas: [['T ≈ 2π√(L/g)', '小角度近似'], ['v<sub>顶</sub> ≥ 0', '轻杆过最高点的条件']],
+    tips: ['给摆球一个较大的初速度（> √(4gL)），它将做完整的圆周运动。'],
+    make() {
+      nextId = 1;
+      const b = mkBody('ball', { name: '摆球', m: 0.5, r: 0.15, x0: 1, y0: 2.268 });
+      return sceneOf([b, mkRod(b.id, null, { name: '轻杆', ax: 0, ay: 4, L0: 2, m: 0 })], {}, { cx: 0, cy: 2.5, scale: 90 });
+    } },
+  pendlen: { name: '摆长与周期',
+    desc: '三个摆长分别为 0.5 m、1 m、2 m 的单摆同时从 15° 释放。摆长变为 4 倍，周期变为 2 倍。',
+    formulas: [['T = 2π√(L/g)', ''], ['T₀.₅ : T₁ : T₂ = 1 : √2 : 2', '']],
+    tips: ['数一数：最短的摆摆动两次时，最长的摆恰好摆动一次。'],
+    make() {
+      nextId = 1;
+      const objs = [], Ls = [0.5, 1, 2], cols = ['#d97757', '#5e8c4a', '#4a78b0'], a = 15 * DEG;
+      Ls.forEach((L, i) => {
+        const px = (i - 1) * 1.4;
+        const b = mkBody('ball', { name: `L=${L}`, m: 0.3, r: 0.1, x0: +(px + L * Math.sin(a)).toFixed(4), y0: +(3 - L * Math.cos(a)).toFixed(4), color: cols[i], collide: false });
+        objs.push(b, mkRod(b.id, null, { name: `杆${i + 1}`, ax: px, ay: 3, L0: L }));
+      });
+      return sceneOf([mkWall(-2.2, 3, 2.2, 3, { name: '横梁' }), ...objs], { showVel: false }, { cx: 0, cy: 2, scale: 120 });
+    } },
+  doublepend: { name: '双摆与混沌',
+    desc: '两节轻杆串联的双摆是最简单的混沌系统之一。两套双摆的初始角度只差 0.01°，十几秒后运动就完全不同。',
+    formulas: [['|δ(t)| ≈ |δ₀| e<sup>λt</sup>', '初值的微小差别指数放大'], ['E = T + V 守恒', '但长期轨迹不可预测']],
+    tips: ['打开轨迹，观察末端摆球画出的复杂曲线。', '在「概览」里能量依然守恒——混沌不等于耗散。'],
+    make() {
+      nextId = 1;
+      const out = [];
+      const mk = (dx, a1, color, tag) => {
+        const L = 1.2, px = dx, py = 3.2;
+        const ax = px + L * Math.sin(a1 * DEG), ay = py - L * Math.cos(a1 * DEG);
+        const bx = ax + L * Math.sin(a1 * DEG), by = ay - L * Math.cos(a1 * DEG);
+        const A = mkBody('ball', { name: `上${tag}`, m: 1, r: 0.09, x0: +ax.toFixed(6), y0: +ay.toFixed(6), color, collide: false, trail: false });
+        const B = mkBody('ball', { name: `下${tag}`, m: 1, r: 0.11, x0: +bx.toFixed(6), y0: +by.toFixed(6), color, collide: false });
+        out.push(A, B, mkRod(A.id, null, { name: `杆${tag}1`, ax: px, ay: py, L0: L }), mkRod(A.id, B.id, { name: `杆${tag}2`, L0: L }));
+      };
+      mk(0, 120, '#d97757', 'A');
+      mk(0, 120.01, '#4a78b0', 'B');
+      return sceneOf(out, { showLabels: false, showVel: false, maxDt: 0.0002, showAnalytic: false }, { cx: 0, cy: 2.4, scale: 110 });
+    } },
+  kepler: { name: '行星轨道与开普勒定律',
+    desc: '固定的恒星（M = 1000）吸引一颗行星和一颗彗星（G = 1）。行星沿近圆轨道运动；彗星轨道偏心率很大，近日点附近速度快、远日点附近速度慢。',
+    formulas: [['F = GMm / r²', '万有引力'], ['T² / a³ = 4π² / GM', '开普勒第三定律'], ['r × v = 常量', '开普勒第二定律：面积速度不变']],
+    tips: ['选中彗星，在「分析」页查看椭圆轨道的偏心率与周期。', '「概览」里的引力势能与动能此消彼长。'],
+    make() {
+      nextId = 1;
+      return sceneOf([
+        mkBody('ball', { name: '恒星', m: 1000, r: 0.35, x0: 0, y0: 0, fixed: true, color: '#c2973e', collide: false }),
+        mkBody('ball', { name: '行星', m: 1, r: 0.12, x0: 4, y0: 0, vx0: 0, vy0: 15.8, color: '#4a78b0', collide: false }),
+        mkBody('ball', { name: '彗星', m: 0.05, r: 0.07, x0: -7.5, y0: 0, vx0: 0, vy0: -6, color: '#8a6bbe', collide: false }),
+      ], { gOn: false, gravity: true, Gc: 1, gravSoft: 0.02, vPx: 6, maxDt: 0.0005 }, { cx: -1.5, cy: 0, scale: 48 });
+    } },
+  cosmic: { name: '宇宙速度',
+    desc: '在离行星中心 1.5R 处，四颗卫星以不同切向速度发射：速度不足落回地面，等于第一宇宙速度做圆周运动，更大时为椭圆，超过 √2 倍则逃逸。',
+    formulas: [['v₁ = √(GM / r)', '环绕速度'], ['v₂ = √(2GM / r) = √2 · v₁', '逃逸速度']],
+    tips: ['本场景 GM = 500、r = 1.5，v₁ ≈ 18.26，v₂ ≈ 25.82。'],
+    make() {
+      nextId = 1;
+      const r = 1.5, v1 = Math.sqrt(500 / r);
+      // 四颗卫星分布在同一圆周的四个方位，沿逆时针切向发射
+      const sats = [[0.8, '#c8553d', 90], [1, '#5e8c4a', 180], [1.2, '#4a78b0', 270], [1.45, '#8a6bbe', 0]].map(([f, c, a]) =>
+        mkBody('ball', { name: `${f}·v₁`, m: 0.01, r: 0.06, x0: +(r * Math.cos(a * DEG)).toFixed(5), y0: +(r * Math.sin(a * DEG)).toFixed(5),
+          vx0: +(-f * v1 * Math.sin(a * DEG)).toFixed(4), vy0: +(f * v1 * Math.cos(a * DEG)).toFixed(4), e: 0, mu: 1, color: c }));
+      return sceneOf([mkBody('ball', { name: '行星', m: 500, r: 1, x0: 0, y0: 0, fixed: true, color: '#6a9bcc', e: 0, mu: 1 }), ...sats],
+        { gOn: false, gravity: true, Gc: 1, gravSoft: 0.01, vPx: 3, maxDt: 0.0005 }, { cx: 0, cy: 0, scale: 40 });
+    } },
+  binary: { name: '双星系统',
+    desc: '质量为 3 和 1 的两颗星在彼此的引力下，绕共同质心以相同角速度做圆周运动。轨道半径与质量成反比，系统总动量为零。',
+    formulas: [['m₁r₁ = m₂r₂', '质心不动'], ['ω² = G(m₁ + m₂) / d³', ''], ['v₁ / v₂ = m₂ / m₁', '']],
+    tips: ['不选中任何物体，「概览」里总动量始终为 0。'],
+    make() {
+      nextId = 1;
+      const G = 20, m1 = 3, m2 = 1, d = 4, w = Math.sqrt(G * (m1 + m2) / d ** 3);
+      const r1 = d * m2 / (m1 + m2), r2 = d * m1 / (m1 + m2);
+      return sceneOf([
+        mkBody('ball', { name: '主星 (3)', m: m1, r: 0.3, x0: -r1, y0: 0, vy0: +(-w * r1).toFixed(5), color: '#d97757', collide: false }),
+        mkBody('ball', { name: '伴星 (1)', m: m2, r: 0.18, x0: r2, y0: 0, vy0: +(w * r2).toFixed(5), color: '#4a78b0', collide: false }),
+      ], { gOn: false, gravity: true, Gc: G, gravSoft: 0.01, vPx: 30 }, { cx: 0, cy: 0, scale: 70 });
+    } },
+  figure8: { name: '三体问题：8 字形轨道',
+    desc: '三个等质量天体在引力作用下沿同一条“8”字形曲线相互追逐（Chenciner–Montgomery 解）。这是三体问题中少见的稳定周期解之一。',
+    formulas: [['m = 1,  G = 1,  T ≈ 6.326', ''], ['Σ mᵢvᵢ = 0', '质心静止']],
+    tips: ['把任意一个天体的初速度稍作改动，轨道很快就会瓦解。'],
+    make() {
+      nextId = 1;
+      const x1 = 0.97000436, y1 = -0.24308753, vx3 = -0.93240737, vy3 = -0.86473146;
+      return sceneOf([
+        mkBody('ball', { name: '天体 1', m: 1, r: 0.045, x0: x1, y0: y1, vx0: -vx3 / 2, vy0: -vy3 / 2, color: '#d97757', collide: false }),
+        mkBody('ball', { name: '天体 2', m: 1, r: 0.045, x0: -x1, y0: -y1, vx0: -vx3 / 2, vy0: -vy3 / 2, color: '#4a78b0', collide: false }),
+        mkBody('ball', { name: '天体 3', m: 1, r: 0.045, x0: 0, y0: 0, vx0: vx3, vy0: vy3, color: '#5e8c4a', collide: false }),
+      ], { gOn: false, gravity: true, Gc: 1, gravSoft: 0, vPx: 60, maxDt: 0.0002, showLabels: false, showAnalytic: false }, { cx: 0, cy: 0, scale: 300 });
+    } },
+  selector: { name: '速度选择器',
+    desc: '正交的电场与磁场中，只有速度 v = E/B 的粒子所受电场力与洛伦兹力平衡，沿直线通过；更快的向一侧偏，更慢的向另一侧偏。',
+    formulas: [['qE = qvB  ⇒  v = E / B', ''], ['与粒子的电量、质量无关', '']],
+    tips: ['把三颗粒子的电荷改成负值，结论仍然成立。'],
+    make() {
+      nextId = 1;
+      return sceneOf([
+        mkE({ name: '电场 E↓', E: 5, ang: -90, x: 0, y: -2, w: 10, h: 4 }), mkB({ name: '磁场 ⊗', B: 1, dir: -1, x: 0, y: -2, w: 10, h: 4 }),
+        mkWall(0, 2, 10, 2, { name: '上极板(−)' }), mkWall(0, -2, 10, -2, { name: '下极板(+)' }),
+        mkBody('particle', { name: 'v=5 (=E/B)', x0: -2, y0: 0, vx0: 5, color: '#5e8c4a' }),
+        mkBody('particle', { name: 'v=8', x0: -2, y0: 0, vx0: 8, color: '#c8553d' }),
+        mkBody('particle', { name: 'v=3', x0: -2, y0: 0, vx0: 3, color: '#4a78b0' })], { gOn: false, showLabels: false });
+    } },
+  edeflect: { name: '电场偏转',
+    desc: '带电粒子垂直射入平行板间的匀强电场，做类平抛运动；离开电场后沿直线打到荧光屏上。示波管就是利用这一原理。',
+    formulas: [['y = qEL² / (2mv₀²)', '出电场时的偏移'], ['tanθ = qEL / (mv₀²)', '偏转角']],
+    tips: ['延长出射速度的反向延长线，它恰好经过板长的中点。'],
+    make() {
+      nextId = 1;
+      return sceneOf([mkE({ name: '偏转电场', E: 1, ang: -90, x: 0, y: -1, w: 4, h: 2 }),
+        mkWall(0, 1, 4, 1, { name: '上极板' }), mkWall(0, -1, 4, -1, { name: '下极板' }), mkWall(8, -3, 8, 3, { name: '荧光屏', e: 0 }),
+        mkBody('particle', { name: '粒子', x0: -1, y0: 0, vx0: 4, m: 0.01, q: 0.01 })], { gOn: false });
+    } },
+  accel: { name: '加速后偏转',
+    desc: '粒子先经电场加速，再进入匀强磁场做匀速圆周运动。加速电压决定速度，速度决定圆周半径。',
+    formulas: [['qU = ½mv²', '电场加速'], ['r = mv / qB', '磁场偏转']],
+    tips: [],
+    make() {
+      nextId = 1;
+      return sceneOf([mkE({ name: '加速电场', E: 2, ang: 0, x: -4, y: -1, w: 3, h: 2 }),
+        mkB({ name: '偏转磁场 ⊗', B: 1, dir: -1, x: 0, y: -1, w: 10, h: 9 }),
+        mkBody('particle', { name: '粒子 q/m=1', m: 1, q: 1, r: 0.1, x0: -3.9, y0: 0 })], { gOn: false });
+    } },
+  bbound: { name: '有界磁场',
+    desc: '粒子从左边界射入匀强磁场，做半径 r = mv/qB 的匀速圆周运动。斜射入的粒子出射时与边界的夹角等于入射角。',
+    formulas: [['r = mv / qB', ''], ['T = 2πm / qB', '与速度无关']],
+    tips: [],
+    make() {
+      nextId = 1;
+      return sceneOf([mkB({ name: '磁场 ⊗', B: 1, dir: -1, x: 0, y: -3, w: 6, h: 9 }),
+        mkBody('particle', { name: '粒子 q/m=1', m: 1, q: 1, r: 0.1, x0: -2, y0: 0, vx0: 2 }),
+        mkBody('particle', { name: '斜射入', m: 1, q: 1, r: 0.1, x0: -2, y0: -2, vx0: 1.732, vy0: 1, color: '#8a6bbe' })], { gOn: false });
+    } },
+  massspec: { name: '质谱仪',
+    desc: '电量相同、质量不同的同位素离子经同一电压加速，进入磁场后做半圆运动并打在底片上。质量越大，半径越大，于是按质量分开。',
+    formulas: [['qU = ½mv²', ''], ['r = (1/B)√(2mU/q)', 'r ∝ √m'], ['m = qB²r² / 2U', '由落点反推质量']],
+    tips: ['这里 U = 4 V、B = 1 T，三种离子的半径为 2.83、4、5.66 m。'],
+    make() {
+      nextId = 1;
+      const ions = [[1, '#d97757'], [2, '#5e8c4a'], [4, '#4a78b0']].map(([m, c], i) =>
+        mkBody('particle', { name: `m = ${m}`, m, q: 1, r: 0.09, x0: 0, y0: -1.95, color: c, collide: false, e: 0, mu: 1 }));
+      return sceneOf([
+        mkE({ name: '加速电场', E: 2, ang: 90, x: -0.5, y: -2, w: 1, h: 2 }),
+        mkB({ name: '偏转磁场 ⊗', B: 1, dir: -1, x: -12.5, y: 0, w: 13.1, h: 6.5 }),
+        mkWall(-12.5, 0, -0.6, 0, { name: '底片', e: 0, smooth: false }),
+        ...ions], { gOn: false, vPx: 25, speed: 2 }, { cx: -5.5, cy: 2, scale: 50 });
+    } },
+  cyclotron: { name: '回旋加速器',
+    desc: '两个 D 形盒中有匀强磁场，缝隙中的电场方向随时间交替反转，频率等于粒子的回旋频率 qB/2πm。粒子每经过一次缝隙就被加速一次，半径逐圈增大。',
+    formulas: [['T = 2πm / qB', '回旋周期与速度无关'], ['E<sub>k,max</sub> = q²B²R² / 2m', '最大动能由 D 形盒半径决定']],
+    tips: ['缝隙电场的方向角写成公式 90 − 90·sign(cos t)，即周期 2π 的方波。', '选中电场，把公式里的 t 改成 1.2*t，频率失配后加速很快失效。'],
+    make() {
+      nextId = 1;
+      const E = mkE({ name: '缝隙电场', E: 6, ang: 0, x: -0.05, y: -6, w: 0.1, h: 12 });
+      E.expr = { ang: '90-90*sign(cos(t))' };
+      return sceneOf([E,
+        mkB({ name: '左 D 形盒', B: 1, dir: -1, x: -6, y: -6, w: 5.95, h: 12 }),
+        mkB({ name: '右 D 形盒', B: 1, dir: -1, x: 0.05, y: -6, w: 5.95, h: 12 }),
+        mkBody('particle', { name: '质子 q/m=1', m: 1, q: 1, r: 0.08, x0: 0, y0: 0, color: '#d97757' })],
+        { gOn: false, speed: 5, showLabels: false, vPx: 12, showAnalytic: false }, { cx: 0, cy: 0, scale: 48 });
+    } },
+  cycloid: { name: '正交电磁场摆线',
+    desc: '静止的带电粒子放在正交的匀强电场与磁场中，轨迹是一条摆线：可看作以 E/B 漂移的参考系中的匀速圆周运动。',
+    formulas: [['v<sub>漂</sub> = E / B', '漂移速度'], ['x = (E/ωB)(ωt − sinωt)', ''], ['y = −(E/ωB)(1 − cosωt)', 'ω = qB/m']],
+    tips: [],
+    make() {
+      nextId = 1;
+      return sceneOf([mkE({ name: '电场 E↓', E: 2, ang: -90, all: true }), mkB({ name: '磁场 ⊗', B: 1, dir: -1, all: true }),
+        mkBody('particle', { name: '粒子 q/m=1', m: 1, q: 1, r: 0.1, x0: 0, y0: 0 })], { gOn: false }, { cx: 8, cy: -2, scale: 45 });
+    } },
+  coulomb: { name: '库仑绕核',
+    desc: '负电荷在固定正电荷的库仑引力作用下做圆周运动，与行星绕日在数学上完全相同（都是平方反比力）。',
+    formulas: [['k|qQ| / r² = mv² / r', ''], ['v = √(k|qQ| / mr)', '']],
+    tips: ['稍微改变初速度，轨道变成椭圆。'],
+    make() {
+      nextId = 1;
+      return sceneOf([
+        mkBody('ball', { name: '+Q 固定', fixed: true, q: 1e-4, m: 1, r: 0.2, x0: 0, y0: 0, color: '#c8553d' }),
+        mkBody('ball', { name: '−q', q: -1e-5, m: 1, r: 0.1, x0: 2, y0: 0, vx0: 0, vy0: 2.12, color: '#4a78b0' }),
+      ], { gOn: false, coulomb: true, showFieldLines: true, showAnalytic: true }, { cx: 0, cy: 0, scale: 80 });
+    } },
+  rutherford: { name: '卢瑟福 α 粒子散射',
+    desc: '一束 α 粒子以相同速度、不同瞄准距离 b 射向固定的原子核。b 越小偏转越大，正对核的粒子几乎被原路弹回。',
+    formulas: [['tan(θ/2) = kqQ / (mv²b)', '散射角'], ['d = 2kqQ / mv²', '正碰时的最近距离']],
+    tips: ['这里 kqQ ≈ 0.9 J·m，v = 2 m/s：b = 0.3 m 对应 θ ≈ 74°。'],
+    make() {
+      nextId = 1;
+      const bs = [0, 0.15, 0.3, 0.6, 1, 1.6, 2.5];
+      const cols = ['#c8553d', '#d97757', '#c2973e', '#5e8c4a', '#3d8f86', '#4a78b0', '#8a6bbe'];
+      const ps = bs.map((b, i) => mkBody('particle', { name: `b=${b}`, m: 1, q: 1e-5, r: 0.06, x0: -6, y0: b, vx0: 2, color: cols[i], collide: false }));
+      return sceneOf([mkPointCharge(0, 0, { name: '原子核', q: 1e-5, color: '#c8553d', softRadius: 0.1 }), ...ps],
+        { gOn: false, showFieldLines: false, showLabels: false, vPx: 25 }, { cx: 0, cy: 0.6, scale: 60 });
+    } },
+  dipole: { name: '电偶极子场线',
+    desc: '一对等量异种电荷的电场线从正电荷出发、终止于负电荷。试探电荷沿着复杂的曲线运动——注意它并不沿电场线运动。',
+    formulas: [['E = Σ kqᵢ r̂ᵢ / rᵢ²', '叠加原理']],
+    tips: ['拖动任一电荷，场线实时重绘。'],
+    make() {
+      nextId = 1;
+      return sceneOf([
+        mkPointCharge(-1, 0, { name: '+q', q: 1e-6, color: '#c8553d' }),
+        mkPointCharge(1, 0, { name: '−q', q: -1e-6, color: '#4a78b0' }),
+        mkBody('particle', { name: '试探电荷', m: 0.01, q: 1e-8, r: 0.06, x0: 0, y0: 1.2, vx0: 0.8 }),
+      ], { gOn: false, showFieldLines: true, coulomb: false }, { cx: 0, cy: 0, scale: 80 });
+    } },
+  samecharge: { name: '等量同种电荷',
+    desc: '两个等量正电荷的电场线互相“排斥”，两电荷连线中点的场强为零；中垂线上的试探电荷在中点两侧往复运动。',
+    formulas: [['E中点 = 0', ''], ['中垂线上 E 先增后减', '']],
+    tips: ['把试探电荷改为负电荷，并放在中垂线上，观察它在中点附近振动。'],
+    make() {
+      nextId = 1;
+      return sceneOf([
+        mkPointCharge(-1.2, 0, { name: '+q₁', q: 1e-6, color: '#c8553d' }),
+        mkPointCharge(1.2, 0, { name: '+q₂', q: 1e-6, color: '#c8553d' }),
+        mkBody('particle', { name: '试探电荷 (−)', m: 0.01, q: -1e-8, r: 0.06, x0: 0, y0: 1.6, color: '#4a78b0' }),
+      ], { gOn: false, showFieldLines: true, coulomb: false }, { cx: 0, cy: 0, scale: 80 });
+    } },
 };
 function loadPreset(key) {
   const p = PRESETS[key]; if (!p) return;
   pushUndo();
   const sc = p.make(); sc.objects.forEach(o => { if (isBody(o)) o.st = null; });
+  sc.info = { key };
+  propsTab = 'overview';
   loadScene(sc, false);
-  if (!sc.view) fitView();
-  toast(`已载入预设：${p.name}，按 ▶ 播放`);
+  if (!sc.view || W < 640) fitView();
+  toast(`已载入「${p.name}」· 按空格播放`);
 }
 
 /* =====================================================================
  *  保存 / 载入
  * ===================================================================== */
 function serialize() {
-  return JSON.stringify({ app: 'physim', version: 1, settings: scene.settings, view: scene.view,
+  return JSON.stringify({ app: 'physim', version: 1, settings: scene.settings, view: scene.view, info: scene.info || null,
     objects: scene.objects.map(o => {
       const c = Object.assign({}, o);
       delete c.st; delete c._exprErr; delete c._hold; delete c._Ferr;
@@ -3198,6 +3821,7 @@ function loadScene(data, keepView) {
       return c;
     }),
     view: keepView ? oldView : Object.assign({ cx: 0, cy: 2, scale: 60 }, data.view || {}),
+    info: data.info && PRESETS[data.info.key] ? { key: data.info.key } : null,
   };
   nextId = scene.objects.reduce((m, o) => Math.max(m, o.id || 0), 0) + 1;
   if (selId != null && !byId(selId)) selId = null;
@@ -3279,6 +3903,40 @@ function initToolbar() {
   });
   moreMenu?.addEventListener('click', e => e.stopPropagation());
 
+  // display popover
+  const viewBtn = $('#bView'), viewPop = $('#viewFlags');
+  viewBtn?.addEventListener('click', e => {
+    e.preventDefault(); e.stopPropagation();
+    moreMenu?.classList.remove('open');
+    const open = !viewPop.classList.contains('show');
+    viewPop.classList.toggle('show', open);
+    viewBtn.classList.toggle('active', open);
+  });
+  moreBtn?.addEventListener('click', () => { viewPop?.classList.remove('show'); viewBtn?.classList.remove('active'); });
+  document.addEventListener('click', e => {
+    if (!viewPop?.classList.contains('show')) return;
+    if (viewPop.contains(e.target) || viewBtn?.contains(e.target) || e.target.closest?.('#mobile-dock')) return;
+    if (window.matchMedia('(max-width: 820px)').matches) return; // mobile sheet closes via scrim
+    viewPop.classList.remove('show'); viewBtn?.classList.remove('active');
+  });
+
+  // zoom controls
+  const zoomBy = f => {
+    const v = scene.view; v.scale = Math.min(1e6, Math.max(0.5, v.scale * f));
+    markFieldsDirty(); draw(); markDirty();
+  };
+  $('#bZoomIn')?.addEventListener('click', () => zoomBy(1.25));
+  $('#bZoomOut')?.addEventListener('click', () => zoomBy(0.8));
+  $('#bFit')?.addEventListener('click', () => fitView());
+  $('#bShot')?.addEventListener('click', () => {
+    moreMenu?.classList.remove('open');
+    try {
+      const a = el('a', { href: cv.toDataURL('image/png'), download: `物理实验_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.png` });
+      document.body.appendChild(a); a.click(); a.remove();
+      toast('已保存截图');
+    } catch (err) { toast('截图失败：' + err.message); }
+  });
+
   $('#bUndo').onclick = undo;
   $('#bSave').onclick = () => {
     const blob = new Blob([serialize()], { type: 'application/json' });
@@ -3306,7 +3964,7 @@ function initToolbar() {
   $('#bTheme').onclick = () => {
     document.body.classList.toggle('dark');
     try { localStorage.setItem('physim.theme', document.body.classList.contains('dark') ? 'dark' : 'light'); } catch (e) {}
-    readColors(); draw(); drawChart();
+    syncThemeMeta(); readColors(); markFieldsDirty(); draw(); drawChart(); updateEnergyReadout(true);
     moreMenu?.classList.remove('open');
   };
   $('#bHelp').onclick = () => { $('#help').classList.add('show'); moreMenu?.classList.remove('open'); };
@@ -3475,7 +4133,7 @@ function openContextMenu(clientX, clientY, target, where = 'canvas') {
       menu.appendChild(ctxItem('电荷取反', () => {
         pushUndo();
         target.q = -target.q;
-        target.color = target.q >= 0 ? '#e5484d' : '#2f6fed';
+        target.color = target.q >= 0 ? '#c8553d' : '#4a78b0';
         liveEdit();
         buildPanel();
       }));
@@ -3487,7 +4145,7 @@ function openContextMenu(clientX, clientY, target, where = 'canvas') {
     menu.appendChild(ctxItem('添加小球', () => setTool('ball')));
     menu.appendChild(ctxItem('添加弹簧', () => setTool('spring')));
     menu.appendChild(ctxItem('添加轻绳', () => setTool('rope')));
-    menu.appendChild(ctxItem('添加青杆', () => setTool('rod')));
+    menu.appendChild(ctxItem('添加轻杆', () => setTool('rod')));
   } else {
     hideContextMenu();
     return;
@@ -3510,8 +4168,16 @@ function placeContextMenu(menu, clientX, clientY) {
 /* =====================================================================
  *  启动（仅由 main.ts 调用一次；禁止在模块底再自动 boot）
  * ===================================================================== */
+function syncThemeMeta() {
+  const m = document.querySelector('meta[name="theme-color"]');
+  if (m) m.setAttribute('content', document.body.classList.contains('dark') ? '#252422' : '#faf9f5');
+}
 function bootOnce() {
-  try { if (localStorage.getItem('physim.theme') === 'dark') document.body.classList.add('dark'); } catch (e) { }
+  try {
+    const th = localStorage.getItem('physim.theme');
+    if (th === 'dark' || (!th && window.matchMedia?.('(prefers-color-scheme: dark)').matches)) document.body.classList.add('dark');
+  } catch (e) { }
+  syncThemeMeta();
   readColors(); initToolbar();
   new ResizeObserver(resize).observe($('#stage'));
   resize();
@@ -3520,14 +4186,16 @@ function bootOnce() {
     const s = localStorage.getItem(STORE_KEY);
     if (s) { loadScene(JSON.parse(s), false); loaded = true; }
   } catch (e) { loaded = false; }
-  if (!loaded) { const sc = PRESETS.welcome.make(); loadScene(sc, false); }
+  if (!loaded) { const sc = PRESETS.welcome.make(); sc.info = { key: 'welcome' }; loadScene(sc, false); }
   setTool('select');
   syncPanelToggleButtons();
   ensureDesmosKeypadDock(document.getElementById('right'));
   syncDesmosKeypadForAnalysis(false);
   toast(loaded ? '已恢复上次场景' : '选中物体后拖动绿色箭头设置初速度，空格播放');
+  try { if (!localStorage.getItem('physim.seenHelp')) { $('#help').classList.add('show'); localStorage.setItem('physim.seenHelp', '1'); } } catch (e) { }
   window.__physim = {
     scene: () => scene, sim, advance, loadPreset, select, resetSim, togglePlay, fieldSys,
+    presetKeys: () => Object.keys(PRESETS), energy: systemEnergy,
     async enableRapier() {
       contactWorld = await createRapierContactWorld(0);
       scene.settings.contactBackend = 'rapier2d';

@@ -3,15 +3,36 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>物理模拟器</title>
+  <meta name="theme-color" content="#faf9f5" />
+  <title>物理实验室</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
 </head>
 <body>
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <defs>
+      <symbol id="i-play" viewBox="0 0 16 16"><path d="M4 2.8v10.4c0 .6.7 1 1.2.6l8-5.2c.5-.3.5-1 0-1.3l-8-5.2C4.7 1.8 4 2.2 4 2.8z" fill="currentColor"/></symbol>
+      <symbol id="i-pause" viewBox="0 0 16 16"><rect x="3.5" y="2.5" width="3.2" height="11" rx="1" fill="currentColor"/><rect x="9.3" y="2.5" width="3.2" height="11" rx="1" fill="currentColor"/></symbol>
+      <symbol id="i-objects" viewBox="0 0 20 20"><path d="M4 5.5h12M4 10h12M4 14.5h8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"/></symbol>
+      <symbol id="i-add" viewBox="0 0 20 20"><path d="M10 4v12M4 10h12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"/></symbol>
+      <symbol id="i-stage" viewBox="0 0 20 20"><rect x="3" y="4" width="14" height="12" rx="2" stroke="currentColor" stroke-width="1.5" fill="none"/><circle cx="8" cy="11" r="2" fill="currentColor"/><path d="M10.5 9.5l3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></symbol>
+      <symbol id="i-view" viewBox="0 0 20 20"><path d="M2.5 10s2.8-5 7.5-5 7.5 5 7.5 5-2.8 5-7.5 5-7.5-5-7.5-5z" stroke="currentColor" stroke-width="1.5" fill="none"/><circle cx="10" cy="10" r="2.2" stroke="currentColor" stroke-width="1.5" fill="none"/></symbol>
+      <symbol id="i-inspect" viewBox="0 0 20 20"><path d="M4 6h7M4 10h12M4 14h9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"/><circle cx="14" cy="6" r="1.8" stroke="currentColor" stroke-width="1.5" fill="none"/></symbol>
+    </defs>
+  </svg>
+
   <div id="app">
     <header id="topbar">
-      <div class="brand">物理<em>模拟器</em></div>
+      <div class="brand">
+        <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="12" cy="12" r="2.6" fill="currentColor"/>
+          <ellipse cx="12" cy="12" rx="10" ry="4.2" fill="none" stroke="currentColor" stroke-width="1.4"/>
+          <ellipse cx="12" cy="12" rx="10" ry="4.2" fill="none" stroke="currentColor" stroke-width="1.4" transform="rotate(60 12 12)"/>
+          <ellipse cx="12" cy="12" rx="10" ry="4.2" fill="none" stroke="currentColor" stroke-width="1.4" transform="rotate(120 12 12)"/>
+        </svg>
+        <span>物理实验室 <em>Physics Lab</em></span>
+      </div>
 
-      <div class="top-cluster phone-hide">
+      <div class="top-cluster phone-hide no-rule">
         <div class="seg">
           <button type="button" data-tool="select" class="active" title="选择 (V)">选择</button>
           <button type="button" data-tool="pan" title="平移 (H)">平移</button>
@@ -19,7 +40,7 @@
       </div>
 
       <div class="top-cluster transport">
-        <button type="button" id="bPlay" class="primary" title="播放/暂停 (空格)">播放</button>
+        <button type="button" id="bPlay" class="primary" title="播放/暂停 (空格)"><svg class="ic"><use href="#i-play"/></svg>播放</button>
         <button type="button" id="bStep" class="ghost" title="单步 (.)">单步</button>
         <button type="button" id="bReset" class="ghost" title="重置 (R)">重置</button>
         <select id="selSpeed" title="速度倍率" aria-label="速度倍率">
@@ -34,33 +55,36 @@
         </select>
       </div>
 
-      <div class="top-cluster hide-narrow desktop-only">
-        <label class="chk" title="重力"><input type="checkbox" id="chkG" checked>重力</label>
-        <input type="number" id="numG" value="9.8" step="0.1" title="g" aria-label="重力加速度" style="width:52px">
-      </div>
-
-      <div class="top-cluster hide-narrow desktop-only" id="viewFlags">
-        <label class="chk"><input type="checkbox" id="chkGrid" checked>网格</label>
-        <label class="chk"><input type="checkbox" id="chkTrail" checked>轨迹</label>
-        <label class="chk"><input type="checkbox" id="chkVel" checked>速度</label>
-        <label class="chk"><input type="checkbox" id="chkForce">受力</label>
-        <label class="chk" title="解析轨迹"><input type="checkbox" id="chkAnalytic" checked>解析</label>
-        <label class="chk" title="电场线"><input type="checkbox" id="chkFieldLines" checked>场线</label>
-      </div>
-
       <div class="top-spacer"></div>
 
-      <div class="top-cluster" style="border-right:none;padding-right:0">
-        <button type="button" id="bUndo" class="ghost" title="撤销">撤销</button>
+      <div class="top-cluster no-rule">
+        <button type="button" id="bUndo" class="ghost" title="撤销 (Ctrl+Z)">撤销</button>
+        <div class="menu-wrap">
+          <button type="button" id="bView" class="ghost" title="显示选项" aria-haspopup="true">显示</button>
+          <div id="viewFlags" role="menu">
+            <div class="pop-title">全局</div>
+            <label class="chk" title="重力"><input type="checkbox" id="chkG" checked>重力</label>
+            <div class="pop-row"><span>g (m/s²)</span><input type="number" id="numG" value="9.8" step="0.1" aria-label="重力加速度"></div>
+            <div class="pop-sep"></div>
+            <div class="pop-title">画布</div>
+            <label class="chk"><input type="checkbox" id="chkGrid" checked>网格</label>
+            <label class="chk"><input type="checkbox" id="chkTrail" checked>轨迹</label>
+            <label class="chk"><input type="checkbox" id="chkVel" checked>速度矢量</label>
+            <label class="chk"><input type="checkbox" id="chkForce">受力分析</label>
+            <label class="chk" title="解析轨迹"><input type="checkbox" id="chkAnalytic" checked>解析轨迹</label>
+            <label class="chk" title="电场线"><input type="checkbox" id="chkFieldLines" checked>电场线</label>
+          </div>
+        </div>
         <div class="menu-wrap">
           <button type="button" id="bMore" class="ghost" title="更多">更多</button>
           <div id="moreMenu" class="menu" role="menu">
             <button type="button" id="bSave">导出场景</button>
             <button type="button" id="bLoad">导入场景</button>
+            <button type="button" id="bShot">保存截图</button>
             <div class="sep"></div>
             <button type="button" id="bClear" class="danger">清空场景</button>
             <div class="sep"></div>
-            <button type="button" id="bTheme">切换主题</button>
+            <button type="button" id="bTheme">切换深色 / 浅色</button>
             <button type="button" id="bHelp">使用说明</button>
           </div>
         </div>
@@ -73,15 +97,15 @@
     <div id="main">
       <aside id="left">
         <div class="side-head">
-          <div class="side-title">资源</div>
+          <div class="side-title">资源库</div>
           <div class="search-wrap">
-            <input type="search" id="qLeft" placeholder="搜索对象、预设、工具…" autocomplete="off">
+            <input type="search" id="qLeft" placeholder="搜索对象、实验、工具…  /" autocomplete="off">
           </div>
         </div>
         <div class="tabs" id="leftTabs" role="tablist">
           <button type="button" data-left-tab="objects" class="active">对象</button>
           <button type="button" data-left-tab="add">添加</button>
-          <button type="button" data-left-tab="presets">预设</button>
+          <button type="button" data-left-tab="presets">实验</button>
         </div>
         <div id="leftBody" class="side-body"></div>
       </aside>
@@ -91,6 +115,11 @@
         <div id="toast"></div>
         <div id="toolhint"></div>
         <div id="tbadge"></div>
+        <div id="zoomCtl">
+          <button type="button" id="bZoomIn" title="放大">+</button>
+          <button type="button" id="bZoomOut" title="缩小">−</button>
+          <button type="button" id="bFit" title="适配视图 (F)" style="font-size:13px">⤢</button>
+        </div>
       </div>
 
       <aside id="right">
@@ -101,29 +130,35 @@
     <div id="status"></div>
 
     <nav id="mobile-dock" class="mobile-only" aria-label="移动导航">
-      <button type="button" data-dock="objects"><span class="dock-ic">☰</span>对象</button>
-      <button type="button" data-dock="add"><span class="dock-ic">＋</span>添加</button>
-      <button type="button" data-dock="stage" class="active"><span class="dock-ic">◇</span>画布</button>
-      <button type="button" data-dock="view"><span class="dock-ic">☷</span>显示</button>
-      <button type="button" data-dock="inspect"><span class="dock-ic">▣</span>检视</button>
+      <button type="button" data-dock="objects"><svg class="dock-ic"><use href="#i-objects"/></svg>对象</button>
+      <button type="button" data-dock="add"><svg class="dock-ic"><use href="#i-add"/></svg>添加</button>
+      <button type="button" data-dock="stage" class="active"><svg class="dock-ic"><use href="#i-stage"/></svg>画布</button>
+      <button type="button" data-dock="view"><svg class="dock-ic"><use href="#i-view"/></svg>显示</button>
+      <button type="button" data-dock="inspect"><svg class="dock-ic"><use href="#i-inspect"/></svg>检视</button>
     </nav>
   </div>
 
   <div id="panelScrim" class="panel-scrim"></div>
 
   <div id="help"><div class="box">
-    <h3>使用说明</h3>
-    <ul>
-      <li><b>添加</b>：左侧「添加」分类放置质点、表面、场与约束（弹簧 / 轻绳 / 青杆）；也可在移动端底部打开添加。画布与对象列表支持右键菜单。</li>
-      <li><b>初速度</b>：选中物体后拖动绿色箭头，或在右侧「初态」中输入。</li>
-      <li><b>外力</b>：右侧「受力」标签页设置恒定 / 表达式 / 指向目标；勾选显示受力后可拖紫色箭头末端。</li>
-      <li><b>运动分析</b>：右侧「分析」页给出 LaTeX 参数方程（MathQuill）；检视栏底部固定 Desmos 1:1 数学键盘，可切换 ABC / functions。</li>
-      <li><b>搜索</b>：左侧搜索框可过滤对象、预设与添加工具。</li>
-      <li><b>快捷键</b>：<kbd>空格</kbd> 播放，<kbd>.</kbd> 单步，<kbd>R</kbd> 重置，<kbd>Delete</kbd> 删除，<kbd>/</kbd> 聚焦搜索。</li>
-      <li>单位：m、kg、C、V/m、T。y 轴向上为正。</li>
-    </ul>
-    <div style="text-align:right;margin-top:12px">
-      <button type="button" class="primary" id="bHelpClose">关闭</button>
+    <div class="h-kicker">使用说明</div>
+    <h3>在浏览器里搭一个物理实验</h3>
+    <p class="h-lead">放置物体、场与约束，设定初始条件后按下播放。模拟器用辛积分器推进运动，并在右侧给出受力、能量与解析参数方程，便于和课本结论对照。</p>
+    <div class="h-grid">
+      <div class="h-card"><b>搭建</b><p>左侧「添加」放置小球、带电粒子、滑块、地面、斜面、匀强电/磁场、点电荷，以及弹簧、轻绳、轻杆。</p></div>
+      <div class="h-card"><b>实验库</b><p>「实验」收录 30 余个经典模型：抛体、碰撞、单摆与双摆、行星轨道、三体、质谱仪、回旋加速器等，附原理卡片。</p></div>
+      <div class="h-card"><b>初态与外力</b><p>选中物体后拖动绿色箭头设初速度；「受力」页可设恒力、随时间变化的表达式或指向目标的力。</p></div>
+      <div class="h-card"><b>公式联动</b><p>任何数值旁的 <i>ƒ</i> 都能改写成公式，例如 <code>sin(t)</code> 或 <code>小球2.vx</code>，参数之间可以互相引用。</p></div>
+      <div class="h-card"><b>分析</b><p>「分析」页识别运动类型并给出参数方程；「图像」页绘制 v–t、相图、能量曲线等。</p></div>
+      <div class="h-card"><b>能量守恒</b><p>不选中任何物体时，检视栏显示系统的动能、各类势能与总能量，可以直观看到守恒或耗散。</p></div>
+    </div>
+    <div class="h-keys">
+      <span><kbd>空格</kbd> 播放 / 暂停</span><span><kbd>.</kbd> 单步</span><span><kbd>R</kbd> 重置</span>
+      <span><kbd>F</kbd> 适配视图</span><span><kbd>Delete</kbd> 删除</span><span><kbd>Ctrl</kbd>+<kbd>Z</kbd> 撤销</span><span><kbd>/</kbd> 搜索</span>
+    </div>
+    <div class="h-foot">
+      <span class="hint">单位：m、kg、s、C、V/m、T；y 轴向上为正，角度从 +x 逆时针计。</span>
+      <button type="button" class="primary" id="bHelpClose">开始使用</button>
     </div>
   </div></div>
 
