@@ -39,7 +39,9 @@ function defaultSettings() {
   return { gOn: true, g: 9.8, drag: 0, coulomb: false, kc: K_COULOMB, maxDt: 0.001, vPx: 20, FPx: 12, snap: true, snapStep: 0.1,
     showLabels: true, showGrid: true, showTrail: true, showVel: true, showForce: false, showAnalytic: true, showFieldLines: true, coulombLaw: 'coulomb3d', contactBackend: 'native', speed: 1,
     /* 物体间万有引力（教学用缩放常量） */
-    gravity: false, Gc: 1, gravSoft: 0.05 };
+    gravity: false, Gc: 1, gravSoft: 0.05,
+    /* 轨迹显示 */
+    showPredict: true, predictT: 3, strobe: 0.1 };
 }
 let scene = { settings: defaultSettings(), objects: [], view: { cx: 0, cy: 2, scale: 60 } };
 
@@ -74,6 +76,99 @@ function mkSpring(a, b, p = {}) { return Object.assign({ id: nextId++, kind: 'sp
 function mkRope(a, b, p = {}) { return Object.assign({ id: nextId++, kind: 'rope', name: '轻绳', a, b, ax: 0, ay: 0, k: 5000, L0: 1, m: 0 }, p); }
 /** 轻杆：不可伸缩的刚性杆（长度约束），质量默认 0 */
 function mkRod(a, b, p = {}) { return Object.assign({ id: nextId++, kind: 'rod', name: '轻杆', a, b, ax: 0, ay: 0, L0: 1, m: 0 }, p); }
+/* =====================================================================
+ *  属性规范（Schema）：每类元素的每个属性只在这里定义一次
+ *  —— 名称、物理符号、单位、合法范围、跨字段约束、说明。
+ *  检视栏、输入校验、导入修复都由它生成，保证全局一致。
+ * ===================================================================== */
+const num = (key, label, sym, unit, o = {}) => Object.assign({ type: 'num', key, label, sym, unit }, o);
+const bool = (key, label, o = {}) => Object.assign({ type: 'bool', key, label }, o);
+const BODY_COMMON = [
+  num('m', '质量', 'm', 'kg', { group: '物理量', min: 0, minEx: true, def: 1, title: '必须为正。电子 9.11e-31 kg' }),
+  num('q', '电荷量', 'q', 'C', { group: '物理量', def: 0, title: '可正可负。元电荷 1.6e-19 C' }),
+  num('mu', '动摩擦因数', 'μ', '', { group: '接触', min: 0, def: 0, step: 0.05, title: '与非光滑表面接触时生效：f = μN' }),
+  num('mus', '静摩擦因数', 'μₛ', '', { group: '接触', min: 0, def: null, step: 0.05,
+    title: '最大静摩擦 fₘ = μₛN。留空等于 μ', check: (o, v) => v < (o.mu || 0) - 1e-12 ? `不能小于动摩擦因数 μ = ${o.mu}` : '' }),
+  num('e', '恢复系数', 'e', '', { group: '接触', min: 0, max: 1, def: 0.6, step: 0.1, title: '碰后与碰前法向相对速度之比：1 弹性，0 完全非弹性' }),
+  bool('fixed', '固定（不参与运动）', { group: '行为', init: true }),
+  bool('collide', '参与物体间碰撞', { group: '行为' }),
+  bool('trail', '记录轨迹', { group: '行为' }),
+];
+const SURF_COMMON = [
+  bool('smooth', '光滑（无摩擦）', { group: '接触' }),
+  num('e', '恢复系数', 'e', '', { group: '接触', min: 0, max: 1, def: 0.6, step: 0.1, title: '与物体碰撞时取两者中较小的 e' }),
+];
+const REGION = [
+  bool('all', '充满全空间', { group: '区域', rebuild: true }),
+  num('x', '左下角', 'x', 'm', { group: '区域', when: o => !o.all, def: 0 }),
+  num('y', '左下角', 'y', 'm', { group: '区域', when: o => !o.all, def: 0 }),
+  num('w', '宽度', 'w', 'm', { group: '区域', when: o => !o.all, min: 0, minEx: true, def: 4 }),
+  num('h', '高度', 'h', 'm', { group: '区域', when: o => !o.all, min: 0, minEx: true, def: 4 }),
+];
+const SCHEMA = {
+  ball: [...BODY_COMMON.slice(0, 2), num('r', '半径', 'r', 'm', { group: '几何', min: 0, minEx: true, def: 0.25, title: '碰撞与接触用的半径；质点模型下不影响受力' }), ...BODY_COMMON.slice(2)],
+  particle: [...BODY_COMMON.slice(0, 2), num('r', '半径', 'r', 'm', { group: '几何', min: 0, minEx: true, def: 0.08 }), ...BODY_COMMON.slice(2)],
+  box: [...BODY_COMMON.slice(0, 2),
+    num('w', '宽', 'w', 'm', { group: '几何', min: 0, minEx: true, def: 0.6 }),
+    num('h', '高', 'h', 'm', { group: '几何', min: 0, minEx: true, def: 0.4 }),
+    num('ang0', '初始倾角', 'θ₀', '°', { group: '几何', def: 0, init: true, title: '滑块按平动模型处理，不转动；落在斜面上时自动贴合斜面' }),
+    ...BODY_COMMON.slice(2)],
+  ground: [num('y', '高度', 'y', 'm', { group: '几何', def: 0 }), ...SURF_COMMON],
+  wall: [
+    num('x1', '起点', 'x₁', 'm', { group: '几何', def: 0 }), num('y1', '起点', 'y₁', 'm', { group: '几何', def: 0 }),
+    num('x2', '终点', 'x₂', 'm', { group: '几何', def: 0 }), num('y2', '终点', 'y₂', 'm', { group: '几何', def: 2 }),
+    ...SURF_COMMON],
+  incline: [
+    num('x', '底角顶点', 'x', 'm', { group: '几何', def: 0 }), num('y', '底角顶点', 'y', 'm', { group: '几何', def: 0 }),
+    num('L', '底边长', 'L', 'm', { group: '几何', min: 0, minEx: true, def: 4 }),
+    num('ang', '倾角', 'θ', '°', { group: '几何', min: 0, minEx: true, max: 85, def: 37, step: 1 }),
+    ...SURF_COMMON],
+  efield: [
+    num('E', '场强', 'E', 'V/m', { group: '场', min: 0, def: 1 }),
+    num('ang', '方向角', 'φ', '°', { group: '场', def: -90, title: '从 +x 轴逆时针量起；−90° 竖直向下' }),
+    ...REGION],
+  bfield: [num('B', '磁感应强度', 'B', 'T', { group: '场', min: 0, def: 1 }), ...REGION],
+  pointCharge: [
+    num('q', '电荷量', 'Q', 'C', { group: '源', def: 1e-6 }),
+    num('x', '位置', 'x', 'm', { group: '源', def: 0 }), num('y', '位置', 'y', 'm', { group: '源', def: 0 }),
+    num('softRadius', '软化半径', 'ε', 'm', { group: '源', min: 0, minEx: true, def: 0.08, title: 'E = kQ·r / (r² + ε²)^{3/2}，避免 r→0 时发散' }),
+  ],
+  spring: [
+    num('L0', '原长', 'L₀', 'm', { group: '参数', min: 0, def: 1 }),
+    num('k', '劲度系数', 'k', 'N/m', { group: '参数', min: 0, minEx: true, def: 20 }),
+    num('m', '自身质量', 'm', 'kg', { group: '参数', min: 0, def: 0, title: '自重平分到两端；通常取 0（轻弹簧）' }),
+  ],
+  rope: [
+    num('L0', '绳长', 'L', 'm', { group: '参数', min: 0, minEx: true, def: 1 }),
+    num('k', '张力刚度', 'k', 'N/m', { group: '参数', min: 0, minEx: true, def: 5000, title: '轻绳按“只拉不压的极硬弹簧”建模；刚度越大越接近不可伸长' }),
+    num('m', '自身质量', 'm', 'kg', { group: '参数', min: 0, def: 0 }),
+  ],
+  rod: [
+    num('L0', '杆长', 'L', 'm', { group: '参数', min: 0, minEx: true, def: 1, title: '刚性约束（SHAKE），长度严格不变，可拉可压' }),
+    num('m', '自身质量', 'm', 'kg', { group: '参数', min: 0, def: 0 }),
+  ],
+};
+const LINK_ANCHOR = [num('ax', '固定点', 'x', 'm', { group: '固定点', def: 0 }), num('ay', '固定点', 'y', 'm', { group: '固定点', def: 0 })];
+function schemaOf(o) {
+  const list = SCHEMA[o.kind] || [];
+  return isLink(o) && o.b == null ? [...list, ...LINK_ANCHOR] : list;
+}
+/** 把导入/旧版数据修复到合法范围：缺失或非法的数值回到默认值，越界的夹到边界 */
+function sanitizeBySchema(o) {
+  const fixes = [];
+  for (const d of schemaOf(o)) {
+    if (d.type === 'bool') { if (o[d.key] != null) o[d.key] = !!o[d.key]; continue; }
+    let v = o[d.key];
+    if (v == null) { if (d.def != null) o[d.key] = d.def; continue; }
+    v = Number(v);
+    if (!Number.isFinite(v)) { o[d.key] = d.def ?? 0; fixes.push(d.label); continue; }
+    if (d.min != null && (d.minEx ? v <= d.min : v < d.min)) { o[d.key] = d.def != null && d.def > d.min ? d.def : d.min; fixes.push(d.label); continue; }
+    if (d.max != null && v > d.max) { o[d.key] = d.max; fixes.push(d.label); continue; }
+    o[d.key] = v;
+  }
+  return fixes;
+}
+
 
 /* ---------------- 仿真状态 ---------------- */
 const sim = { t: 0, running: false, accum: 0,
@@ -93,12 +188,12 @@ let fieldsDirty = true;
 
 
 function initState(b) {
-  b.st = { x: b.x0, y: b.y0, vx: b.vx0, vy: b.vy0, ang: b.ang0 * DEG, trail: [[b.x0, b.y0]], hist: [], forces: [],
+  b.st = { x: b.x0, y: b.y0, vx: b.vx0, vy: b.vy0, ang: b.ang0 * DEG, trail: [[b.x0, b.y0, sim.t, b.vx0, b.vy0]], hist: [], forces: [],
     contactN: [0, 0], contactF: [0, 0], cN: 0, ax: 0, ay: 0, pvx: b.vx0, pvy: b.vy0 };
   pushHist(b);
 }
 function resetSim(msg) {
-  sim.t = 0; sim.running = false;
+  sim.t = 0; sim.running = false; sim.accum = 0;
   resolveExprs();
   bodies().forEach(initState);
   resolveExprs();
@@ -703,27 +798,58 @@ function substep(h, segs) {
   // 轻杆：刚性长度约束（SHAKE，在接触前满足约束）
   shakeRods(h, true);
   // 与静止表面接触
-  for (const b of movers) {
-    if (b._grab) continue;
-    for (const sg of segs) contactSeg(b, sg, h);
-  }
-  // 物体间碰撞
+  // 接触：顺序冲量迭代（Gauss–Seidel）。叠放、挤压等多个接触同时存在时，单遍无法同时满足，需迭代收敛
   const bl = bodies().filter(b => b.collide);
-  for (let i = 0; i < bl.length; i++) for (let j = i + 1; j < bl.length; j++) collidePair(bl[i], bl[j]);
+  const iters = bl.length > 1 ? CONTACT_ITERS : 1;
+  for (let it = 0; it < iters; it++) {
+    for (const b of movers) {
+      if (b._grab) continue;
+      for (const sg of segs) contactSeg(b, sg, h);
+    }
+    for (let i = 0; i < bl.length; i++) for (let j = i + 1; j < bl.length; j++) collidePair(bl[i], bl[j], h);
+  }
   // 接触可能破坏杆长，再做一次 SHAKE
   shakeRods(h, false);
   reapplyHolds();
-  // 轨迹
-  for (const b of movers) {
-    const tr = b.st.trail, last = tr[tr.length - 1];
-    const minD = 2 / scene.view.scale;
-    if (!last || Math.abs(last[0] - b.st.x) + Math.abs(last[1] - b.st.y) > minD) {
-      tr.push([b.st.x, b.st.y]);
-      if (tr.length > 8000) { const n = tr.length - 8000; tr.splice(0, n); b.st.trailDrop = (b.st.trailDrop || 0) + n; }
+  // 轨迹：按模拟时间等间隔采样（与缩放无关），速度方向突变（碰撞）时额外采样
+  if (!sim.predicting) {
+    const tn = sim.t + h;
+    for (const b of movers) {
+      const tr = b.st.trail;
+      if (sampleInto(tr, b.st, tn) && tr.length > TRAIL_MAX) { const n = tr.length - TRAIL_MAX; tr.splice(0, n); b.st.trailDrop = (b.st.trailDrop || 0) + n; }
     }
   }
 }
+/* ---------------- 轨迹采样 ---------------- */
+const TRAIL_DT = 1 / 240;      // 采样间隔（模拟时间）
+const TRAIL_MAX = 24000;       // 每个物体最多保留的样本数（100 s @ 240 Hz）
+const KINK_COS = Math.cos(10 * DEG);
+/** 样本格式：[x, y, t, vx, vy] */
+function trailSample(st, t) { return [st.x, st.y, t, st.vx, st.vy]; }
+function resetTrail(b) { if (b.st) b.st.trail = [trailSample(b.st, sim.t)]; }
+function sampleInto(arr, st, t) {
+  const last = arr[arr.length - 1];
+  if (!last) { arr.push(trailSample(st, t)); return true; }
+  let take = t - last[2] >= TRAIL_DT - 1e-12;
+  if (!take) {
+    const v1 = Math.hypot(last[3], last[4]), v2 = Math.hypot(st.vx, st.vy);
+    if (v1 > 1e-6 && v2 > 1e-6 && (last[3] * st.vx + last[4] * st.vy) / (v1 * v2) < KINK_COS) take = true;
+    else if (Math.abs(v2 - v1) > 0.2 * Math.max(v1, v2, 1e-6) && Math.abs(v2 - v1) > 0.05) take = true;
+  }
+  if (take) arr.push(trailSample(st, t));
+  return take;
+}
+/** 在样本序列上按时间插值：返回 [x, y, t, vx, vy] 或 null */
+function curveAt(arr, t) {
+  if (!arr || !arr.length || t < arr[0][2] - 1e-9 || t > arr[arr.length - 1][2] + 1e-9) return null;
+  let lo = 0, hi = arr.length - 1;
+  while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (arr[mid][2] <= t) lo = mid; else hi = mid; }
+  const a = arr[lo], b = arr[hi], span = b[2] - a[2];
+  const u = span > 1e-12 ? Math.min(1, Math.max(0, (t - a[2]) / span)) : 0;
+  return [a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u, t, a[3] + (b[3] - a[3]) * u, a[4] + (b[4] - a[4]) * u];
+}
 const REST_V = 0.15; // 低于此法向速度视为静止接触，不反弹
+const CONTACT_ITERS = 4;
 function contactSeg(b, sg, h) {
   const st = b.st;
   let nx, ny, d, reff;
@@ -746,34 +872,82 @@ function contactSeg(b, sg, h) {
   const dvn = -(1 + e) * vn;
   st.vx += nx * dvn; st.vy += ny * dvn;
   st.contactN[0] += b.m * nx * dvn / h; st.contactN[1] += b.m * ny * dvn / h;
-  if (!sg.smooth && b.mu > 0) {
-    const tx = -ny, ty = nx, vt = st.vx * tx + st.vy * ty, maxdv = b.mu * dvn;
-    const dvt = Math.abs(vt) <= maxdv ? -vt : -Math.sign(vt) * maxdv;
+  const muS = b.mus ?? b.mu ?? 0;
+  if (!sg.smooth && (b.mu > 0 || muS > 0)) {
+    // 库仑摩擦（冲量形式）：切向速度能被最大静摩擦冲量抵消则粘住，否则按动摩擦 μN 减速
+    const tx = -ny, ty = nx, vt = st.vx * tx + st.vy * ty;
+    const dvt = Math.abs(vt) <= muS * dvn ? -vt : -Math.sign(vt) * (b.mu || 0) * dvn;
     st.vx += tx * dvt; st.vy += ty * dvt;
+    // 本子步的位移已按摩擦前的速度走过，补回切向位移，否则静摩擦下会以 g·sinθ·Δt² 每步缓慢蠕滑
+    st.x += tx * dvt * h; st.y += ty * dvt * h;
     st.contactF[0] += b.m * tx * dvt / h; st.contactF[1] += b.m * ty * dvt / h;
   }
 }
-function collidePair(a, b) {
+/* ---------------- 物体间接触几何：圆–圆、矩形–圆、矩形–矩形（分离轴定理） ---------------- */
+/** 返回从 a 指向 b 的单位法向与穿透深度；不接触返回 null */
+function contactBetween(a, b) {
+  if (a.kind !== 'box' && b.kind !== 'box') {
+    const dx = b.st.x - a.st.x, dy = b.st.y - a.st.y, d = Math.hypot(dx, dy), R = a.r + b.r;
+    if (d >= R) return null;
+    return d < 1e-9 ? { nx: 1, ny: 0, pen: R } : { nx: dx / d, ny: dy / d, pen: R - d };
+  }
+  if (a.kind === 'box' && b.kind === 'box') return boxBox(a, b);
+  if (a.kind === 'box') return boxCircle(a, b);
+  const c = boxCircle(b, a); if (c) { c.nx = -c.nx; c.ny = -c.ny; } return c;
+}
+function boxCircle(box, c) {
+  const s = box.st, ca = Math.cos(s.ang), sa = Math.sin(s.ang), hw = box.w / 2, hh = box.h / 2;
+  const dx = c.st.x - s.x, dy = c.st.y - s.y, lx = dx * ca + dy * sa, ly = -dx * sa + dy * ca;
+  let nlx, nly, pen;
+  if (Math.abs(lx) <= hw && Math.abs(ly) <= hh) {
+    const px = hw - Math.abs(lx), py = hh - Math.abs(ly);
+    if (px < py) { nlx = lx >= 0 ? 1 : -1; nly = 0; pen = px + c.r; } else { nlx = 0; nly = ly >= 0 ? 1 : -1; pen = py + c.r; }
+  } else {
+    const ex = lx - Math.max(-hw, Math.min(hw, lx)), ey = ly - Math.max(-hh, Math.min(hh, ly)), d = Math.hypot(ex, ey);
+    if (d >= c.r) return null;
+    nlx = ex / d; nly = ey / d; pen = c.r - d;
+  }
+  return { nx: nlx * ca - nly * sa, ny: nlx * sa + nly * ca, pen };
+}
+function boxBox(a, b) {
+  const A = a.st, B = b.st, dx = B.x - A.x, dy = B.y - A.y;
+  const ax = [[Math.cos(A.ang), Math.sin(A.ang)], [-Math.sin(A.ang), Math.cos(A.ang)]];
+  const bx = [[Math.cos(B.ang), Math.sin(B.ang)], [-Math.sin(B.ang), Math.cos(B.ang)]];
+  const rad = (box, axes, u) => box.w / 2 * Math.abs(axes[0][0] * u[0] + axes[0][1] * u[1]) + box.h / 2 * Math.abs(axes[1][0] * u[0] + axes[1][1] * u[1]);
+  let best = null;
+  for (const u of [...ax, ...bx]) {
+    const dist = dx * u[0] + dy * u[1];
+    const ov = rad(a, ax, u) + rad(b, bx, u) - Math.abs(dist);
+    if (ov <= 0) return null;
+    if (!best || ov < best.pen) { const sgn = dist >= 0 ? 1 : -1; best = { nx: u[0] * sgn, ny: u[1] * sgn, pen: ov }; }
+  }
+  return best;
+}
+function collidePair(a, b, h = 0) {
   if ((a.fixed || a._grab) && (b.fixed || b._grab)) return;
   const A = a.st, B = b.st;
-  let dx = B.x - A.x, dy = B.y - A.y; const d = Math.hypot(dx, dy), R = bodyRadius(a) + bodyRadius(b);
-  if (d >= R || d < 1e-9) return;
-  const nx = dx / d, ny = dy / d;
+  const bound = o => o.kind === 'box' ? Math.hypot(o.w, o.h) / 2 : o.r;
+  if (Math.hypot(B.x - A.x, B.y - A.y) >= bound(a) + bound(b)) return; // 外接圆粗筛
+  const ct = contactBetween(a, b);
+  if (!ct) return;
+  const nx = ct.nx, ny = ct.ny;
   const ia = a.fixed || a._grab ? 0 : 1 / a.m, ib = b.fixed || b._grab ? 0 : 1 / b.m, is = ia + ib;
   if (is <= 0) return;
-  const pen = R - d;
+  const pen = ct.pen;
   A.x -= nx * pen * ia / is; A.y -= ny * pen * ia / is; B.x += nx * pen * ib / is; B.y += ny * pen * ib / is;
   const vrel = (B.vx - A.vx) * nx + (B.vy - A.vy) * ny;
   if (vrel >= 0) return;
   const e = -vrel < REST_V * 0.5 ? 0 : Math.min(a.e, b.e);
   const j = -(1 + e) * vrel / is;
   A.vx -= j * ia * nx; A.vy -= j * ia * ny; B.vx += j * ib * nx; B.vy += j * ib * ny;
-  // 物体间库仑摩擦（两者都有 μ 时才生效，取较小值）
-  const mu = Math.min(a.mu || 0, b.mu || 0);
-  if (mu > 0) {
+  // 物体间库仑摩擦（两者都有 μ 时才生效，取较小值；静摩擦同理）
+  const mu = Math.min(a.mu || 0, b.mu || 0), muS = Math.min(a.mus ?? a.mu ?? 0, b.mus ?? b.mu ?? 0);
+  if (mu > 0 || muS > 0) {
     const tx = -ny, ty = nx, vt = (B.vx - A.vx) * tx + (B.vy - A.vy) * ty;
-    const jt = Math.max(-mu * j, Math.min(mu * j, -vt / is));
+    const stick = -vt / is;
+    const jt = Math.abs(stick) <= muS * j ? stick : Math.sign(stick) * mu * j;
     A.vx -= jt * ia * tx; A.vy -= jt * ia * ty; B.vx += jt * ib * tx; B.vy += jt * ib * ty;
+    A.x -= jt * ia * tx * h; A.y -= jt * ia * ty * h; B.x += jt * ib * tx * h; B.y += jt * ib * ty * h;
   }
 }
 
@@ -859,7 +1033,7 @@ function restoreFrame(i) {
     st.hist.length = Math.max(1, Math.min(st.hist.length, r[7] - (st.histDrop || 0)));
     st.contactN = [0, 0]; st.contactF = [0, 0];
   }
-  sim.frameIdx = i;
+  sim.frameIdx = i; sim.accum = 0;
   resolveExprs(); markFieldsDirty(); requestDraw(); updateReadouts(); updateEnergyReadout(true);
 }
 function isScrubbed() { return sim.frameIdx < sim.frames.length - 1; }
@@ -884,18 +1058,31 @@ function updateTimeline() {
 }
 
 /* ---------------- 前进一帧 ---------------- */
+/**
+ * 固定步长推进：子步长度恒为 Δt（= 设置中的积分步长），与帧率无关。
+ * 帧时间累加到 sim.accum，凑满整步才积分，余量留到下一帧。
+ * 因此结果可复现，数值预测与实际运行走在同一个时间网格上。
+ */
 function advance(dtFrame) {
   ensureStates();
   commitScrub();
+  const h = Math.max(1e-9, scene.settings.maxDt);
+  sim.accum += dtFrame;
+  let n = Math.floor((sim.accum + 1e-9 * h) / h);
+  if (n > 20000) { n = 20000; sim.accum = n * h; }   // 跑不动时丢弃积压，避免卡死
+  if (n < 1) return;
+  sim.accum = Math.max(0, sim.accum - n * h);
+  dtFrame = n * h;
   const segs = getSegments();
-  const n = Math.min(20000, Math.max(1, Math.ceil(dtFrame / scene.settings.maxDt)));
-  const h = dtFrame / n;
   for (const b of bodies()) { b.st.contactN = [0, 0]; b.st.contactF = [0, 0]; b.st.pvx = b.st.vx; b.st.pvy = b.st.vy; }
+  // 子步内推进 sim.t，使随时间变化的力（受迫振动、交变电场）在每个子步取到正确的 t
+  const t0 = sim.t;
   for (let i = 0; i < n; i++) {
+    sim.t = t0 + i * h;
     syncBodyEmitterPositions();
     substep(h, segs);
   }
-  sim.t += dtFrame;
+  sim.t = t0 + dtFrame;
   pushEnergy();
   for (const b of bodies()) {
     const st = b.st; st.contactN[0] /= n; st.contactN[1] /= n; st.contactF[0] /= n; st.contactF[1] /= n;
@@ -927,12 +1114,24 @@ function resize() {
 function w2s(x, y) { const v = scene.view; return [W / 2 + (x - v.cx) * v.scale, H / 2 - (y - v.cy) * v.scale]; }
 function s2w(sx, sy) { const v = scene.view; return [v.cx + (sx - W / 2) / v.scale, v.cy - (sy - H / 2) / v.scale]; }
 function niceStep(raw) { const p = Math.pow(10, Math.floor(Math.log10(raw))), f = raw / p; return (f < 1.5 ? 1 : f < 3.5 ? 2 : f < 7.5 ? 5 : 10) * p; }
+/**
+ * 数值显示：最多 d 位小数、最多 6 位有效数字；很小或很大的数用 a×10ⁿ 记法。
+ * 负号用真正的减号 “−”，与公式排版一致。
+ */
+const SUP = { '-': '⁻', 0: '⁰', 1: '¹', 2: '²', 3: '³', 4: '⁴', 5: '⁵', 6: '⁶', 7: '⁷', 8: '⁸', 9: '⁹' };
 function fmt(v, d = 3) {
-  if (!isFinite(v)) return '—';
+  if (v == null || !isFinite(v)) return '—';
   const a = Math.abs(v);
   if (a < 1e-12) return '0';
-  if (a !== 0 && (a < 1e-3 || a >= 1e5)) return v.toExponential(2);
-  return (+v.toFixed(d)).toString();
+  const sign = v < 0 ? '−' : '';
+  if (a < 1e-3 || a >= 1e5) {
+    let [m, e] = a.toExponential(Math.max(1, Math.min(d, 3))).split('e');
+    m = String(+m);
+    const n = String(+e).split('').map(c => SUP[c]).join('');
+    return `${sign}${m}×10${n}`;
+  }
+  const digits = Math.max(0, Math.min(d, 6 - Math.max(1, Math.floor(Math.log10(a)) + 1)));
+  return sign + String(+a.toFixed(digits));
 }
 function arrow(x1, y1, x2, y2, color, width = 2, head = 9, dash) {
   const dx = x2 - x1, dy = y2 - y1, L = Math.hypot(dx, dy); if (L < 1) return;
@@ -1129,10 +1328,7 @@ function drawBodyShape(b, x, y, ang, ghost) {
 }
 function drawBody(b) {
   const st = b.st, [x, y] = w2s(st.x, st.y), sel = b === selected(), S = scene.settings;
-  if (S.showTrail && b.trail && st.trail.length > 1) {
-    ctx.save(); ctx.strokeStyle = b.color; ctx.globalAlpha = 0.6; ctx.lineWidth = 1.6; ctx.beginPath();
-    st.trail.forEach((p, i) => { const [a, c] = w2s(p[0], p[1]); i ? ctx.lineTo(a, c) : ctx.moveTo(a, c); }); ctx.stroke(); ctx.restore();
-  }
+  if (b.hidden) return;
   drawBodyShape(b, x, y, st.ang, false);
   if (b.fixed) { ctx.save(); ctx.fillStyle = C['--text']; ctx.beginPath(); ctx.arc(x, y, 2.5, 0, 7); ctx.fill(); ctx.restore(); }
   if (sel) {
@@ -1193,6 +1389,7 @@ function vectorIsSelected(b, key) {
 }
 function visibleVectorKeys(b) {
   const keys = [];
+  if (b.hidden) return keys;
   const bodyOn = selId === b.id && !selVec;
   const g0 = vectorScreen(b, 'v0');
   if (!sim.running && g0 && (!g0.zero || bodyOn || vectorIsSelected(b, 'v0'))) keys.push('v0');
@@ -1393,11 +1590,24 @@ function drawAnalyticPath(b) {
   if (!b || !b.st) return;
   const sampled = sampleAnalyticPath(buildAnalysisContext(b), {});
   if (!sampled || sampled.points.length < 2) return;
+  // 闭式解不含碰撞：在第一次碰到表面处截断，超出部分不再有物理意义
+  const segs = getSegments(), rr = bodyRadius(b);
+  let cut = sampled.points.length;
+  for (let i = 1; i < sampled.points.length && cut === sampled.points.length; i++) {
+    const q = sampled.points[i];
+    for (const sg of segs) {
+      const d = sg.ground ? q.y - sg.y1 : Math.hypot(q.x - closestOnSeg(q.x, q.y, sg)[0], q.y - closestOnSeg(q.x, q.y, sg)[1]);
+      if (d < rr - 1e-6) { cut = i + 1; break; }
+    }
+  }
+  sampled.points = sampled.points.slice(0, cut);
   ctx.save();
-  ctx.strokeStyle = C['--accent'] || '#4a78b0';
-  ctx.globalAlpha = 0.55;
+  analyticShown = true;
+  ctx.strokeStyle = C['--accent'] || '#d97757';
+  ctx.globalAlpha = 0.9;
   ctx.lineWidth = 2;
-  ctx.setLineDash([7, 5]);
+  ctx.lineCap = 'round';
+  ctx.setLineDash([1.5, 4.5]);
   ctx.beginPath();
   sampled.points.forEach((p, i) => {
     const [sx, sy] = w2s(p.x, p.y);
@@ -1408,9 +1618,282 @@ function drawAnalyticPath(b) {
   ctx.globalAlpha = 0.9;
   const mid = sampled.points[Math.floor(sampled.points.length * 0.35)];
   const [lx, ly] = w2s(mid.x, mid.y);
-  label('解析轨迹', lx + 8, ly - 10, C['--accent'], 'left', true);
+  label('解析解', lx + 8, ly - 10, C['--accent'], 'left', true);
   ctx.restore();
 }
+/* =====================================================================
+ *  数值预测：用同一个引擎从当前状态向前积分，结束后完整还原状态
+ * ===================================================================== */
+const PRED_MAX_STEPS = 20000;
+const ST_KEYS = ['x', 'y', 'vx', 'vy', 'ang', 'ax', 'ay', 'pvx', 'pvy', '_ox', '_oy', 'cN'];
+function saveSimState() {
+  return {
+    t: sim.t, wE: sim.wE, wExt: sim.wExt,
+    bodies: bodies().filter(b => b.st).map(b => {
+      const o = {}; for (const k of ST_KEYS) o[k] = b.st[k];
+      o.contactN = b.st.contactN.slice(); o.contactF = b.st.contactF.slice();
+      return [b, o];
+    }),
+    links: scene.objects.filter(isLink).map(l => [l, l._N]),
+  };
+}
+function restoreSimState(S) {
+  sim.t = S.t; sim.wE = S.wE; sim.wExt = S.wExt;
+  for (const [b, o] of S.bodies) if (b.st) Object.assign(b.st, o);
+  for (const [l, N] of S.links) l._N = N;
+  resolveExprs();          // 公式驱动的参数（外力、交变场）回到当前时刻的值
+  fieldsDirty = true;
+  syncBodyEmitterPositions();
+}
+let predCache = { key: '', paths: null, ms: 0, T: 0 };
+function predictionKey() {
+  const st = bodies().map(b => b.st ? `${b.st.x},${b.st.y},${b.st.vx},${b.st.vy}` : '').join('|');
+  const S = scene.settings;
+  return JSON.stringify(scene.objects, (k, v) => (k === 'st' || k[0] === '_') ? undefined : v)
+    + `|${sim.t}|${S.predictT}|${S.maxDt}|${S.gOn}|${S.g}|${S.drag}|${S.gravity}|${S.Gc}|${S.coulomb}|${S.coulombLaw}|${st}`;
+}
+function computePrediction() {
+  const S = scene.settings, T = Math.max(0.05, S.predictT || 3);
+  ensureStates();
+  const movers = bodies().filter(b => !b.fixed && b.st);
+  const out = new Map();
+  if (!movers.length) return out;
+  const t0 = performance.now();
+  const saved = saveSimState();
+  sim.predicting = true;
+  try {
+    for (const b of movers) out.set(b.id, [trailSample(b.st, sim.t)]);
+    const segs = getSegments();
+    // 与实际运行相同的步长 Δt，保证预测与实际逐步一致；步数过多时截短预测时长
+    const h = Math.max(1e-9, S.maxDt);
+    let n = Math.max(1, Math.min(PRED_MAX_STEPS, Math.round(T / h)));
+    // 交互预算：按上次实测的单步耗时把总耗时控制在 ~35 ms 内（拖动时保持跟手），图例会显示实际预测时长
+    if (predCache.msPerStep) n = Math.min(n, Math.max(200, Math.floor(35 / predCache.msPerStep)));
+    const tStart = sim.t;
+    predCache.steps = n;
+    for (let i = 0; i < n; i++) {
+      sim.t = tStart + i * h;
+      syncBodyEmitterPositions();
+      substep(h, segs);
+      const tn = tStart + (i + 1) * h;
+      for (const b of movers) {
+        const st = b.st;
+        if (!Number.isFinite(st.x) || !Number.isFinite(st.y)) continue;
+        const arr = out.get(b.id);
+        if (i === n - 1) arr.push(trailSample(st, tn)); else sampleInto(arr, st, tn);
+      }
+    }
+  } finally {
+    sim.predicting = false;
+    restoreSimState(saved);
+  }
+  predCache.ms = performance.now() - t0;
+  const per = predCache.ms / Math.max(1, predCache.steps || 1);
+  predCache.msPerStep = predCache.msPerStep ? predCache.msPerStep * 0.5 + per * 0.5 : per;
+  predCache.T = (predCache.steps || 0) * Math.max(1e-9, S.maxDt);
+  return out;
+}
+function getPrediction() {
+  const S = scene.settings;
+  if (!S.showPredict || sim.running || (drag && drag.type === 'grab')) return null;
+  const key = predictionKey();
+  if (key !== predCache.key) { predCache.key = key; predCache.paths = computePrediction(); }
+  return predCache.paths;
+}
+
+/* =====================================================================
+ *  曲线绘制：已走轨迹（实线）· 数值预测（虚线）· 解析解（点线）· 频闪点
+ * ===================================================================== */
+function strokePath(arr, extra) {
+  ctx.beginPath();
+  let started = false;
+  for (const p of arr) { const [a, c] = w2s(p[0], p[1]); if (started) ctx.lineTo(a, c); else { ctx.moveTo(a, c); started = true; } }
+  if (extra) { const [a, c] = w2s(extra[0], extra[1]); ctx.lineTo(a, c); }
+  ctx.stroke();
+}
+/** 频闪点：在 t = k·Δt 处插值画点；屏幕间距过小时跳过，保证可读 */
+function drawStrobe(arr, color, hollow) {
+  const dt = scene.settings.strobe;
+  if (!(dt > 0) || !arr || arr.length < 2) return;
+  const tA = arr[0][2], tB = arr[arr.length - 1][2];
+  let k = Math.ceil((tA - 1e-9) / dt);
+  if ((tB - tA) / dt > 4000) return;
+  ctx.save(); ctx.fillStyle = hollow ? C['--canvas'] : color; ctx.strokeStyle = color; ctx.lineWidth = 1.3;
+  let px = -1e9, py = -1e9, j = 0;
+  for (; k * dt <= tB + 1e-9; k++) {
+    const t = k * dt;
+    while (j < arr.length - 2 && arr[j + 1][2] < t) j++;
+    const a = arr[j], b = arr[j + 1] || a, span = b[2] - a[2];
+    const u = span > 1e-12 ? Math.min(1, Math.max(0, (t - a[2]) / span)) : 0;
+    const [sx, sy] = w2s(a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u);
+    if (Math.hypot(sx - px, sy - py) < 5) continue;
+    px = sx; py = sy;
+    ctx.beginPath(); ctx.arc(sx, sy, 2.4, 0, 7);
+    if (hollow) { ctx.fill(); ctx.stroke(); } else ctx.fill();
+  }
+  ctx.restore();
+}
+function drawTrail(b) {
+  const st = b.st;
+  if (!scene.settings.showTrail || !b.trail || !st || st.trail.length < 1 || b.hidden) return;
+  ctx.save(); ctx.strokeStyle = b.color; ctx.globalAlpha = 0.8; ctx.lineWidth = 1.8; ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+  strokePath(st.trail, [st.x, st.y]);
+  ctx.restore();
+  drawStrobe(st.trail, b.color, false);
+}
+function drawPredictions() {
+  const paths = getPrediction();
+  if (!paths) return;
+  for (const b of bodies()) {
+    if (b.hidden) continue;
+    const arr = paths.get(b.id); if (!arr || arr.length < 2) continue;
+    ctx.save(); ctx.strokeStyle = b.color; ctx.globalAlpha = 0.6; ctx.lineWidth = 1.6; ctx.setLineDash([6, 5]); ctx.lineJoin = 'round';
+    strokePath(arr);
+    ctx.restore();
+    drawStrobe(arr, b.color, true);
+    const end = arr[arr.length - 1], [ex, ey] = w2s(end[0], end[1]);
+    if (ex > -20 && ex < W + 20 && ey > -20 && ey < H + 20 && selId === b.id) {
+      ctx.save(); ctx.fillStyle = b.color; ctx.globalAlpha = 0.8; ctx.beginPath(); ctx.arc(ex, ey, 2.5, 0, 7); ctx.fill(); ctx.restore();
+      label(`t = ${fmt(end[2], 2)} s`, ex + 8, ey - 10, C['--muted'], 'left', false);
+    }
+  }
+}
+
+/* ---------------- 轨迹追踪（悬停读数）与标记点 ---------------- */
+let traceHit = null;
+/** 找光标附近的曲线点：已走轨迹 + 数值预测。返回插值后的精确点。 */
+function findTrace(sx, sy, maxD = 7) {
+  let best = null, bestD = maxD;
+  const consider = (b, arr, src) => {
+    for (let i = 0; i + 1 < arr.length; i++) {
+      const [ax, ay] = w2s(arr[i][0], arr[i][1]), [bx, by] = w2s(arr[i + 1][0], arr[i + 1][1]);
+      const dx = bx - ax, dy = by - ay, L2 = dx * dx + dy * dy;
+      let u = L2 > 0 ? ((sx - ax) * dx + (sy - ay) * dy) / L2 : 0;
+      u = Math.max(0, Math.min(1, u));
+      const d = Math.hypot(sx - (ax + dx * u), sy - (ay + dy * u));
+      if (d < bestD) {
+        bestD = d;
+        const a = arr[i], c = arr[i + 1];
+        best = { b, src, t: a[2] + (c[2] - a[2]) * u, x: a[0] + (c[0] - a[0]) * u, y: a[1] + (c[1] - a[1]) * u, vx: a[3] + (c[3] - a[3]) * u, vy: a[4] + (c[4] - a[4]) * u };
+      }
+    }
+  };
+  const S = scene.settings;
+  for (const b of bodies()) {
+    if (b.hidden || !b.st) continue;
+    if (S.showTrail && b.trail) consider(b, b.st.trail.concat([trailSample(b.st, sim.t)]), 'trail');
+    const pred = predCache.paths && !sim.running && S.showPredict ? predCache.paths.get(b.id) : null;
+    if (pred) consider(b, pred, 'pred');
+  }
+  return best;
+}
+function curveFor(b, src) {
+  if (src === 'trail') return b.st ? b.st.trail.concat([trailSample(b.st, sim.t)]) : null;
+  return predCache.paths && !sim.running && scene.settings.showPredict ? predCache.paths.get(b.id) : null;
+}
+/**
+ * 标记点只记 (物体, 时刻 t)。位置每次重新求值：t ≤ 当前时刻取已走轨迹，t > 当前时刻取数值预测。
+ * 由于预测与实际运行逐步一致，同一个标记点从“预测”变成“已走”时位置不跳变。
+ */
+let pins = [];
+function pinPos(p) {
+  const b = byId(p.bodyId); if (!b) return null;
+  const past = p.t <= sim.t + 1e-9;
+  const arr = curveFor(b, past ? 'trail' : 'pred');
+  const q = arr ? curveAt(arr, p.t) : null;
+  if (q) q.src = past ? 'trail' : 'pred';
+  return q;
+}
+function hitPin(sx, sy) {
+  for (let i = pins.length - 1; i >= 0; i--) {
+    const q = pinPos(pins[i]); if (!q) continue;
+    const [x, y] = w2s(q[0], q[1]);
+    if (Math.hypot(sx - x, sy - y) < 8) return i;
+  }
+  return -1;
+}
+function addPin(h) {
+  const t = +h.t.toFixed(4);
+  if (pins.some(p => p.bodyId === h.b.id && Math.abs(p.t - t) < 1e-3)) return;
+  pins.push({ bodyId: h.b.id, t });
+  toast(`已标记 ${h.b.name} 在 t = ${fmt(t, 3)} s 的位置（再点一次可移除）`);
+  if (selId === h.b.id) buildPanel();
+}
+function pinInfoLines(b, q, src) {
+  const v = Math.hypot(q[3], q[4]);
+  return [
+    `${b.name} · ${src === 'trail' ? '已走轨迹' : '数值预测'}`,
+    `t = ${fmt(q[2], 4)} s`,
+    `(x, y) = (${fmt(q[0], 4)}, ${fmt(q[1], 4)}) m`,
+    `v = ${fmt(v, 4)} m/s${v > 1e-9 ? `  ∠ ${fmt(Math.atan2(q[4], q[3]) / DEG, 2)}°` : ''}`,
+  ];
+}
+/** 画一张读数卡片（画布内，自动避开边缘） */
+function infoCard(lines, x, y, color) {
+  ctx.save();
+  ctx.font = '12px ' + MONO_FONT;
+  const pad = 8, lh = 17;
+  const w = Math.max(...lines.map((l, i) => { ctx.font = (i === 0 ? '600 12px ' + UI_FONT : '12px ' + MONO_FONT); return ctx.measureText(l).width; })) + pad * 2;
+  const h = lines.length * lh + pad * 2 - 4;
+  let bx = x + 14, by = y - h - 10;
+  if (bx + w > W - 6) bx = x - w - 14;
+  if (by < 6) by = y + 14;
+  ctx.fillStyle = C['--panel']; ctx.strokeStyle = C['--border']; ctx.lineWidth = 1;
+  ctx.shadowColor = 'rgba(20,20,19,.12)'; ctx.shadowBlur = 12; ctx.shadowOffsetY = 2;
+  ctx.beginPath(); ctx.roundRect ? ctx.roundRect(bx, by, w, h, 8) : ctx.rect(bx, by, w, h); ctx.fill();
+  ctx.shadowColor = 'transparent'; ctx.stroke();
+  ctx.fillStyle = color; ctx.fillRect(bx, by + 8, 3, h - 16);
+  lines.forEach((l, i) => {
+    ctx.font = i === 0 ? '600 12px ' + UI_FONT : '12px ' + MONO_FONT;
+    ctx.fillStyle = i === 0 ? C['--text'] : C['--muted'];
+    ctx.textBaseline = 'top';
+    ctx.fillText(l, bx + pad + 2, by + pad + i * lh - 2);
+  });
+  ctx.restore();
+}
+function drawPins() {
+  for (const p of pins) {
+    const b = byId(p.bodyId); if (!b || b.hidden) continue;
+    const q = pinPos(p); if (!q) continue;
+    const [x, y] = w2s(q[0], q[1]);
+    ctx.save(); ctx.lineWidth = 2;
+    if (q.src === 'pred') { ctx.fillStyle = C['--canvas']; ctx.strokeStyle = b.color; } else { ctx.fillStyle = b.color; ctx.strokeStyle = C['--canvas']; }
+    ctx.beginPath(); ctx.arc(x, y, 5, 0, 7); ctx.fill(); ctx.stroke(); ctx.restore();
+    label(`t=${fmt(q[2], 3)}s (${fmt(q[0], 3)}, ${fmt(q[1], 3)})`, x + 9, y - 11, C['--text'], 'left', true);
+  }
+}
+function drawTraceHover() {
+  const h = traceHit; if (!h || drag) return;
+  const [x, y] = w2s(h.x, h.y);
+  ctx.save(); ctx.fillStyle = C['--panel']; ctx.strokeStyle = h.b.color; ctx.lineWidth = 2.5;
+  ctx.beginPath(); ctx.arc(x, y, 5, 0, 7); ctx.fill(); ctx.stroke(); ctx.restore();
+  infoCard(pinInfoLines(h.b, [h.x, h.y, h.t, h.vx, h.vy], h.src).concat(['点击标记此点']), x, y, h.b.color);
+}
+/** 图例：只列出当前确实画在画布上的编码 */
+function drawLegend() {
+  if (W < 640) return;
+  const S = scene.settings, items = [];
+  const anyTrail = S.showTrail && bodies().some(b => b.trail && b.st && b.st.trail.length > 1);
+  if (anyTrail) items.push(['solid', '已走轨迹']);
+  if (predCache.paths && S.showPredict && !sim.running && predCache.paths.size) items.push(['dash', `数值预测 ${fmt(predCache.T, 3)} s`]);
+  if (analyticShown) items.push(['dot', '解析解']);
+  if (S.strobe > 0 && (anyTrail || items.length)) items.push(['strobe', `频闪 Δt = ${fmt(S.strobe, 3)} s`]);
+  if (!items.length) return;
+  ctx.save(); ctx.font = '11.5px ' + UI_FONT; ctx.textBaseline = 'middle';
+  let x = 16; const y = (tool !== 'select' && TOOL_HINT[tool]) ? 58 : 26;
+  for (const [kind, text] of items) {
+    ctx.strokeStyle = C['--muted']; ctx.fillStyle = C['--muted']; ctx.lineWidth = 1.6;
+    ctx.setLineDash(kind === 'dash' ? [5, 4] : kind === 'dot' ? [1.5, 3.5] : []);
+    if (kind === 'strobe') { ctx.beginPath(); ctx.arc(x + 4, y, 2.4, 0, 7); ctx.fill(); ctx.beginPath(); ctx.arc(x + 14, y, 2.4, 0, 7); ctx.fill(); }
+    else { ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + 18, y); ctx.stroke(); }
+    ctx.setLineDash([]);
+    ctx.fillText(text, x + 24, y);
+    x += 24 + ctx.measureText(text).width + 18;
+  }
+  ctx.restore();
+}
+let analyticShown = false;
+
 let pending = null; // 正在创建的矩形/线段/弹簧
 /** 悬停反馈：被指到的对象描一圈半透明强调色 */
 function drawHover() {
@@ -1470,11 +1953,15 @@ function draw() {
   const objs = scene.objects;
   ensureFields();
   if (scene.settings.showFieldLines) drawElectricFieldLines();
-  objs.filter(o => o.kind === 'efield' || o.kind === 'bfield').forEach(drawField);
-  objs.filter(o => o.kind === 'pointCharge').forEach(drawPointCharge);
-  objs.filter(o => ['ground', 'wall', 'incline'].includes(o.kind)).forEach(drawSurface);
-  objs.filter(isLink).forEach(drawLink);
+  const shown = objs.filter(o => !o.hidden);
+  shown.filter(o => o.kind === 'efield' || o.kind === 'bfield').forEach(drawField);
+  shown.filter(o => o.kind === 'pointCharge').forEach(drawPointCharge);
+  shown.filter(o => ['ground', 'wall', 'incline'].includes(o.kind)).forEach(drawSurface);
+  shown.filter(isLink).forEach(drawLink);
   ensureStates();
+  analyticShown = false;
+  bodies().forEach(drawTrail);
+  drawPredictions();
   bodies().forEach(drawBody);
   drawSelectableVectors();
   const s = selected();
@@ -1486,8 +1973,11 @@ function draw() {
   if (isBody(s) && !selVec && scene.settings.showAnalytic && (!sim.running || ((performance.now() / 32) | 0) % 2 === 0)) {
     drawAnalyticPath(s);
   }
+  drawPins();
   drawHover();
   drawGhost();
+  drawTraceHover();
+  drawLegend();
   if (pending) {
     ctx.save(); ctx.strokeStyle = C['--accent']; ctx.setLineDash([5, 4]); ctx.lineWidth = 1.5;
     if (pending.type === 'rect') { const [a, b] = w2s(pending.x1, pending.y1), [c, d] = w2s(pending.x2, pending.y2); ctx.strokeRect(Math.min(a, c), Math.min(b, d), Math.abs(c - a), Math.abs(d - b)); label(`${fmt(Math.abs(pending.x2 - pending.x1), 2)} × ${fmt(Math.abs(pending.y2 - pending.y1), 2)} m`, Math.max(a, c) + 6, Math.max(b, d) + 10, C['--accent']); }
@@ -1573,7 +2063,8 @@ function evPos(e) { const r = cv.getBoundingClientRect(); return [e.clientX - r.
 function hitBody(sx, sy) {
   const list = bodies();
   for (let i = list.length - 1; i >= 0; i--) {
-    const b = list[i], [x, y] = w2s(b.st.x, b.st.y);
+    const b = list[i]; if (b.hidden || !b.st) continue;
+    const [x, y] = w2s(b.st.x, b.st.y);
     if (b.kind === 'box') {
       const a = b.st.ang, dx = sx - x, dy = -(sy - y), c = Math.cos(a), s = Math.sin(a);
       const lx = dx * c + dy * s, ly = -dx * s + dy * c, sc = scene.view.scale;
@@ -1589,7 +2080,7 @@ function pointInTri(p, a, b, c) {
   return (A >= 0 && B >= 0 && D >= 0) || (A <= 0 && B <= 0 && D <= 0);
 }
 function hitOther(sx, sy) {
-  const objs = scene.objects;
+  const objs = scene.objects.filter(o => !o.hidden);
   for (const o of objs) if (o.kind === 'pointCharge') {
     const [x, y] = w2s(o.x, o.y);
     const r = Math.max(8, (o.softRadius || 0.08) * scene.view.scale);
@@ -1780,6 +2271,10 @@ cv.addEventListener('pointerdown', e => {
     drag = { type: 'body', b: hb, ox: wp[0] - hb.st.x, oy: wp[1] - hb.st.y, moved: false, sx, sy, wasT: sim.t };
     return;
   }
+  const pi = hitPin(sx, sy);
+  if (pi >= 0) { const p = pins[pi]; pins.splice(pi, 1); toast('已移除标记点'); if (selId === p.bodyId) buildPanel(); requestDraw(); drag = null; return; }
+  const th = findTrace(sx, sy);
+  if (th) { addPin(th); traceHit = null; requestDraw(); return; }
   const ho = hitOther(sx, sy);
   if (ho) {
     select(ho.id, { deferPanel: true }); pushUndo(`移动「${ho.name}」`);
@@ -1972,17 +2467,23 @@ cv.addEventListener('wheel', e => {
   markFieldsDirty(); requestDraw(); markDirty();
 }, { passive: false });
 cv.addEventListener('pointerenter', () => { mouseIn = true; });
-cv.addEventListener('pointerleave', () => { mouseIn = false; if (hoverObj) { hoverObj = null; } requestDraw(); });
+cv.addEventListener('pointerleave', () => { mouseIn = false; hoverObj = null; traceHit = null; requestDraw(); });
 function hoverCursor(sx, sy) {
   let h = null;
+  let tr = null;
   if (tool === 'select') {
     const hv = hitVector(sx, sy);
     if (hv) { cv.style.cursor = 'pointer'; h = null; }
     else {
-      h = hitBody(sx, sy) || hitOther(sx, sy);
-      cv.style.cursor = h ? (sim.running && isBody(h) && !h.fixed ? 'grab' : 'move') : 'default';
+      h = hitBody(sx, sy);
+      if (!h) { tr = hitPin(sx, sy) >= 0 ? null : findTrace(sx, sy); }
+      if (!h && !tr) h = hitOther(sx, sy);
+      cv.style.cursor = tr || hitPin(sx, sy) >= 0 ? 'pointer' : h ? (sim.running && isBody(h) && !h.fixed ? 'grab' : 'move') : 'default';
     }
-  } else if (LINK_KINDS.includes(tool)) {
+  }
+  const trKey = tr ? `${tr.b.id}|${tr.src}|${tr.t}` : '', oldKey = traceHit ? `${traceHit.b.id}|${traceHit.src}|${traceHit.t}` : '';
+  traceHit = tr;
+  if (trKey !== oldKey) requestDraw(); else if (LINK_KINDS.includes(tool)) {
     h = hitBody(sx, sy);
     cv.style.cursor = h ? 'pointer' : (pending ? 'crosshair' : 'not-allowed');
   }
@@ -2004,7 +2505,7 @@ function syncInitialLive(b) {
     if (!b.st) initState(b);
     else {
       b.st.x = b.x0; b.st.y = b.y0; b.st.vx = b.vx0; b.st.vy = b.vy0; b.st.ang = b.ang0 * DEG;
-      b.st.trail = [[b.x0, b.y0]]; b.st.hist = []; pushHist(b);
+      b.st.trail = [[b.x0, b.y0, 0, b.vx0, b.vy0]]; b.st.hist = []; pushHist(b);
     }
   } else {
     bodies().forEach(bb => {
@@ -2364,17 +2865,34 @@ function numRow(parent, lab, get, set, unit = '', o = {}) {
       if (o.after) o.after();
     });
   } else {
-    input = el('input', { type: 'number', step: o.step || 'any' });
+    input = el('input', { type: 'number', step: o.step || 'any', inputmode: 'decimal' });
     if (o.min != null) input.min = o.min;
+    if (o.max != null) input.max = o.max;
     input.value = fmtIn(get());
     input.addEventListener('focus', () => pushed = false);
+    const showErr = msg => {
+      r.classList.toggle('invalid', !!msg);
+      fieldErr.textContent = msg || '';
+    };
     input.addEventListener('input', () => {
-      let v = parseFloat(input.value); if (!isFinite(v)) return; if (o.min != null && v < o.min) return;
+      const raw = input.value.trim();
+      const v = parseFloat(raw);
+      if (!raw || !isFinite(v)) { showErr(raw ? '请输入一个数' : ''); return; }   // 还在输入中
+      const msg = checkNumber(v, o);
+      if (msg) { showErr(msg); return; }
+      showErr('');
       if (!pushed) { pushUndo(); pushed = true; }
       if (owner && owner.expr) delete owner.expr[key];
       set(v); o.init ? initChanged() : liveEdit(); if (o.after) o.after();
     });
-    input.addEventListener('change', () => { input.value = fmtIn(get()); });
+    input.addEventListener('change', () => {
+      if (r.classList.contains('invalid')) {
+        const why = fieldErr.textContent;
+        input.value = fmtIn(get());
+        showErr(`${why}，已恢复为 ${fmtIn(get())}`);
+        setTimeout(() => { if (document.activeElement !== input) showErr(''); }, 2600);
+      } else input.value = fmtIn(get());
+    });
     attachScrub(labEl, input, get, o);
   }
   input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); input.blur(); } });
@@ -2397,6 +2915,8 @@ function numRow(parent, lab, get, set, unit = '', o = {}) {
   }
   r.appendChild(el('span', { class: 'unit' }, unit));
   parent.appendChild(r);
+  const fieldErr = el('div', { class: 'field-err' });
+  parent.appendChild(fieldErr);
   let errEl = null;
   let valEl = null;
   if (formula) {
@@ -2407,6 +2927,13 @@ function numRow(parent, lab, get, set, unit = '', o = {}) {
   }
   binds.push({ el: input, get: () => (formula ? (owner.expr && owner.expr[key]) ?? '' : get()) });
   return input;
+}
+/** 数值合法性：min/max（可开区间）+ 自定义跨字段校验，返回错误文案或空串 */
+function checkNumber(v, o) {
+  if (!isFinite(v)) return '请输入一个数';
+  if (o.min != null && (o.minEx ? v <= o.min : v < o.min)) return o.minEx ? `必须大于 ${o.min}` : `不能小于 ${o.min}`;
+  if (o.max != null && (o.maxEx ? v >= o.max : v > o.max)) return o.maxEx ? `必须小于 ${o.max}` : `不能大于 ${o.max}`;
+  return o.validate ? (o.validate(v) || '') : '';
 }
 /**
  * 拖动标签改数值：左右拖动，Shift ×10、Alt ×0.1。
@@ -2433,7 +2960,9 @@ function attachScrub(labEl, input, get, o) {
       moved = true;
       const k = ev.shiftKey ? 10 : ev.altKey ? 0.1 : 1;
       let v = v0 + dx * base * k;
-      if (o.min != null) v = Math.max(o.min, v);
+      if (o.min != null) v = Math.max(o.minEx ? o.min + base * k : o.min, v);
+      if (o.max != null) v = Math.min(o.maxEx ? o.max - base * k : o.max, v);
+      if (o.validate && o.validate(v)) return;
       const dec = Math.max(0, -Math.floor(Math.log10(base * k)));
       v = +v.toFixed(Math.min(dec, 12));
       input.value = fmtIn(v);
@@ -2514,6 +3043,7 @@ function panelBox(id, active) {
 
 function buildPanel() {
   binds = [];
+  derivedLive = [];
   const P = $('#props'); P.innerHTML = '';
   const o = selected();
   if (!o) return buildScenePanel(P);
@@ -2622,40 +3152,185 @@ function buildVectorInspector(P, b, key) {
   act.appendChild(br);
 }
 
+/* ---------------- 由 Schema 生成的属性面板 ---------------- */
+const FIELD_SOURCE_KINDS = ['efield', 'bfield', 'pointCharge'];
+function propRow(parent, o, d) {
+  if (d.type === 'bool') {
+    return chkRow(parent, d.label, () => !!o[d.key], v => { o[d.key] = v; if (FIELD_SOURCE_KINDS.includes(o.kind)) markFieldsDirty(); },
+      { init: d.init, rebuild: d.rebuild });
+  }
+  const get = d.key === 'mus' ? () => (o.mus ?? o.mu ?? 0) : () => o[d.key];
+  return numRow(parent, `${d.label} <i class="sym">${d.sym}</i>`, get, v => { o[d.key] = v; }, d.unit, {
+    min: d.min, minEx: d.minEx, max: d.max, step: d.step, title: d.title, init: d.init, slot: [o, d.key],
+    validate: d.check ? v => d.check(o, v) : null,
+    after: () => { if (d.after) d.after(o); if (FIELD_SOURCE_KINDS.includes(o.kind)) markFieldsDirty(); updateDerived(true); },
+  });
+}
+function schemaSections(P, o, extras = {}) {
+  const defs = schemaOf(o).filter(d => !d.when || d.when(o));
+  const groups = [...new Set(defs.map(d => d.group))];
+  for (const g of groups) {
+    const sec = section(P, g);
+    for (const d of defs.filter(x => x.group === g)) propRow(sec, o, d);
+    if (extras[g]) extras[g](sec);
+  }
+}
+
+/* ---------------- 派生量（只读，随状态实时更新） ---------------- */
+let derivedLive = [];
+function bodyPos(b) { return b.st || { x: b.x0, y: b.y0, vx: b.vx0 || 0, vy: b.vy0 || 0 }; }
+function derivedOf(o) {
+  const S = scene.settings, g = S.gOn ? S.g : 0, out = [];
+  const add = (k, f) => out.push([k, f]);
+  const kc = S.kc || K_COULOMB;
+  if (isBody(o)) {
+    if (g) add('重力 G = mg', () => `${fmt(o.m * g)} N`);
+    if (o.q) add('比荷 q/m', () => `${fmt(o.q / o.m)} C/kg`);
+    if (o.kind === 'box') add('临界倾角 arctan μₛ', () => `${fmt(Math.atan(o.mus ?? o.mu ?? 0) / DEG, 3)}°`);
+    if (o.q) for (const f of scene.objects) {
+      if (f.kind === 'bfield' && f.B) {
+        add(`「${f.name}」中周期 T = 2πm/|qB|`, () => `${fmt(2 * Math.PI * o.m / Math.abs(o.q * f.B))} s`);
+        add(`「${f.name}」中半径 r = mv/|qB|`, () => { const p = bodyPos(o); return `${fmt(o.m * Math.hypot(p.vx, p.vy) / Math.abs(o.q * f.B))} m`; });
+      }
+      if (f.kind === 'efield' && f.E) add(`「${f.name}」中加速度 qE/m`, () => `${fmt(Math.abs(o.q * f.E / o.m))} m/s²`);
+    }
+  } else if (o.kind === 'wall') {
+    add('长度', () => `${fmt(Math.hypot(o.x2 - o.x1, o.y2 - o.y1))} m`);
+    add('与 +x 轴夹角', () => `${fmt(Math.atan2(o.y2 - o.y1, o.x2 - o.x1) / DEG, 3)}°`);
+  } else if (o.kind === 'incline') {
+    add('斜边长 L / cosθ', () => `${fmt(o.L / Math.cos(o.ang * DEG))} m`);
+    add('高 L·tanθ', () => `${fmt(o.L * Math.tan(o.ang * DEG))} m`);
+    add('临界摩擦因数 tanθ', () => fmt(Math.tan(o.ang * DEG), 4));
+    if (g) add('光滑时下滑加速度 g·sinθ', () => `${fmt(g * Math.sin(o.ang * DEG))} m/s²`);
+  } else if (o.kind === 'efield') {
+    add('分量 (Eₓ, E_y)', () => `(${fmt(o.E * Math.cos(o.ang * DEG))}, ${fmt(o.E * Math.sin(o.ang * DEG))}) V/m`);
+    if (!o.all) add('沿场方向的宽度 d', () => `${fmt(Math.abs(o.w * Math.cos(o.ang * DEG)) + Math.abs(o.h * Math.sin(o.ang * DEG)))} m`);
+    if (!o.all) add('两侧电势差 U = Ed', () => `${fmt(o.E * (Math.abs(o.w * Math.cos(o.ang * DEG)) + Math.abs(o.h * Math.sin(o.ang * DEG))))} V`);
+  } else if (o.kind === 'bfield') {
+    add('方向', () => o.dir < 0 ? '垂直纸面向里 ⊗' : '垂直纸面向外 ⊙');
+    for (const b of bodies()) if (b.q) add(`「${b.name}」回旋周期 2πm/|qB|`, () => `${fmt(2 * Math.PI * b.m / Math.abs(b.q * o.B))} s`);
+  } else if (o.kind === 'pointCharge') {
+    add('1 m 处场强 k|Q|/r²', () => `${fmt(kc * Math.abs(o.q))} V/m`);
+    add('1 m 处电势 kQ/r', () => `${fmt(kc * o.q)} V`);
+  } else if (isLink(o)) {
+    const len = () => { const e = linkEnds(o); return e ? Math.hypot(e.x2 - e.x1, e.y2 - e.y1) : NaN; };
+    add('当前长度', () => `${fmt(len())} m`);
+    if (o.kind === 'spring') {
+      add('形变量 ΔL = L − L₀', () => `${fmt(len() - o.L0)} m`);
+      add('弹力 |kΔL|', () => `${fmt(Math.abs(o.k * (len() - o.L0)))} N（${len() >= o.L0 ? '拉伸' : '压缩'}）`);
+      add('弹性势能 ½kΔL²', () => `${fmt(0.5 * o.k * (len() - o.L0) ** 2)} J`);
+      const A = byId(o.a);
+      if (o.b == null && A && !A.fixed) add(`「${A.name}」固有周期 2π√(m/k)`, () => `${fmt(2 * Math.PI * Math.sqrt(A.m / o.k))} s`);
+    } else if (o.kind === 'rope') {
+      add('状态', () => len() > o.L0 + 1e-9 ? '张紧' : '松弛');
+      add('张力 T', () => `${fmt(Math.max(0, o.k * (len() - o.L0)))} N`);
+    } else {
+      add('轴向力', () => { const N = o._N || 0; return `${fmt(Math.abs(N))} N（${N >= 0 ? '拉' : '压'}）`; });
+    }
+  }
+  return out;
+}
+function derivedSection(P, o) {
+  const rows = derivedOf(o);
+  if (!rows.length) return;
+  const s = section(P, '派生量');
+  const g = el('div', { class: 'readout derived' });
+  rows.forEach(([k, f], i) => {
+    g.appendChild(el('span', { class: 'k' }, k));
+    const v = el('span', { id: 'dv_' + i }, '—');
+    g.appendChild(v);
+    derivedLive.push([v, f]);
+  });
+  s.appendChild(g);
+  s.appendChild(el('div', { class: 'hint', style: 'margin-top:8px' }, '由当前参数与状态计算，只读。'));
+  queueMicrotask(() => updateDerived(true));
+}
+let lastDerivedTs = 0;
+function updateDerived(force = false) {
+  if (!derivedLive.length) return;
+  const now = performance.now();
+  if (!force && now - lastDerivedTs < 100) return;
+  lastDerivedTs = now;
+  for (const [node, f] of derivedLive) {
+    let v; try { v = f(); } catch { v = '—'; }
+    node.textContent = v;
+  }
+}
+const MODEL_NOTE = {
+  ball: '质点模型：受力作用于质心，不考虑转动；与其他物体按圆形求接触。',
+  particle: '带电质点：受电场力 qE 与洛伦兹力 qv×B（Boris 推进，磁场中不做功）。默认不与其他物体碰撞。',
+  box: '平动刚体：不转动，接触时贴合接触面；与其他物体按有向矩形（分离轴定理）求碰撞。',
+  ground: '水平半空间：下方为实体，物体不会穿过。',
+  wall: '有限长线段（挡板、极板、荧光屏）。两侧都可接触。',
+  incline: '三角形楔块，三条边都是接触面。滑块落在斜面上会自动贴合斜面。',
+  efield: '匀强电场：区域内 E 处处相同，区域外为零。方向角可写成随时间变化的公式（交变电场）。',
+  bfield: '匀强磁场，方向垂直纸面。区域内对带电体施加 qv×B，区域外为零。',
+  pointCharge: '固定点电荷，按库仑定律（可选 1/r² 或 1/r）产生电场，并绘制电场线。',
+  spring: '理想弹簧：F = −k(L − L₀)，可拉可压。',
+  rope: '轻绳：只拉不压，L ≤ 绳长时张力为 0。',
+  rod: '轻杆：长度严格不变（SHAKE 约束），可拉可压，能提供支持力。',
+};
+function placeOnIncline(inc) {
+  pushUndo('在斜面上放置滑块');
+  if (sim.t > 0) resetSim();
+  const th = inc.ang * DEG, d = inc.dir || 1, top = inclinePts(inc)[2], h = 0.4, along = Math.min(0.6, inc.L / Math.cos(th) * 0.2);
+  const b = mkBody('box', { w: 0.6, h, m: 1, mu: 0.3, e: 0, ang0: d * inc.ang,
+    x0: clean(top[0] - d * (Math.sin(th) * h / 2 + Math.cos(th) * along)), y0: clean(top[1] + Math.cos(th) * h / 2 - Math.sin(th) * along) });
+  scene.objects.push(b); initState(b); afterStructure(); select(b.id);
+  toast(`已在「${inc.name}」顶端放置滑块`, { action: UNDO_ACTION });
+}
 function buildNonBodyPanel(P, o) {
   const panels = el('div', { class: 'tab-panels' });
-  const pProps = panelBox('props', 'props');
-
-  if (o.kind === 'pointCharge') buildPointChargePanel(pProps, o);
-  else if (o.kind === 'efield') buildEPanel(pProps, o);
-  else if (o.kind === 'bfield') buildBPanel(pProps, o);
-  else if (o.kind === 'ground') {
-    const s = section(pProps, '几何'); numRow(s, '高度 y', () => o.y, v => o.y = v, 'm', { slot: [o, 'y'] }); surfOpts(s, o);
-  } else if (o.kind === 'wall') {
-    const s = section(pProps, '端点');
-    numRow(s, '起点 x₁', () => o.x1, v => o.x1 = v, 'm', { slot: [o, 'x1'] });
-    numRow(s, '起点 y₁', () => o.y1, v => o.y1 = v, 'm', { slot: [o, 'y1'] });
-    numRow(s, '终点 x₂', () => o.x2, v => o.x2 = v, 'm', { slot: [o, 'x2'] });
-    numRow(s, '终点 y₂', () => o.y2, v => o.y2 = v, 'm', { slot: [o, 'y2'] });
-    s.appendChild(el('div', { class: 'hint' }, '可拖动两端控制点。'));
-    surfOpts(s, o);
-  } else if (o.kind === 'incline') {
-    const s = section(pProps, '几何');
-    numRow(s, '底角 x', () => o.x, v => o.x = v, 'm', { slot: [o, 'x'] });
-    numRow(s, '底角 y', () => o.y, v => o.y = v, 'm', { slot: [o, 'y'] });
-    numRow(s, '底边 L', () => o.L, v => o.L = v, 'm', { min: 0.01, slot: [o, 'L'] });
-    numRow(s, '倾角 θ', () => o.ang, v => o.ang = Math.min(85, v), '°', { min: 0, slot: [o, 'ang'] });
+  const pp = panelBox('props', 'props');
+  const extras = {};
+  if (o.kind === 'incline') extras['几何'] = sec => {
     const br = el('div', { class: 'btnrow' });
-    [30, 37, 45, 53, 60].forEach(a => btn(br, a + '°', () => { pushUndo(); o.ang = a; liveEdit(); }));
-    btn(br, o.dir > 0 ? '朝右' : '朝左', () => { pushUndo(); o.dir *= -1; liveEdit(); buildPanel(); });
-    s.appendChild(br);
-    s.appendChild(el('div', { class: 'hint' }, `斜面长 ${fmt(o.L / Math.cos(o.ang * DEG), 3)} m，高 ${fmt(o.L * Math.tan(o.ang * DEG), 3)} m`));
-    surfOpts(s, o);
-    const s2 = section(pProps, '快捷');
-    btn(s2, '在顶端放置滑块', () => placeOnIncline(o));
-  } else if (isLink(o)) buildLinkPanel(pProps, o);
-
-  panels.appendChild(pProps);
+    [30, 37, 45, 53, 60].forEach(a => btn(br, a + '°', () => { pushUndo('改倾角'); o.ang = a; liveEdit(); buildPanel(); }, Math.abs(o.ang - a) < 1e-9 ? 'active' : ''));
+    btn(br, o.dir > 0 ? '朝向：右 ⇄' : '朝向：左 ⇄', () => { pushUndo('翻转斜面'); o.dir *= -1; liveEdit(); buildPanel(); });
+    sec.appendChild(br);
+  };
+  if (o.kind === 'efield') extras['场'] = sec => {
+    const br = el('div', { class: 'btnrow' });
+    [[90, '↑ 上'], [-90, '↓ 下'], [180, '← 左'], [0, '→ 右']].forEach(([a, t]) => btn(br, t, () => { pushUndo('改电场方向'); o.ang = a; markFieldsDirty(); liveEdit(); buildPanel(); }, Math.abs(((o.ang - a) % 360 + 360) % 360) < 1e-9 ? 'active' : ''));
+    sec.appendChild(br);
+  };
+  if (o.kind === 'bfield') extras['场'] = sec => {
+    const br = el('div', { class: 'btnrow' });
+    btn(br, '向里 ⊗', () => { pushUndo('改磁场方向'); o.dir = -1; markFieldsDirty(); liveEdit(); buildPanel(); }, o.dir < 0 ? 'active' : '');
+    btn(br, '向外 ⊙', () => { pushUndo('改磁场方向'); o.dir = 1; markFieldsDirty(); liveEdit(); buildPanel(); }, o.dir > 0 ? 'active' : '');
+    sec.appendChild(br);
+  };
+  if (o.kind === 'pointCharge') extras['源'] = sec => {
+    const set = q => { pushUndo('改电荷量'); o.q = q; o.color = q >= 0 ? '#c8553d' : '#4a78b0'; markFieldsDirty(); liveEdit(); buildPanel(); };
+    const br = el('div', { class: 'btnrow' });
+    btn(br, '+1 μC', () => set(1e-6)); btn(br, '−1 μC', () => set(-1e-6)); btn(br, '取反', () => set(-o.q));
+    sec.appendChild(br);
+  };
+  if (isLink(o)) extras['参数'] = sec => {
+    const A = byId(o.a), B = o.b != null ? byId(o.b) : null;
+    sec.appendChild(el('div', { class: 'hint' }, `连接：${escapeHtml(A ? A.name : '?')} — ${escapeHtml(B ? B.name : '固定点')}`));
+    const br = el('div', { class: 'btnrow' });
+    btn(br, `${o.kind === 'spring' ? '原长' : '长度'} = 当前距离`, () => {
+      const e = linkEnds(o);
+      if (e) { pushUndo('设为当前距离'); o.L0 = clean(Math.hypot(e.x2 - e.x1, e.y2 - e.y1)); liveEdit(); buildPanel(); }
+    });
+    sec.appendChild(br);
+  };
+  if (o.kind === 'wall') extras['几何'] = sec => sec.appendChild(el('div', { class: 'hint' }, '选中后可拖动两端的控制点。'));
+  if ((o.kind === 'efield' || o.kind === 'bfield')) extras['区域'] = sec => { if (!o.all) sec.appendChild(el('div', { class: 'hint' }, '可拖动四角调整大小，拖动内部移动。')); };
+  schemaSections(pp, o, extras);
+  if (o.kind === 'incline') { const s2 = section(pp, '快捷'); btn(s2, '在顶端放置滑块', () => placeOnIncline(o)); }
+  if (o.kind === 'efield') {
+    const s2 = section(pp, '由电压推算');
+    const r1 = el('div', { class: 'row' }); r1.appendChild(el('span', { class: 'lab' }, 'U，d'));
+    const iu = el('input', { type: 'number', value: '100', title: '电压 U (V)', 'aria-label': '电压 U' });
+    const id_ = el('input', { type: 'number', value: '1', title: '间距 d (m)', 'aria-label': '间距 d' });
+    r1.appendChild(iu); r1.appendChild(el('span', { class: 'unit' }, 'V')); r1.appendChild(id_); r1.appendChild(el('span', { class: 'unit' }, 'm')); s2.appendChild(r1);
+    btn(s2, '设 E = U / d', () => { const u = +iu.value, dd = +id_.value; if (!(dd > 0) || !isFinite(u)) { toast('d 必须大于 0'); return; } pushUndo('由电压设场强'); o.E = Math.abs(u / dd); markFieldsDirty(); liveEdit(); buildPanel(); });
+  }
+  derivedSection(pp, o);
+  if (MODEL_NOTE[o.kind]) { const m = section(pp, '物理模型'); m.appendChild(el('div', { class: 'hint' }, MODEL_NOTE[o.kind])); }
+  panels.appendChild(pp);
   P.appendChild(panels);
   syncDesmosKeypadForAnalysis(false);
 }
@@ -2806,24 +3481,15 @@ function buildBodyPanel(P, b) {
 
   const pProps = panelBox('props', propsTab);
   {
-    const p = section(pProps, '物理量');
-    numRow(p, '质量 m', () => b.m, v => b.m = v, 'kg', { min: 1e-40, title: '如 9.1e-31', slot: [b, 'm'] });
-    numRow(p, '电荷 q', () => b.q, v => b.q = v, 'C', { title: '如 -1.6e-19', slot: [b, 'q'] });
-    if (b.kind === 'box') {
-      numRow(p, '宽 w', () => b.w, v => b.w = v, 'm', { min: 0.001, slot: [b, 'w'] });
-      numRow(p, '高 h', () => b.h, v => b.h = v, 'm', { min: 0.001, slot: [b, 'h'] });
-      numRow(p, '倾角', () => b.ang0, v => b.ang0 = v, '°', { init: true, slot: [b, 'ang0'] });
-    } else numRow(p, '半径 r', () => b.r, v => b.r = v, 'm', { min: 0.0001, slot: [b, 'r'] });
-    numRow(p, '摩擦 μ', () => b.mu, v => b.mu = v, '', { step: 0.05, min: 0, slot: [b, 'mu'] });
-    numRow(p, '恢复系数 e', () => b.e, v => b.e = Math.min(1, v), '', { step: 0.1, min: 0, slot: [b, 'e'] });
-    const o = section(pProps, '行为');
-    chkRow(o, '固定', () => b.fixed, v => b.fixed = v, { init: true });
-    chkRow(o, '显示轨迹', () => b.trail, v => b.trail = v);
-    chkRow(o, '参与碰撞', () => b.collide, v => b.collide = v);
-    const tb = el('div', { class: 'btnrow' });
-    btn(tb, '清除轨迹', () => { if (b.st) b.st.trail = [[b.st.x, b.st.y]]; draw(); });
-    o.appendChild(tb);
-    o.appendChild(el('div', { class: 'hint' }, '外力请到「受力」标签页设置。'));
+    schemaSections(pProps, b, {
+      '行为': sec => {
+        const tb = el('div', { class: 'btnrow' });
+        btn(tb, '清除轨迹', () => { resetTrail(b); draw(); });
+        sec.appendChild(tb);
+      },
+    });
+    derivedSection(pProps, b);
+    const m = section(pProps, '物理模型'); m.appendChild(el('div', { class: 'hint' }, MODEL_NOTE[b.kind] || ''));
   }
 
   const pForce = panelBox('force', propsTab);
@@ -2834,6 +3500,31 @@ function buildBodyPanel(P, b) {
   {
     const r = section(pLive, '瞬时状态');
     readRow(r, [['位置', 'r_pos'], ['速度', 'r_vel'], ['速率', 'r_v'], ['方向', 'r_ang'], ['加速度', 'r_a'], ['动能', 'r_ek'], ['动量', 'r_p'], ['重力势能', 'r_ep'], ['机械能', 'r_e']]);
+    const ps = section(pLive, '轨迹标记点');
+    const mine = pins.filter(p => p.bodyId === b.id).sort((u, v) => u.t - v.t);
+    if (!mine.length) ps.appendChild(el('div', { class: 'hint' }, '把鼠标移到轨迹或预测曲线上会显示该时刻的读数，点击即可钉住一个标记点。'));
+    else {
+      const tb = el('table', { class: 'pin-table' });
+      tb.innerHTML = '<thead><tr><th>t / s</th><th>x / m</th><th>y / m</th><th>v / (m/s)</th><th></th></tr></thead>';
+      const body = el('tbody');
+      for (const p of mine) {
+        const tr = el('tr', { title: p.t <= sim.t + 1e-9 ? '已走轨迹' : '数值预测（尚未走到）' });
+        const cells = [0, 1, 2, 3].map(() => el('td'));
+        cells.forEach(c => tr.appendChild(c));
+        const x = el('button', { type: 'button', class: 'pin-del', title: '移除', 'aria-label': '移除' }, '×');
+        x.onclick = () => { pins.splice(pins.indexOf(p), 1); buildPanel(); requestDraw(); };
+        const td = el('td'); td.appendChild(x); tr.appendChild(td);
+        if (p.t > sim.t + 1e-9) tr.classList.add('pred');
+        body.appendChild(tr);
+        derivedLive.push([cells[0], () => { const q = pinPos(p); if (!q) { cells.slice(1).forEach(c => c.textContent = '—'); return fmt(p.t, 4); } cells[1].textContent = fmt(q[0], 4); cells[2].textContent = fmt(q[1], 4); cells[3].textContent = fmt(Math.hypot(q[3], q[4]), 4); return fmt(p.t, 4) + (p.t > sim.t + 1e-9 ? '*' : ''); }]);
+      }
+      tb.appendChild(body); ps.appendChild(tb);
+      if (mine.some(p => p.t > sim.t + 1e-9)) ps.appendChild(el('div', { class: 'hint' }, '* 尚未走到的时刻，取自数值预测，随参数修改自动更新。'));
+      const br = el('div', { class: 'btnrow' });
+      btn(br, '清除全部标记', () => { pins = pins.filter(p => p.bodyId !== b.id); buildPanel(); requestDraw(); });
+      ps.appendChild(br);
+      updateDerived(true);
+    }
   }
 
   const pAn = panelBox('analysis', propsTab);
@@ -2857,89 +3548,6 @@ function buildBodyPanel(P, b) {
   ensureDesmosKeypadDock(document.getElementById('right'));
   syncDesmosKeypadForAnalysis(propsTab === 'analysis');
   updateReadouts();
-}
-
-function buildPointChargePanel(P, o) {
-  const s = section(P, '点电荷');
-  numRow(s, '位置 x', () => o.x, v => o.x = v, 'm', { slot: [o, 'x'] });
-  numRow(s, '位置 y', () => o.y, v => o.y = v, 'm', { slot: [o, 'y'] });
-  numRow(s, '电荷 q', () => o.q, v => { o.q = v; o.color = v >= 0 ? '#c8553d' : '#4a78b0'; }, 'C', { title: '如 1e-6；负号表示负电', slot: [o, 'q'] });
-  numRow(s, '软化半径', () => o.softRadius, v => o.softRadius = v, 'm', { min: 1e-4, slot: [o, 'softRadius'] });
-  const br = el('div', { class: 'btnrow' });
-  btn(br, '+1 μC', () => { pushUndo(); o.q = 1e-6; o.color = '#c8553d'; liveEdit(); buildPanel(); });
-  btn(br, '−1 μC', () => { pushUndo(); o.q = -1e-6; o.color = '#4a78b0'; liveEdit(); buildPanel(); });
-  btn(br, '取反', () => { pushUndo(); o.q = -o.q; o.color = o.q >= 0 ? '#c8553d' : '#4a78b0'; liveEdit(); buildPanel(); });
-  s.appendChild(br);
-  s.appendChild(el('div', { class: 'hint' }, `力律：${scene.settings.coulombLaw === 'coulomb2d' ? '二维/线电荷截面 (1/r)' : '三维点电荷 (1/r²)'}。电场线由 FieldSystem 积分绘制。`));
-  const f = fieldAt(o.x + (o.softRadius || 0.08) * 2, o.y);
-  s.appendChild(el('div', { class: 'hint' }, `旁侧抽样 |E| ≈ ${fmt(Math.hypot(f.Ex, f.Ey))} V/m`));
-}
-function buildEPanel(P, o) {
-  const s = section(P, '匀强电场');
-  numRow(s, '场强 E', () => o.E, v => o.E = v, 'V/m', { min: 0, slot: [o, 'E'] });
-  numRow(s, '方向角', () => o.ang, v => o.ang = v, '°', { slot: [o, 'ang'] });
-  const br = el('div', { class: 'btnrow' });
-  [[90, '上'], [-90, '下'], [180, '左'], [0, '右']].forEach(([a, t]) => btn(br, t, () => { pushUndo(); o.ang = a; liveEdit(); }));
-  s.appendChild(br);
-  regionSec(P, o);
-  P.appendChild(el('div', { class: 'hint', style: 'padding:8px 12px' }, 'F = qE。平行板：E = U/d。'));
-  const s2 = section(P, '由电压推算');
-  const r1 = el('div', { class: 'row' }); r1.appendChild(el('span', { class: 'lab' }, 'U / d'));
-  const iu = el('input', { type: 'number', value: '100', title: 'U (V)' });
-  const id_ = el('input', { type: 'number', value: '1', title: 'd (m)' });
-  r1.appendChild(iu); r1.appendChild(id_); s2.appendChild(r1);
-  btn(s2, '设 E = U/d', () => { const u = +iu.value, dd = +id_.value; if (dd > 0) { pushUndo(); o.E = Math.abs(u / dd); liveEdit(); } });
-}
-
-function buildBPanel(P, o) {
-  const s = section(P, '匀强磁场');
-  numRow(s, '磁感应强度 B', () => o.B, v => o.B = v, 'T', { min: 0, slot: [o, 'B'] });
-  const br = el('div', { class: 'btnrow' });
-  btn(br, '向里 ⊗', () => { pushUndo(); o.dir = -1; liveEdit(); buildPanel(); }, o.dir < 0 ? 'active' : '');
-  btn(br, '向外 ⊙', () => { pushUndo(); o.dir = 1; liveEdit(); buildPanel(); }, o.dir > 0 ? 'active' : '');
-  s.appendChild(br);
-  regionSec(P, o);
-  P.appendChild(el('div', { class: 'hint', style: 'padding:8px 12px' }, 'F = qv×B。r = mv/|qB|，T = 2πm/|qB|。'));
-}
-
-function regionSec(P, o) {
-  const s = section(P, '作用区域');
-  chkRow(s, '全空间', () => o.all, v => o.all = v, { rebuild: true });
-  if (!o.all) {
-    numRow(s, '左下角 x', () => o.x, v => o.x = v, 'm', { slot: [o, 'x'] });
-    numRow(s, '左下角 y', () => o.y, v => o.y = v, 'm', { slot: [o, 'y'] });
-    numRow(s, '宽度', () => o.w, v => o.w = v, 'm', { min: 0, slot: [o, 'w'] });
-    numRow(s, '高度', () => o.h, v => o.h = v, 'm', { min: 0, slot: [o, 'h'] });
-    s.appendChild(el('div', { class: 'hint' }, '可拖四角调整，拖内部移动。'));
-  }
-}
-function buildLinkPanel(P, o) {
-  const title = KIND_NAME[o.kind] || '约束';
-  const s = section(P, title);
-  if (o.kind === 'spring') {
-    numRow(s, '原长 L₀', () => o.L0, v => o.L0 = v, 'm', { min: 0, slot: [o, 'L0'] });
-    numRow(s, '劲度 k', () => o.k, v => o.k = v, 'N/m', { min: 0, slot: [o, 'k'] });
-    s.appendChild(el('div', { class: 'hint' }, '理想弹簧：F = −k(L−L₀)，可拉可压。'));
-  } else if (o.kind === 'rope') {
-    numRow(s, '绳长 L', () => o.L0, v => o.L0 = v, 'm', { min: 0, slot: [o, 'L0'] });
-    numRow(s, '张力刚度', () => o.k, v => o.k = v, 'N/m', { min: 0, slot: [o, 'k'] });
-    numRow(s, '质量 m', () => o.m || 0, v => o.m = Math.max(0, v), 'kg', { min: 0, step: 0.01, slot: [o, 'm'] });
-    s.appendChild(el('div', { class: 'hint' }, '轻绳只拉不压：L&lt;L₀ 时张力为 0；刚度宜较大（≥1000）。质量默认 0。'));
-  } else if (o.kind === 'rod') {
-    numRow(s, '杆长 L₀', () => o.L0, v => o.L0 = v, 'm', { min: 0, slot: [o, 'L0'] });
-    numRow(s, '质量 m', () => o.m || 0, v => o.m = Math.max(0, v), 'kg', { min: 0, step: 0.01, slot: [o, 'm'] });
-    s.appendChild(el('div', { class: 'hint' }, '轻杆长度恒定（刚性约束，可压可拉，自身不变形）。质量默认 0，自重均分到两端。'));
-  }
-  if (o.b == null) {
-    numRow(s, '固定点 x', () => o.ax, v => o.ax = v, 'm', { slot: [o, 'ax'] });
-    numRow(s, '固定点 y', () => o.ay, v => o.ay = v, 'm', { slot: [o, 'ay'] });
-  }
-  const A = byId(o.a), B = o.b != null ? byId(o.b) : null;
-  s.appendChild(el('div', { class: 'hint' }, `连接：${A ? A.name : '?'} — ${B ? B.name : '固定点'}`));
-  btn(s, '长度 = 当前距离', () => {
-    const e = linkEnds(o);
-    if (e) { pushUndo(); o.L0 = clean(Math.hypot(e.x2 - e.x1, e.y2 - e.y1)); liveEdit(); }
-  });
 }
 
 function lessonCard(parent) {
@@ -3103,6 +3711,15 @@ function buildScenePanel(P) {
 
   const pDisp = panelBox('display', propsTab);
   {
+    const tr = section(pDisp, '轨迹');
+    chkRow(tr, '已走轨迹', () => S.showTrail, v => { S.showTrail = v; syncToolbar(); });
+    chkRow(tr, '数值预测（暂停时）', () => S.showPredict, v => { S.showPredict = v; syncToolbar(); });
+    numRow(tr, '预测时长 T', () => S.predictT, v => S.predictT = v, 's', { min: 0.05, max: 120, title: '从当前状态向前积分的时长；越长越耗时' });
+    numRow(tr, '频闪间隔 Δt', () => S.strobe, v => { S.strobe = v; syncToolbar(); }, 's', { min: 0, title: '0 表示不画频闪点。课本频闪照片常用 0.1 s' });
+    const sb = el('div', { class: 'btnrow' });
+    [[0.02, '0.02'], [0.05, '0.05'], [0.1, '0.1'], [0.2, '0.2'], [0.5, '0.5']].forEach(([v, t]) => btn(sb, `${t} s`, () => { S.strobe = v; syncToolbar(); liveEdit(); buildPanel(); }, Math.abs(S.strobe - v) < 1e-12 ? 'active' : ''));
+    tr.appendChild(sb);
+    tr.appendChild(el('div', { class: 'hint' }, '实线为已走过的轨迹，虚线为数值预测（与实际运动使用同一个积分器），点线为解析解。把鼠标移到曲线上可读取任意时刻的位置与速度，点击可钉住。'));
     const d = section(pDisp, '矢量比例');
     numRow(d, '速度箭头', () => S.vPx, v => S.vPx = v, 'px/(m/s)', { min: 0.0001, slot: [S, 'vPx'] });
     numRow(d, '外力箭头', () => S.FPx || 12, v => S.FPx = v, 'px/N', { min: 0.0001, slot: [S, 'FPx'] });
@@ -3113,7 +3730,7 @@ function buildScenePanel(P) {
     const view = el('div', { class: 'btnrow' });
     btn(view, '适配视图', fitView);
     btn(view, '回到原点', () => { scene.view.cx = 0; scene.view.cy = 0; draw(); });
-    btn(view, '清除所有轨迹', () => { bodies().forEach(b => { if (b.st) b.st.trail = [[b.st.x, b.st.y]]; }); draw(); });
+    btn(view, '清除所有轨迹', () => { bodies().forEach(resetTrail); draw(); });
     g.appendChild(view);
   }
 
@@ -3147,6 +3764,27 @@ const ADD_CATALOG = [
   ]},
 ];
 
+function objColor(o) {
+  return o.color || (o.kind === 'efield' ? '#b5762a' : o.kind === 'bfield' ? '#4f7faf' : o.kind === 'rope' ? '#4f7faf' : o.kind === 'rod' ? '#4d6470' : o.kind === 'spring' ? '#3d8f86' : '#7c796f');
+}
+/** 列表第二行：该对象最关键的参数，带单位 */
+function summaryOf(o) {
+  const v0 = o => Math.hypot(o.vx0 || 0, o.vy0 || 0);
+  switch (o.kind) {
+    case 'ball': case 'particle': case 'box':
+      return [`m = ${fmt(o.m)} kg`, o.q ? `q = ${fmt(o.q)} C` : '', o.fixed ? '固定' : `v₀ = ${fmt(v0(o))} m/s`].filter(Boolean).join(' · ');
+    case 'ground': return `y = ${fmt(o.y)} m${o.smooth ? ' · 光滑' : ''}`;
+    case 'wall': return `长 ${fmt(Math.hypot(o.x2 - o.x1, o.y2 - o.y1))} m${o.smooth ? ' · 光滑' : ''}`;
+    case 'incline': return `θ = ${fmt(o.ang)}° · 底边 ${fmt(o.L)} m${o.smooth ? ' · 光滑' : ''}`;
+    case 'efield': return `E = ${fmt(o.E)} V/m · ${fmt(o.ang)}°${o.all ? ' · 全空间' : ''}${o.expr && Object.keys(o.expr).length ? ' · 含公式' : ''}`;
+    case 'bfield': return `B = ${fmt(o.B)} T ${o.dir < 0 ? '⊗' : '⊙'}${o.all ? ' · 全空间' : ''}`;
+    case 'pointCharge': return `Q = ${fmt(o.q)} C`;
+    case 'spring': return `k = ${fmt(o.k)} N/m · L₀ = ${fmt(o.L0)} m`;
+    case 'rope': return `L = ${fmt(o.L0)} m${o.m ? ` · m = ${fmt(o.m)} kg` : ''}`;
+    case 'rod': return `L = ${fmt(o.L0)} m${o.m ? ` · m = ${fmt(o.m)} kg` : ''}`;
+  }
+  return '';
+}
 function matchQuery(text, q) {
   if (!q) return true;
   return String(text).toLowerCase().includes(q.trim().toLowerCase());
@@ -3183,19 +3821,22 @@ function refreshLeft() {
       wrap.appendChild(el('div', { class: 'objgroup' }, `${title} · ${items.length}`));
       const ul = el('ul', { class: 'objlist' });
       for (const o of items) {
-        const li = el('li', { class: (!selVec && o.id === selId) ? 'sel' : '' });
-        const col = o.color || (o.kind === 'efield' ? '#b5762a' : o.kind === 'bfield' ? '#4f7faf' : isLink(o) ? (o.kind === 'rope' ? '#4f7faf' : o.kind === 'rod' ? '#4d6470' : '#3d8f86') : '#7c796f');
-        li.appendChild(el('span', { class: 'dot', style: `background:${col}` }));
-        li.appendChild(el('span', {}, o.name));
-        const kindLabel = o.kind === 'bfield' ? (o.dir < 0 ? 'B⊗' : 'B⊙')
-          : o.kind === 'efield' ? 'E'
-          : isLink(o) ? (o.kind === 'rope' ? '绳' : o.kind === 'rod' ? '杆' : '簧')
-          : KIND_NAME[o.kind];
-        if (kindLabel && o.name !== kindLabel && !o.name.startsWith(KIND_NAME[o.kind] || '')) {
-          li.appendChild(el('span', { class: 'ty' }, kindLabel));
-        } else if (o.kind === 'bfield' || o.kind === 'efield' || isLink(o)) {
-          li.appendChild(el('span', { class: 'ty' }, kindLabel));
-        }
+        const li = el('li', { class: (!selVec && o.id === selId ? 'sel' : '') + (o.hidden ? ' is-hidden' : '') });
+        const col = objColor(o);
+        const sw = el('button', { type: 'button', class: 'swatch', title: o.hidden ? '显示' : '隐藏（仍参与物理计算）', 'aria-label': o.hidden ? '显示' : '隐藏',
+          style: `--c:${col}` });
+        sw.addEventListener('click', ev => {
+          ev.stopPropagation();
+          pushUndo(o.hidden ? '显示对象' : '隐藏对象');
+          o.hidden = !o.hidden; if (!o.hidden) delete o.hidden;
+          refreshLeft(); markDirty(); requestDraw();
+        });
+        li.appendChild(sw);
+        const main = el('div', { class: 'om' });
+        main.appendChild(el('div', { class: 'on' }, escapeHtml(o.name)));
+        main.appendChild(el('div', { class: 'os' }, escapeHtml(summaryOf(o))));
+        li.appendChild(main);
+        li.appendChild(el('span', { class: 'ty' }, KIND_NAME[o.kind] || ''));
         li.dataset.id = String(o.id);
         li.addEventListener('click', () => { select(o.id); closeMobilePanels(); });
         li.addEventListener('contextmenu', (ev) => {
@@ -3204,27 +3845,17 @@ function refreshLeft() {
           openContextMenu(ev.clientX, ev.clientY, o, 'list');
         });
         ul.appendChild(li);
-        if (isBody(o) && (leftChip === 'all' || leftChip === 'body')) {
-          const bodyMatch = matchQuery(o.name, q) || matchQuery(KIND_NAME[o.kind] || '', q);
+        const expanded = selId === o.id || (selVec && selVec.bodyId === o.id);
+        if (isBody(o) && expanded && (leftChip === 'all' || leftChip === 'body')) {
           for (const v of listVectors(o)) {
-            if (q && !bodyMatch && !matchQuery(v.name, q)) continue;
             const vi = el('li', { class: 'vec-item' + (selVec && selVec.bodyId === o.id && selVec.key === v.key ? ' sel' : '') });
             vi.dataset.vecBody = String(o.id);
             vi.dataset.vecKey = v.key;
             vi.appendChild(el('span', { class: 'dot', style: `background:${v.color}` }));
             vi.appendChild(el('span', {}, v.name));
             vi.appendChild(el('span', { class: 'ty' }, '矢量'));
-            vi.addEventListener('click', (ev) => {
-              ev.stopPropagation();
-              selectVector(o.id, v.key);
-              closeMobilePanels();
-            });
-            vi.addEventListener('contextmenu', (ev) => {
-              ev.preventDefault();
-              ev.stopPropagation();
-              selectVector(o.id, v.key);
-              openVectorMenu(ev.clientX, ev.clientY, o, v.key);
-            });
+            vi.addEventListener('click', (ev) => { ev.stopPropagation(); selectVector(o.id, v.key); closeMobilePanels(); });
+            vi.addEventListener('contextmenu', (ev) => { ev.preventDefault(); ev.stopPropagation(); selectVector(o.id, v.key); openVectorMenu(ev.clientX, ev.clientY, o, v.key); });
             ul.appendChild(vi);
           }
         }
@@ -3345,6 +3976,7 @@ function setTxt(id, t) { const e = document.getElementById(id); if (e) e.innerHT
 function updateReadouts() {
   updateStatus();
   if (!selected() && propsTab === 'overview') updateEnergyReadout(!sim.running);
+  updateDerived(!sim.running);
   const b = selected(); if (!isBody(b) || !b.st) return;
   const st = b.st, S = scene.settings, v = Math.hypot(st.vx, st.vy), Ek = 0.5 * b.m * v * v, Ep = S.gOn ? b.m * S.g * st.y : 0;
   setTxt('r_pos', `(${fmt(st.x)}, ${fmt(st.y)}) m`); setTxt('r_vel', `(${fmt(st.vx)}, ${fmt(st.vy)}) m/s`);
@@ -4158,6 +4790,7 @@ function serialize() {
 }
 function normalizeObject(raw) {
   const o = Object.assign({}, raw, { st: null });
+  delete o._grab; delete o._hold; delete o._exprErr;
   // 旧版 spring.rope → 独立 rope 种类
   if (o.kind === 'spring' && o.rope) {
     o.kind = 'rope';
@@ -4173,10 +4806,14 @@ function normalizeObject(raw) {
     if (o.m == null) o.m = 0;
     if (o.kind === 'rope' && (o.k == null || o.k <= 0)) o.k = 5000;
   }
+  const fixes = sanitizeBySchema(o);
+  if (fixes.length) normalizeObject.fixed.push(`${o.name || KIND_NAME[o.kind]}：${[...new Set(fixes)].join('、')}`);
   return o;
 }
+normalizeObject.fixed = [];
 function loadScene(data, keepView) {
   if (!data || !Array.isArray(data.objects)) throw new Error('无效的场景文件');
+  normalizeObject.fixed = [];
   const oldView = scene.view;
   scene = {
     settings: Object.assign(defaultSettings(), data.settings || {}),
@@ -4191,9 +4828,12 @@ function loadScene(data, keepView) {
   nextId = scene.objects.reduce((m, o) => Math.max(m, o.id || 0), 0) + 1;
   if (selId != null && !byId(selId)) selId = null;
   if (selVec && !byId(selVec.bodyId)) selVec = null;
-  if (!keepView) { selId = null; selVec = null; }
+  if (!keepView) { selId = null; selVec = null; pins = []; }
+  pins = pins.filter(p => scene.objects.some(o => o.id === p.bodyId));
+  predCache.key = '';
   if (leftChip === 'spring') leftChip = 'link';
   resetSim(); markFieldsDirty(); syncToolbar(); buildList(); buildPanel(); draw(); markDirty();
+  if (normalizeObject.fixed.length) setTimeout(() => toast(`已修正 ${normalizeObject.fixed.length} 处不合法的参数：${normalizeObject.fixed.slice(0, 2).join('；')}${normalizeObject.fixed.length > 2 ? '…' : ''}`), 50);
 }
 let saveT = 0;
 function markDirty() { clearTimeout(saveT); saveT = setTimeout(() => { try { localStorage.setItem(STORE_KEY, serialize()); } catch (e) { } }, 400); }
@@ -4210,6 +4850,8 @@ function syncToolbar() {
   if ($('#chkVel')) $('#chkVel').checked = S.showVel;
   if ($('#chkForce')) $('#chkForce').checked = S.showForce;
   if ($('#chkAnalytic')) $('#chkAnalytic').checked = !!S.showAnalytic;
+  if ($('#chkPredict')) $('#chkPredict').checked = !!S.showPredict;
+  if ($('#chkStrobe')) $('#chkStrobe').checked = S.strobe > 0;
   if ($('#chkFieldLines')) $('#chkFieldLines').checked = !!S.showFieldLines;
   const sel = $('#selSpeed');
   if (sel) {
@@ -4238,6 +4880,8 @@ function initToolbar() {
   const flag = (id, k) => { const node = $(id); if (node) node.onchange = e => { scene.settings[k] = e.target.checked; markDirty(); draw(); }; };
   flag('#chkGrid', 'showGrid'); flag('#chkTrail', 'showTrail'); flag('#chkVel', 'showVel'); flag('#chkForce', 'showForce');
   flag('#chkAnalytic', 'showAnalytic');
+  flag('#chkPredict', 'showPredict');
+  if ($('#chkStrobe')) $('#chkStrobe').onchange = e => { const S = scene.settings; if (e.target.checked) S.strobe = S._strobeLast || 0.1; else { S._strobeLast = S.strobe || 0.1; S.strobe = 0; } markDirty(); draw(); if (!selected()) buildPanel(); };
   if ($('#chkFieldLines')) {
     $('#chkFieldLines').onchange = e => { scene.settings.showFieldLines = e.target.checked; markFieldsDirty(); markDirty(); draw(); };
   }
@@ -4488,7 +5132,7 @@ function openContextMenu(clientX, clientY, target, where = 'canvas') {
         toast(target.fixed ? '已固定' : '已取消固定');
       }));
       menu.appendChild(ctxItem('清除轨迹', () => {
-        if (target.st) { target.st.trail = [[target.st.x, target.st.y]]; draw(); }
+        resetTrail(target); draw();
       }));
       menu.appendChild(ctxItem('转到分析页', () => {
         select(target.id);
@@ -4582,7 +5226,7 @@ function bootOnce() {
   try { if (!localStorage.getItem('physim.seenHelp')) { $('#help').classList.add('show'); localStorage.setItem('physim.seenHelp', '1'); } } catch (e) { }
   window.__physim = {
     scene: () => scene, sim, advance, loadPreset, select, resetSim, togglePlay, fieldSys,
-    presetKeys: () => Object.keys(PRESETS), energy: systemEnergy,
+    presetKeys: () => Object.keys(PRESETS), energy: systemEnergy, predict: () => { predCache.msPerStep = 0; return computePrediction(); }, pins: () => pins,
     async enableRapier() {
       contactWorld = await createRapierContactWorld(0);
       scene.settings.contactBackend = 'rapier2d';

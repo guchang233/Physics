@@ -837,3 +837,39 @@ body.scrubbing, body.scrubbing * { cursor: ew-resize !important; }
   #toast.show { transform: translate(-50%, 0); }
 }
 #toolhint { max-width: calc(100% - 240px); }
+
+/* field validation */
+.field-err { margin: -3px 0 6px 100px; font-size: 11.5px; color: var(--danger); line-height: 1.4; }
+.field-err:empty { display: none; }
+.row.invalid input { border-color: var(--danger) !important; box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 14%, transparent) !important; }
+.row.invalid > .lab { color: var(--danger); }
+@media (max-width: 820px) { .field-err { margin-left: 0; } }
+.row > .lab i.sym { font-family: var(--serif); font-style: italic; color: var(--text); margin-left: 2px; }
+.readout.derived { grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); }
+.readout.derived .k { font-size: 12px; }
+.readout.derived span:not(.k) { text-align: right; word-break: break-all; }
+.pin-table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 12px; font-variant-numeric: tabular-nums; }
+.pin-table th { font-family: var(--sans); font-weight: 500; font-size: 11.5px; color: var(--faint); text-align: right; padding: 4px 6px; border-bottom: 1px solid var(--border); }
+.pin-table td { text-align: right; padding: 5px 6px; border-bottom: 1px solid var(--border); }
+.pin-table tr.pred td { color: var(--muted); }
+.pin-table .pin-del { min-height: 22px; width: 22px; padding: 0; color: var(--faint); }
+.pin-table .pin-del:hover { color: var(--danger); }
+
+/* Desmos-style object rows */
+.objlist li:not(.vec-item) { grid-template-columns: 18px minmax(0, 1fr) auto; align-items: start; padding: 8px 10px; }
+.objlist .swatch {
+  width: 16px; height: 16px; min-height: 0; padding: 0; margin-top: 1px; border-radius: 50%;
+  background: var(--c); border: 2px solid var(--c); box-shadow: none;
+}
+.objlist .swatch:hover { box-shadow: 0 0 0 3px color-mix(in srgb, var(--c) 25%, transparent); background: var(--c); }
+.objlist li.is-hidden .swatch { background: transparent; }
+.objlist li.is-hidden .on, .objlist li.is-hidden .os { opacity: .5; }
+.objlist .om { min-width: 0; }
+.objlist .on { font-size: 13px; line-height: 1.35; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.objlist .os { font-family: var(--mono); font-size: 11px; color: var(--faint); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; letter-spacing: -0.01em; }
+.objlist li.sel .os { color: var(--muted); }
+.objlist li .ty { margin-top: 2px; }
+@media (max-width: 820px) {
+  #bRedo, .tb-rule, .add-grid button kbd { display: none; }
+  .brand { padding-left: 2px; }
+}

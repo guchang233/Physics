@@ -74,10 +74,12 @@
             <div class="pop-sep"></div>
             <div class="pop-title">画布</div>
             <label class="chk"><input type="checkbox" id="chkGrid" checked>网格</label>
-            <label class="chk"><input type="checkbox" id="chkTrail" checked>轨迹</label>
+            <label class="chk"><input type="checkbox" id="chkTrail" checked>已走轨迹</label>
+            <label class="chk" title="用同一引擎向前积分，暂停时显示"><input type="checkbox" id="chkPredict" checked>预测轨迹</label>
+            <label class="chk" title="每隔 Δt 在轨迹上打一个点"><input type="checkbox" id="chkStrobe" checked>频闪点</label>
             <label class="chk"><input type="checkbox" id="chkVel" checked>速度矢量</label>
             <label class="chk"><input type="checkbox" id="chkForce">受力分析</label>
-            <label class="chk" title="解析轨迹"><input type="checkbox" id="chkAnalytic" checked>解析轨迹</label>
+            <label class="chk" title="运动分析给出的闭式解（仅选中物体）"><input type="checkbox" id="chkAnalytic" checked>解析解</label>
             <label class="chk" title="电场线"><input type="checkbox" id="chkFieldLines" checked>电场线</label>
           </div>
         </div>
@@ -162,6 +164,7 @@
       <div class="h-card"><b>初态与外力</b><p>选中物体后拖动绿色箭头设初速度；「受力」页可设恒力、随时间变化的表达式或指向目标的力。</p></div>
       <div class="h-card"><b>公式联动</b><p>任何数值旁的 <i>ƒ</i> 都能改写成公式，例如 <code>sin(t)</code> 或 <code>小球2.vx</code>，参数之间可以互相引用。</p></div>
       <div class="h-card"><b>分析</b><p>「分析」页识别运动类型并给出参数方程；「图像」页绘制 v–t、相图、能量曲线等。</p></div>
+      <div class="h-card"><b>轨迹</b><p>实线是已走过的轨迹，虚线是从当前状态出发的数值预测（与实际运行用同一个积分器，逐步一致），点线是解析解。轨迹上的点按固定时间间隔打出（频闪）。鼠标移到曲线上可读出任意时刻的位置与速度，点击即可钉住。</p></div>
       <div class="h-card"><b>时间轴</b><p>暂停后拖动画布底部的时间轴即可回看任意时刻；从回看处继续播放会覆盖之后的记录。运行中可以直接抓住物体甩出去。</p></div>
       <div class="h-card"><b>能量守恒</b><p>不选中任何物体时，检视栏显示系统的动能、各类势能与总能量，可以直观看到守恒或耗散。</p></div>
     </div>
