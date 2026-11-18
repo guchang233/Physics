@@ -14,7 +14,8 @@
     "test:expr": "node --experimental-strip-types src/engine/forceExpr.selftest.ts",
     "test": "npm run test:analysis && npm run test:fields && npm run test:expr && npm run test:rigid",
     "test:physics": "node scripts/physics-check.mjs",
-    "test:rigid": "node src/engine/rigid.selftest.js"
+    "test:rigid": "node src/engine/rigid.selftest.js",
+    "test:ui": "node scripts/ui-check.mjs"
   },
   "devDependencies": {
     "@types/jquery": "^4.0.1",

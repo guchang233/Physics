@@ -1570,7 +1570,8 @@ function computePrediction() {
     // 交互预算：按上次实测的单步耗时把总耗时控制在 ~35 ms 内（拖动时保持跟手），图例会显示实际预测时长
     if (predCache.msPerStep) {
       const per01 = Math.max(1, Math.round(0.1 / h));   // 预算截短时按 0.1 s 取整，图例上显示整齐的时长
-      const budget = Math.max(200, Math.floor(35 / predCache.msPerStep));
+      // 拖动中保持跟手（35 ms）；静止时只在参数变化后算一次，可以放宽到 150 ms
+      const budget = Math.max(200, Math.floor((drag ? 35 : 150) / predCache.msPerStep));
       if (budget < n) n = Math.max(per01, Math.floor(budget / per01) * per01);
     }
     const tStart = sim.t;
@@ -1952,7 +1953,11 @@ function selectVector(bodyId, key, opts = {}) {
  * ===================================================================== */
 let selSet = new Set();
 function isSel(o) { return !!o && selSet.has(o.id); }
-function selection() { return [...selSet].map(byId).filter(Boolean); }
+function selection() {
+  const list = [...selSet].map(byId).filter(Boolean);
+  if (list.length !== selSet.size) { selSet = new Set(list.map(o => o.id)); if (selId != null && !selSet.has(selId)) selId = list.length ? list.at(-1).id : null; }
+  return list;
+}
 function groupOf(o) { return o && o.group != null ? (scene.groups || []).find(g => g.id === o.group) : null; }
 function groupMembers(gid) { return scene.objects.filter(o => o.group === gid); }
 function canvasPickable(o) { return o && !o.hidden && !o.locked && !(groupOf(o) && (groupOf(o).locked || groupOf(o).hidden)); }
@@ -2922,7 +2927,7 @@ function deleteSel() {
   const s = selected(); if (!s) return; pushUndo(`删除「${s.name}」`);
   const links = scene.objects.filter(o => isLink(o) && (o.a === s.id || o.b === s.id)).length;
   scene.objects = scene.objects.filter(o => o !== s && !(isLink(o) && (o.a === s.id || o.b === s.id)));
-  selId = null; selVec = null; afterStructure(); buildPanel();
+  selId = null; selVec = null; selSet = new Set(); afterStructure(); buildPanel(); updateOptContext();
   toast(`已删除「${s.name}」${links ? `及 ${links} 个连接` : ''}`, { action: UNDO_ACTION });
 }
 function uniqueName(base) {
@@ -6257,9 +6262,8 @@ function updateOptContext() {
     c.innerHTML = `<b>${escapeHtml(CMD['tool.' + tool] ? CMD['tool.' + tool].label : tool)}</b> · ${escapeHtml(TOOL_HINT[tool])} <span class="th-k">· Alt 关闭吸附 · Esc 取消</span>`;
     return;
   }
-  const n = selSet.size;
+  const list = selection(), n = list.length;   // 只认仍然存在的对象
   if (!n) { c.innerHTML = tool === 'pan' ? '<b>平移</b> · 拖动画布移动视图' : '<span class="th-k">单击选择 · Shift 加选 · 空白处拖出选框 · 双击进入编组</span>'; return; }
-  const list = selection();
   const g = groupOf(list[0]);
   const whole = g && list.every(o => o.group === g.id) && n === groupMembers(g.id).length;
   c.innerHTML = n === 1 ? `已选 <b>${escapeHtml(list[0].name)}</b> · ${escapeHtml(KIND_NAME[list[0].kind] || '')}${list[0].locked ? ' · 已锁定' : ''}`
@@ -6269,6 +6273,8 @@ function updateOptContext() {
 /* ---------------- 快捷键：统一由命令表分发 ---------------- */
 const CODE_KEY = { BracketLeft: '[', BracketRight: ']', Equal: '=', Minus: '-', Comma: ',', Period: '.', Slash: '/', Space: 'Space', Backquote: '`' };
 function comboOf(e) {
+  // “?” 按字符识别：不同键盘布局下它不一定在 Slash 键位
+  if (e.key === '?' && !(e.ctrlKey || e.metaKey || e.altKey)) return 'Shift+/';
   let k = CODE_KEY[e.code];
   if (!k) {
     if (/^Key[A-Z]$/.test(e.code)) k = e.code.slice(3);
