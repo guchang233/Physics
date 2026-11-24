@@ -447,7 +447,13 @@ export function setDesmosKeypadVisible(show: boolean) {
   syncShowButton();
 }
 
-/** Show fixed keypad only on Analysis tab; respect user hide. */
+function mathFieldFocused(): boolean {
+  const ae = document.activeElement;
+  if (!ae || !ae.closest) return false;
+  return !!ae.closest('.mq-editable-field, .mq-textarea, #desmosKeypadDock, #desmosKeypadShow');
+}
+
+/** 分析页只准备键盘，不自动铺满。聚焦公式时才打开，避免挡住方程。 */
 export function syncDesmosKeypadForAnalysis(onAnalysisTab: boolean) {
   const right = keypadRoot();
   if (!right) return;
@@ -458,11 +464,8 @@ export function syncDesmosKeypadForAnalysis(onAnalysisTab: boolean) {
     if (showBtnEl) showBtnEl.hidden = true;
     return;
   }
-  if (userHidden) {
-    setDesmosKeypadVisible(false);
-  } else {
-    setDesmosKeypadVisible(true);
-  }
+  if (userHidden || !mathFieldFocused()) setDesmosKeypadVisible(false);
+  else setDesmosKeypadVisible(true);
 }
 
 export function isDesmosKeypadVisible() {

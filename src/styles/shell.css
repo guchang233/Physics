@@ -193,6 +193,11 @@ body[data-sheet="objects"][data-left="display"] #viewQuick { display: flex; flex
 .tab-ic { width: 22px; height: 22px; display: block; }
 
 /* 窄屏：底栏上方的底部面板 */
+@media (orientation: landscape) and (max-height: 520px) {
+  #sheet, #propSheet { max-height: calc(100% - 4px); }
+  #tabbar button { min-height: 44px; }
+  #topbar { min-height: 44px; }
+}
 @media (max-width: 799px) {
   #sheet, #propSheet {
     left: 0; right: 0; bottom: 0;
@@ -297,6 +302,35 @@ body[data-sheet="objects"][data-left="display"] #viewQuick { display: flex; flex
   .nd-grid { grid-template-columns: 220px minmax(0, 1fr); }
 }
 
+#armBar {
+  position: absolute;
+  z-index: 12;
+  left: 10px;
+  right: 10px;
+  top: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px 6px 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow-pop);
+}
+#armBar[hidden] { display: none !important; }
+body:has(#armBar:not([hidden])) #toolhint { display: none !important; }
+body:has(#armBar:not([hidden])) #toast { top: 76px; }
+#armLabel { flex: 1; min-width: 0; font-size: 13px; }
+#armCancel { min-width: 64px; min-height: 44px; }
+
+body.kb-open #app #propSheet,
+body.kb-open #app #sheet {
+  bottom: var(--kb, 0px) !important;
+  max-height: calc(100dvh - var(--kb, 0px) - 60px) !important;
+}
+body.kb-open #tabbar { transform: translateY(110%); }
+body.kb-open #timeline { bottom: calc(var(--kb, 0px) + 12px); }
+
 #toast { z-index: 80; }
 #toolhint {
   display: block;
@@ -369,3 +403,12 @@ body[data-sheet="lab"] #app #pageLab { display: flex !important; }
 .desmos-keypad-dock { touch-action: manipulation; }
 
 .env-note { margin: 0; padding: 12px 16px 0; color: var(--muted); font-size: 13px; }
+
+/* 软键盘（或模拟垫高）盖住底栏时，把属性/功能页抬到键盘之上。写在最后，压过宽屏的 bottom:0。 */
+body.kb-open #app #propSheet,
+body.kb-open #app #sheet {
+  top: auto !important;
+  bottom: var(--kb, 0px) !important;
+  max-height: calc(100dvh - var(--kb, 0px) - 8px) !important;
+}
+body.kb-open #tabbar { transform: translateY(110%); }

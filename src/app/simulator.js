@@ -1,7 +1,7 @@
 import { analyzeMotion, sampleAnalyticPath } from '../analysis/motionAnalysis.ts';
 import { collectContacts, solveVelocities, solvePositions, rotationalKE, inertia as rigidInertia, canRotate } from '../engine/rigid.js';
 import { mountMathQuill } from '../ui/mathquill.ts';
-import { syncDesmosKeypadForAnalysis, ensureDesmosKeypadDock } from '../ui/mathKeyboard.ts';
+import { syncDesmosKeypadForAnalysis, ensureDesmosKeypadDock, setDesmosKeypadVisible } from '../ui/mathKeyboard.ts';
 import { validateVarName, findUnknownNames, DISPLAY_LOCALS } from '../engine/forceExpr.ts';
 import { OVERLAY_TYPES, OVERLAY_CATS, isVecType, overlayDefaults, normalizeOverlay, overlaysFromLegacy, LEGACY_DISPLAY_KEYS, recommendedOverlays } from './display/overlayTypes.js';
 import {
@@ -1727,7 +1727,7 @@ function editHandles() {
   return out;
 }
 function hitHandle(sx, sy) {
-  let best = null, bestD = 11;
+  let best = null, bestD = pointerCoarse ? 24 : 11;
   for (const h of editHandles()) { const d = Math.hypot(sx - h.hx, sy - h.hy); if (d < bestD) { best = h; bestD = d; } }
   return best;
 }
@@ -2209,6 +2209,7 @@ function draw() {
  *  交互
  * ===================================================================== */
 let tool = 'select', selId = null, drag = null, mouseW = [0, 0];
+let pointerCoarse = false;
 let mouseIn = false, hoverObj = null, snapOff = false;
 const touchPoints = new Map();
 let pinch = null;
@@ -2564,6 +2565,8 @@ function setTool(t) {
   hoverObj = null;
   updateOptContext();
   cv.style.cursor = t === 'pan' ? 'grab' : t === 'select' ? 'default' : 'crosshair';
+  if (!navLock && t !== 'select') rememberNav('tool');
+  updateArmBar();
   if (leftTab === 'add') refreshLeft();
   draw();
 }
@@ -2580,7 +2583,7 @@ function hitBody(sx, sy) {
       const a = b.st.ang, dx = sx - x, dy = -(sy - y), c = Math.cos(a), s = Math.sin(a);
       const lx = dx * c + dy * s, ly = -dx * s + dy * c, sc = scene.view.scale;
       if (Math.abs(lx) <= Math.max(b.w * sc, 6) / 2 + 3 && Math.abs(ly) <= Math.max(b.h * sc, 6) / 2 + 3) return b;
-    } else if (Math.hypot(sx - x, sy - y) <= bodyScreenR(b) + 4) return b;
+    } else if (Math.hypot(sx - x, sy - y) <= bodyScreenR(b) + (pointerCoarse ? 12 : 4)) return b;
   }
   return null;
 }
@@ -2621,23 +2624,31 @@ function pinchDistance(a, b) {
 function pinchMid(a, b) {
   return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
 }
-/** 第二根手指按下时，结束单指正在进行的拖拽，避免对象被双指手势带飞 */
-function abortDragForPinch() {
-  if (!drag) return;
-  if (drag.type === 'create') {
-    drag = null;
-    pending = null;
+/** 双指开始时丢掉未完成的单指操作，不提交、不创建。 */
+function revertLiveDrag() {
+  if (!drag) { pending = null; return; }
+  const d = drag;
+  drag = null;
+  pending = null;
+  if (d.type === 'grab' && d.b && d.b._grab) {
+    if (d.b.st) { d.b.st.x = d.b._grab.x; d.b.st.y = d.b._grab.y; }
+    d.b._grab = null;
+    requestDraw();
     return;
   }
-  if (drag.type === 'pan') {
-    drag = null;
-    cv.style.cursor = tool === 'pan' ? 'grab' : 'default';
-    markDirty();
+  if (d.type === 'pan' || d.type === 'create') {
+    cv.style.cursor = 'default';
+    requestDraw();
     return;
   }
-  // 复用松手逻辑：未移动的操作回滚撤销栈，已移动的操作正常收尾
-  finishDrag({});
+  if (d.pushed && undoStack.length) {
+    const it = undoStack.pop();
+    editSeq = Math.max(0, editSeq - 1);
+    restoreSnapshot(it.s);
+    syncHistoryButtons();
+  }
 }
+function abortDragForPinch() { revertLiveDrag(); }
 function startPinchFromTouches() {
   const pair = touchPair();
   if (!pair || pinch) return;
@@ -2666,6 +2677,276 @@ function updatePinch() {
   draw(); markDirty();
 }
 
+const TOUCH_SLOP = 12;
+const LONG_PRESS_MS = 480;
+let touchSession = null;
+let navLock = false;
+const POINT_TOOLS = ['ball', 'particle', 'box', 'pointCharge', 'ground', 'incline'];
+
+function rememberNav(kind) {
+  if (navLock) return;
+  try {
+    if (history.state && history.state.physim === kind) return;
+    history.pushState({ physim: kind }, '');
+  } catch { /* 非安全上下文 */ }
+}
+function updateArmBar() {
+  const bar = $('#armBar'); if (!bar) return;
+  const on = !!(pickMode || pending || (tool && tool !== 'select'));
+  bar.hidden = !on;
+  const label = $('#armLabel');
+  if (!label) return;
+  if (pickMode) label.textContent = pickMode.prompt || '在画布上点选';
+  else if (pending && LINK_KINDS.includes(String(pending.type || tool))) label.textContent = '再点另一端，或取消';
+  else if (tool && tool !== 'select') label.textContent = `点按放置${KIND_NAME[tool] || tool}。拖动则只平移，不会创建`;
+  else label.textContent = '';
+}
+function cancelArm() {
+  pending = null;
+  if (touchSession) { clearTimeout(touchSession.timer); touchSession = null; }
+  if (pickMode) endPick('已取消');
+  if (tool !== 'select') setTool('select');
+  updateArmBar();
+  requestDraw();
+}
+function requestCancel() {
+  if (!navLock && history.state && history.state.physim === 'tool') { history.back(); return; }
+  cancelArm();
+}
+function bootHistory() {
+  try { history.replaceState({ physim: 'root' }, ''); } catch { /* ignore */ }
+  window.addEventListener('popstate', () => {
+    if (navLock) return;
+    navLock = true;
+    try {
+      if (pickMode || pending || tool !== 'select') cancelArm();
+      else if (sheet !== 'canvas') { $('#home')?.classList.remove('show'); setSheet('canvas'); }
+      else if (selSet.size) setSelection([]);
+    } finally { navLock = false; updateArmBar(); }
+  });
+}
+function applyKeyboardInset(px) {
+  const n = Math.max(0, Number(px) || 0);
+  document.documentElement.style.setProperty('--kb', n + 'px');
+  document.body.classList.toggle('kb-open', n > 40);
+  if (n > 40) {
+    const ae = document.activeElement;
+    if (ae && ae.scrollIntoView) ae.scrollIntoView({ block: 'center', inline: 'nearest' });
+  }
+}
+function bindKeyboardInset() {
+  const vv = window.visualViewport;
+  const fromViewport = () => {
+    if (!vv) return;
+    applyKeyboardInset(Math.max(0, window.innerHeight - vv.height - vv.offsetTop));
+  };
+  vv?.addEventListener('resize', fromViewport);
+  vv?.addEventListener('scroll', fromViewport);
+  document.addEventListener('focusin', (e) => {
+    const t = e.target;
+    if (!t || !t.closest) return;
+    if (t.closest('.mq-editable-field, .mq-textarea')) {
+      syncDesmosKeypadForAnalysis(true);
+      setDesmosKeypadVisible(true);
+    }
+    if (t.matches && t.matches('input, textarea, select') && window.matchMedia('(pointer: coarse)').matches) {
+      const inset = window.visualViewport ? Math.max(0, window.innerHeight - window.visualViewport.height - window.visualViewport.offsetTop) : 0;
+      if (inset < 40) applyKeyboardInset(Math.round(window.innerHeight * 0.38));
+      setTimeout(() => t.scrollIntoView({ block: 'center', inline: 'nearest' }), 60);
+    }
+  });
+  document.addEventListener('focusout', (e) => {
+    const t = e.target;
+    if (t && t.closest && t.closest('.mq-editable-field, .mq-textarea')) {
+      setTimeout(() => {
+        const ae = document.activeElement;
+        if (ae && ae.closest && ae.closest('.mq-editable-field, #desmosKeypadDock, #desmosKeypadShow')) return;
+        setDesmosKeypadVisible(false);
+      }, 140);
+    }
+    setTimeout(() => {
+      const ae = document.activeElement;
+      if (ae && ae.matches && ae.matches('input, textarea, select')) return;
+      if (window.visualViewport) {
+        const inset = Math.max(0, window.innerHeight - window.visualViewport.height - window.visualViewport.offsetTop);
+        if (inset < 40) applyKeyboardInset(0);
+      } else applyKeyboardInset(0);
+    }, 80);
+  });
+}
+function placePointAt(kind, sp) {
+  if (['ball', 'particle', 'box'].includes(kind)) {
+    pushUndo('添加' + KIND_NAME[kind]); if (sim.t > 0) resetSim('添加物体，已重置到 t=0');
+    const b = mkBody(kind, { x0: sp[0], y0: sp[1] }); scene.objects.push(b); initState(b);
+    afterStructure(); select(b.id); return;
+  }
+  if (kind === 'pointCharge') {
+    pushUndo('添加点电荷'); if (sim.t > 0) resetSim('添加点电荷，已重置');
+    const q = 1e-6;
+    const o = mkPointCharge(sp[0], sp[1], { q, color: q >= 0 ? '#c8553d' : '#4a78b0' });
+    scene.objects.push(o); afterStructure(); select(o.id); return;
+  }
+  if (kind === 'ground') { pushUndo('添加地面'); const g = mkGround(sp[1]); scene.objects.push(g); afterStructure(); select(g.id); return; }
+  if (kind === 'incline') { pushUndo('添加斜面'); const o = mkIncline(sp[0], sp[1]); scene.objects.push(o); afterStructure(); select(o.id); }
+}
+function releaseToolHistory() {
+  navLock = true;
+  if (tool !== 'select') setTool('select');
+  navLock = false;
+  if (history.state && history.state.physim === 'tool') {
+    try { history.replaceState({ physim: 'root' }, ''); } catch { /* ignore */ }
+  }
+  updateArmBar();
+}
+function commitTouchTap(s) {
+  const sp = snapPt([s.wx, s.wy]);
+  const sx = s.sx, sy = s.sy;
+  hideContextMenu();
+  if (pickMode) {
+    const pm = pickMode, o = pickHit(sx, sy);
+    if (o) { endPick(); pm.onPick(o); }
+    else if (pm.allowPoint && !(hitBody(sx, sy) || hitOther(sx, sy))) { endPick(); pm.onPoint(sp); }
+    else toast(pm.rejectMsg || '这个对象不能选，请点高亮的对象');
+    updateArmBar();
+    return;
+  }
+  if (POINT_TOOLS.includes(tool)) {
+    const kind = tool;
+    placePointAt(kind, sp);
+    releaseToolHistory();
+    return;
+  }
+  if (tool === 'wall' || tool === 'efield' || tool === 'bfield_in' || tool === 'bfield_out') {
+    pending = tool === 'wall'
+      ? { type: 'line', x1: sp[0], y1: sp[1], x2: sp[0], y2: sp[1], sx, sy }
+      : { type: 'rect', x1: sp[0], y1: sp[1], x2: sp[0], y2: sp[1], sx, sy };
+    drag = { type: 'create' };
+    finishDrag({ shiftKey: false, pointerId: s.id });
+    releaseToolHistory();
+    return;
+  }
+  if (LINK_KINDS.includes(tool)) {
+    const hb = hitBody(sx, sy);
+    const label = KIND_NAME[tool] || tool;
+    if (!pending) {
+      if (hb) { pending = { type: tool, a: hb.id }; updateArmBar(); draw(); }
+      else toast(`请先点击一个物体作为${label}的一端`);
+      return;
+    }
+    if (hb && hb.id === pending.a) { toast('不能连接到自身：请点另一个物体，或点空白处作为固定点'); return; }
+    pushUndo('添加' + label);
+    const A = byId(pending.a);
+    const L0 = hb && hb.id !== pending.a
+      ? +Math.hypot(hb.st.x - A.st.x, hb.st.y - A.st.y).toFixed(3)
+      : +Math.hypot(sp[0] - A.st.x, sp[1] - A.st.y).toFixed(3);
+    const ends = hb && hb.id !== pending.a
+      ? { a: pending.a, b: hb.id, L0 }
+      : { a: pending.a, b: null, ax: sp[0], ay: sp[1], L0 };
+    let link;
+    if (tool === 'rope') link = mkRope(ends.a, ends.b, ends);
+    else if (tool === 'rod') link = mkRod(ends.a, ends.b, ends);
+    else link = mkSpring(ends.a, ends.b, ends);
+    scene.objects.push(link); pending = null; afterStructure(); select(link.id);
+    releaseToolHistory();
+    return;
+  }
+  const hb = hitBody(sx, sy);
+  if (hb && sim.running && !hb.fixed) { select(hb.id, { forcePanel: true }); return; }
+  if (!hb) {
+    const pi = hitPin(sx, sy);
+    if (pi >= 0) { const p = pins[pi]; pins.splice(pi, 1); toast('已移除标记点'); if (selId === p.bodyId) buildPanel(); requestDraw(); return; }
+    const th = findTrace(sx, sy);
+    if (th) { addPin(th); requestDraw(); return; }
+  }
+  const ho = hb || hitOther(sx, sy);
+  if (ho) select(ho.id, { group: true, forcePanel: true });
+  else select(null);
+}
+function onTouchLongPress() {
+  const s = touchSession;
+  if (!s || s.mode !== 'undecided' || tool !== 'select' || s.hitId == null) return;
+  s.longFired = true;
+  s.mode = 'consumed';
+  select(s.hitId, { group: true, toggle: true, forcePanel: true });
+  toast(selSet.has(s.hitId) ? '已加入选择' : '已从选择中去掉');
+}
+function promoteTouch(s) {
+  clearTimeout(s.timer);
+  const sx = s.sx, sy = s.sy;
+  const wp = [s.wx, s.wy];
+  const sp = snapPt(wp);
+  if (pickMode || LINK_KINDS.includes(tool) || POINT_TOOLS.includes(tool)) {
+    drag = { type: 'pan', sx, sy, cx: scene.view.cx, cy: scene.view.cy, click: false };
+    s.mode = 'pan';
+    return;
+  }
+  if (tool === 'wall' || tool === 'efield' || tool === 'bfield_in' || tool === 'bfield_out') {
+    pending = tool === 'wall'
+      ? { type: 'line', x1: sp[0], y1: sp[1], x2: sp[0], y2: sp[1], sx, sy }
+      : { type: 'rect', x1: sp[0], y1: sp[1], x2: sp[0], y2: sp[1], sx, sy };
+    drag = { type: 'create' };
+    s.mode = 'drag';
+    return;
+  }
+  if (s.handle) {
+    const hh = s.handle;
+    pushUndo(hh.key === 'v0' ? '调整初速度' : '调整外力');
+    drag = { type: hh.key, b: hh.b, k: hh.k, moved: false, pushed: true };
+    s.mode = 'drag';
+    return;
+  }
+  const hb = s.hitId != null ? byId(s.hitId) : null;
+  if (hb && isBody(hb) && sim.running && !hb.fixed) {
+    select(hb.id, { deferPanel: true });
+    hb._grab = { x: hb.st.x, y: hb.st.y, vx: 0, vy: 0, t: performance.now() };
+    drag = { type: 'grab', b: hb, ox: wp[0] - hb.st.x, oy: wp[1] - hb.st.y };
+    s.mode = 'drag';
+    return;
+  }
+  if (hb && canvasPickable(hb)) {
+    if (!isSel(hb)) select(hb.id, { group: true, deferPanel: true });
+    const movers = movableSelection();
+    if (movers.length === 1 && isBody(movers[0])) {
+      const b = movers[0];
+      pushUndo(`移动「${b.name}」`);
+      drag = { type: 'body', b, ox: wp[0] - b.st.x, oy: wp[1] - b.st.y, moved: false, sx, sy, wasT: sim.t, pushed: true };
+      s.mode = 'drag';
+      return;
+    }
+    if (movers.length) {
+      pushUndo(movers.length > 1 ? `移动 ${movers.length} 个对象` : `移动「${hb.name}」`);
+      drag = { type: 'moveSel', snap: posSnapshot(movers), start: sp, moved: false, sx, sy, wasT: sim.t, hasBody: movers.some(isBody), pushed: true };
+      s.mode = 'drag';
+      return;
+    }
+  }
+  drag = { type: 'pan', sx, sy, cx: scene.view.cx, cy: scene.view.cy, click: false };
+  s.mode = 'pan';
+}
+function beginPinch() {
+  if (touchSession) { clearTimeout(touchSession.timer); touchSession.mode = 'pinch'; touchSession = null; }
+  revertLiveDrag();
+  startPinchFromTouches();
+}
+function touchPointerDown(e) {
+  pointerCoarse = true;
+  const [sx, sy] = evPos(e);
+  if (pinch || touchPoints.size >= 2) return;
+  touchPoints.set(e.pointerId, { x: sx, y: sy });
+  try { cv.setPointerCapture(e.pointerId); } catch { /* ignore */ }
+  if (touchPoints.size === 2) { beginPinch(); return; }
+  const wp = s2w(sx, sy);
+  mouseW = wp;
+  const hit = hitBody(sx, sy) || hitOther(sx, sy);
+  touchSession = {
+    id: e.pointerId, sx, sy, wx: wp[0], wy: wp[1],
+    hitId: hit ? hit.id : null,
+    handle: tool === 'select' && !pickMode ? hitHandle(sx, sy) : null,
+    mode: 'undecided', longFired: false,
+    timer: setTimeout(onTouchLongPress, LONG_PRESS_MS),
+  };
+}
+
 cv.addEventListener('contextmenu', e => {
   e.preventDefault();
   if (pickMode) { endPick('已取消点选'); return; }
@@ -2679,19 +2960,10 @@ cv.addEventListener('pointerdown', e => {
   // 右键不 capture，交给 contextmenu；中键/左键才拖拽
   if (e.button === 2) return;
   e.preventDefault();
+  if (e.pointerType === 'touch') { touchPointerDown(e); return; }
+  pointerCoarse = false;
   const [sx, sy] = evPos(e);
-  if (e.pointerType === 'touch') {
-    // 第三根及以后的手指忽略，保证始终是干净的双指手势
-    if (pinch || touchPoints.size >= 2) return;
-    touchPoints.set(e.pointerId, { x: sx, y: sy });
-    try { cv.setPointerCapture(e.pointerId); } catch { /* ignore */ }
-    if (touchPoints.size === 2) {
-      startPinchFromTouches();
-      return;
-    }
-  } else {
-    try { cv.setPointerCapture(e.pointerId); } catch { /* ignore */ }
-  }
+  try { cv.setPointerCapture(e.pointerId); } catch { /* ignore */ }
   snapOff = !!e.altKey;
   const wp = s2w(sx, sy); mouseW = wp;
   if (e.button === 1 || tool === 'pan') {
@@ -2815,10 +3087,18 @@ cv.addEventListener('dblclick', e => {
 cv.addEventListener('pointermove', e => {
   const [sx, sy] = evPos(e);
   if (e.pointerType === 'touch') {
-    if (!touchPoints.has(e.pointerId)) return;
-    touchPoints.set(e.pointerId, { x: sx, y: sy });
-    if (!pinch && touchPoints.size === 2) startPinchFromTouches();
-    if (pinch) { e.preventDefault(); updatePinch(); return; }
+    if (touchPoints.has(e.pointerId)) touchPoints.set(e.pointerId, { x: sx, y: sy });
+    if (touchPoints.size >= 2) {
+      if (!pinch) beginPinch();
+      if (pinch) { e.preventDefault(); updatePinch(); }
+      return;
+    }
+    const s = touchSession;
+    if (!s || s.id !== e.pointerId || s.mode === 'consumed' || s.mode === 'pinch') return;
+    if (s.mode === 'undecided') {
+      if (Math.hypot(sx - s.sx, sy - s.sy) < TOUCH_SLOP) return;
+      promoteTouch(s);
+    }
   }
   snapOff = !!e.altKey;
   const wp = s2w(sx, sy); mouseW = wp; mouseIn = true;
@@ -2980,17 +3260,22 @@ function endPointer(e) {
     try { cv.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
     if (wasPinching) {
       pinch = null;
-      // 双指松开一根后，剩下那根可以继续单指平移
-      if (e.type !== 'pointercancel' && touchPoints.size === 1) {
-        const p = [...touchPoints.values()][0];
-        drag = { type: 'pan', sx: p.x, sy: p.y, cx: scene.view.cx, cy: scene.view.cy, click: false };
-        cv.style.cursor = 'grabbing';
-      } else {
-        drag = null;
-        cv.style.cursor = tool === 'pan' ? 'grab' : 'default';
-      }
+      if (touchSession) { clearTimeout(touchSession.timer); touchSession = null; }
+      drag = null;
+      pending = null;
+      cv.style.cursor = 'default';
       markDirty();
+      requestDraw();
       return;
+    }
+    if (touchSession && touchSession.id === e.pointerId) {
+      clearTimeout(touchSession.timer);
+      const s = touchSession;
+      const mode = s.mode;
+      touchSession = null;
+      if (e.type === 'pointercancel') { revertLiveDrag(); return; }
+      if (mode === 'undecided') { commitTouchTap(s); return; }
+      if (mode === 'consumed' || mode === 'pinch') return;
     }
   }
   finishDrag(e);
@@ -4919,7 +5204,14 @@ function syncViewQuick() {
 /* ---------------- 左栏：图层 · 变量 · 显示 ---------------- */
 const LEFT_TABS = { objects: '图层', vars: '变量', display: '显示', add: '添加' };
 function setSheet(name) {
-  sheet = name || 'canvas';
+  const next = name || 'canvas';
+  if (next !== 'canvas' && next !== sheet && (tool !== 'select' || pending || pickMode)) {
+    const prevLock = navLock;
+    navLock = true;
+    cancelArm();
+    navLock = prevLock;
+  }
+  sheet = next;
   document.body.dataset.sheet = sheet;
   document.querySelectorAll('#tabbar [data-tab]').forEach(b => {
     const on = b.dataset.tab === sheet;
@@ -4938,7 +5230,9 @@ function setSheet(name) {
     analysisSig = '';
     buildAnalysisPane();
   }
+  if (!navLock && sheet !== 'canvas') rememberNav('sheet');
   syncDesmosKeypadForAnalysis(sheet === 'analysis');
+  updateArmBar();
   requestAnimationFrame(() => { resize(); requestDraw(); if (sheet === 'analysis') { updateEnergyReadout(true); drawChart(); } });
 }
 function setLeftTab(mode) {
@@ -4964,7 +5258,7 @@ function renderAddInto(host, q) {
       const key = Object.keys(TOOL_KEYS).find(k => TOOL_KEYS[k] === it.tool);
       const b = el('button', { type: 'button', title: it.desc + (key ? `（快捷键 ${key}）` : '') }, `<div><b>${it.name}</b><div class="hint" style="margin:0">${it.desc}</div></div>${key ? `<kbd>${key}</kbd>` : ''}`);
       b.dataset.tool = it.tool;
-      b.onclick = () => { setTool(it.tool); setSheet('canvas'); toast('在画布上点击或拖拽以放置'); };
+      b.onclick = () => { setTool(it.tool); setSheet('canvas'); toast(pointerCoarse || window.matchMedia('(pointer: coarse)').matches ? '点按画布放置。拖动只平移，不会创建' : '在画布上点击或拖拽以放置'); };
       if (tool === it.tool) b.classList.add('active');
       grid.appendChild(b);
     }
@@ -6009,6 +6303,7 @@ function initToolbar() {
     });
   });
   $('#panelScrim')?.addEventListener('click', () => closeMobilePanels());
+  $('#armCancel')?.addEventListener('click', () => requestCancel());
 
   document.addEventListener('keydown', e => { if (e.key === ' ' && e.target === document.body) e.preventDefault(); });
   document.addEventListener('gesturestart', e => e.preventDefault());
@@ -6913,6 +7208,8 @@ function bootOnce() {
     }
   } catch (e) { restored = false; }
   setTool('select');
+  bootHistory();
+  bindKeyboardInset();
   syncPanelToggleButtons();
   ensureDesmosKeypadDock(document.getElementById('pageAnalysis') || document.getElementById('right'));
   syncDesmosKeypadForAnalysis(false);
@@ -6922,6 +7219,8 @@ function bootOnce() {
   window.addEventListener('beforeunload', () => { try { localStorage.setItem(STORE_KEY, serialize()); } catch { } syncDocTitle(); });
   window.__physim = {
     scene: () => scene, sim, advance, loadPreset, select, resetSim, togglePlay, fieldSys,
+    setKeyboardInset: applyKeyboardInset,
+    interaction: () => ({ tool, pending: pending ? (pending.type || true) : null, sheet, pinch: !!pinch, drag: drag ? drag.type : null, sel: [...selSet], arm: !$('#armBar')?.hidden }),
     presetKeys: () => Object.keys(PRESETS), energy: systemEnergy, predict: T => { predCache.msPerStep = 0; return computePrediction(T || 3); }, pins: () => pins,
     overlays, addOverlay: (type, target, extra) => addOverlay(type, target, extra), dynamics: id => { frameKey = null; return dyn(byId(id)); },
     forceParts: id => { frameKey = null; return forceParts(byId(id)); }, evalDisplay: (src, id) => { frameKey = null; return evalDisplay(src, byId(id)); },
