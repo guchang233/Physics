@@ -14,7 +14,7 @@
   <link rel="apple-touch-icon" href="/icons/icon-192.png" />
   <link rel="manifest" href="/manifest.webmanifest" />
 </head>
-<body data-sheet="lab">
+<body data-sheet="lab" data-list="open">
   <svg width="0" height="0" style="position:absolute" aria-hidden="true">
     <defs>
       <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5.5v13l11-6.5-11-6.5z" fill="currentColor"/></symbol>
@@ -42,10 +42,17 @@
       <div class="tb-actions">
         <button type="button" id="bPlay" class="primary" aria-label="播放"><svg class="ic"><use href="#i-play"/></svg><span class="tb-label">播放</span></button>
         <button type="button" id="bReset" aria-label="重置"><svg class="ic"><use href="#i-reset"/></svg><span class="tb-label">重置</span></button>
-        <button type="button" id="bUndo" class="icon-only" aria-label="撤销" disabled><svg class="ic"><use href="#i-undo"/></svg></button>
-        <button type="button" id="bRedo" class="icon-only" aria-label="重做" disabled><svg class="ic"><use href="#i-redo"/></svg></button>
+        <button type="button" id="bOverflow" aria-label="更多" aria-haspopup="menu">⋯</button>
       </div>
     </header>
+
+    <div id="geombar" aria-label="构造工具">
+      <button type="button" data-geom="select" class="on">选择</button>
+      <button type="button" data-geom="body">物体</button>
+      <button type="button" data-geom="surface">表面</button>
+      <button type="button" data-geom="field">场</button>
+      <button type="button" data-geom="link">约束</button>
+    </div>
 
     <div id="workspace">
       <div id="main">
@@ -55,6 +62,14 @@
             <span id="armLabel"></span>
             <button type="button" id="armCancel">取消</button>
           </div>
+          <div id="ctxBar" hidden>
+            <span id="ctxName"></span>
+            <button type="button" id="ctxColor">颜色</button>
+            <button type="button" id="ctxHide">隐藏</button>
+            <button type="button" id="ctxDelete" aria-label="删除">删除</button>
+            <button type="button" id="ctxMore">更多</button>
+          </div>
+          <button type="button" id="bListExpand" aria-label="展开对象列表">列表</button>
           <div id="toast"></div>
           <div id="toolhint"></div>
           <div id="timeline" aria-label="时间轴">
@@ -66,15 +81,14 @@
         </div>
       </div>
 
-      <section id="sheet" aria-label="功能">
-        <div class="sheet-page" data-page="add" id="pageAdd">
-          <div class="sheet-head">
-            <h2>添加</h2>
-            <input type="search" id="qAdd" placeholder="搜索物体、场、约束" autocomplete="off" aria-label="搜索可添加的对象">
-          </div>
-          <div id="addBody" class="sheet-scroll"></div>
+      <section id="listDock" aria-label="对象列表">
+        <div class="list-tools">
+          <button type="button" id="bAdd" aria-label="添加">+</button>
+          <button type="button" id="bKey" aria-label="公式键盘">公式</button>
+          <button type="button" id="bUndo" class="icon-only" aria-label="撤销" disabled><svg class="ic"><use href="#i-undo"/></svg></button>
+          <button type="button" id="bRedo" class="icon-only" aria-label="重做" disabled><svg class="ic"><use href="#i-redo"/></svg></button>
+          <button type="button" id="bCollapse" aria-label="收起列表">收起</button>
         </div>
-
         <div class="sheet-page" data-page="objects" id="left">
           <div class="sheet-head">
             <h2 id="leftTitle">对象</h2>
@@ -92,8 +106,21 @@
           <div id="leftBody" class="sheet-scroll"></div>
           <div class="layer-foot" id="layerFoot"></div>
         </div>
+        <div id="quick" hidden></div>
+        <div id="propSheet" aria-label="完整属性">
+          <div class="more-bar"><span>完整属性</span><button type="button" id="bMoreClose">收起</button></div>
+          <div id="right"><div id="props"></div></div>
+        </div>
+      </section>
+    </div>
+  </div>
 
-        <div class="sheet-page" data-page="analysis" id="pageAnalysis">
+  <div id="overlay" hidden>
+    <div class="ov-bar">
+      <span id="ovTitle">面板</span>
+      <button type="button" id="bOverlayClose">关闭</button>
+    </div>
+    <div class="sheet-page" data-page="analysis" id="pageAnalysis">
           <div class="sheet-head">
             <h2>分析</h2>
             <div class="sheet-tools">
@@ -122,23 +149,16 @@
             <div id="labActions"></div>
           </div>
         </div>
-      </section>
-
-      <aside id="propSheet" aria-label="属性">
-        <div id="right">
-          <div id="props"></div>
-        </div>
-      </aside>
-    </div>
-
-    <nav id="tabbar" aria-label="主导航">
-      <button type="button" data-tab="canvas" aria-label="画布"><svg class="tab-ic"><use href="#i-canvas"/></svg><span>画布</span></button>
-      <button type="button" data-tab="add" aria-label="添加"><svg class="tab-ic"><use href="#i-add"/></svg><span>添加</span></button>
-      <button type="button" data-tab="objects" aria-label="对象"><svg class="tab-ic"><use href="#i-objects"/></svg><span>对象</span></button>
-      <button type="button" data-tab="analysis" aria-label="分析"><svg class="tab-ic"><use href="#i-analysis"/></svg><span>分析</span></button>
-      <button type="button" data-tab="lab" id="bHome" class="active" aria-label="实验"><svg class="tab-ic"><use href="#i-lab"/></svg><span>实验</span></button>
-    </nav>
   </div>
+
+  <div id="overflowMenu" hidden role="menu">
+    <button type="button" id="bHome">实验库</button>
+    <button type="button" id="bOpenAnalysis">分析</button>
+    <button type="button" id="bGraphSettings">图形设置</button>
+    <button type="button" id="bHelpMenu">使用说明</button>
+  </div>
+  <div id="toolPop" hidden></div>
+  <div id="stylePop" hidden></div>
 
   <div id="status" hidden></div>
   <input type="file" id="fileIn" accept=".json,.physim,application/json" hidden>
@@ -147,9 +167,9 @@
   <div id="help"><div class="box">
     <div class="h-kicker">使用说明</div>
     <h3>在手机上搭一个物理实验</h3>
-    <p class="h-lead">底部五个入口即可到达全部功能。画布上放置物体、设定初态，然后播放。模拟器用辛积分器推进，分析页给出受力、能量与参数方程。</p>
+    <p class="h-lead">画布是主界面。顶部工具条武装后点按放置；底部列表可收起。空白处拖动平移，捏合缩放。实验库和分析从右上角菜单打开，关闭后回到同一画布。</p>
     <div class="h-grid">
-      <div class="h-card"><b>画布</b><p>点选、拖动、双指平移与捏合缩放。选中物体后，底部出现属性。运行中可以抓住物体甩出。暂停后用时间轴回看。</p></div>
+      <div class="h-card"><b>画布</b><p>空白处拖动平移，捏合缩放，点在物体上拖动。选中后画布上出现颜色、显隐和删除，常用参数在列表下方，完整属性从「更多」打开。</p></div>
       <div class="h-card"><b>添加</b><p>小球、带电粒子、滑块、地面、挡板、斜面、电场、磁场、点电荷、弹簧、轻绳、轻杆。点一下类型，再在画布上放置。</p></div>
       <div class="h-card"><b>对象</b><p>图层、全局变量、显示项在同一页里切换。可隐藏、锁定、拖动排序、编组。显示项包括速度、受力、轨迹、预测、频闪和数值标签。</p></div>
       <div class="h-card"><b>分析</b><p>运动类型与参数方程、v–t 和相图、系统能量账本。速度倍率与单步也在这里。</p></div>

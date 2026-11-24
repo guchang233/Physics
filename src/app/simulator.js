@@ -2236,6 +2236,7 @@ function select(id, opts = {}) {
   }
   if (prevSize !== selSet.size) opts.forcePanel = true;
   selId = id;
+  if (!selSet.size) delete document.body.dataset.more;
   updateOptContext();
   syncListSelection();
   if (ovSelDependent()) requestDraw();
@@ -2269,6 +2270,7 @@ function expandForClick(o, deep) {
 function setSelection(ids, primary, opts = {}) {
   selSet = new Set(ids.filter(id => byId(id)));
   selId = selSet.size ? (primary != null && selSet.has(primary) ? primary : [...selSet].at(-1)) : null;
+  if (!selSet.size) delete document.body.dataset.more;
   syncListSelection();
   if (!opts.deferPanel) buildPanel();
   requestDraw();
@@ -2567,6 +2569,7 @@ function setTool(t) {
   cv.style.cursor = t === 'pan' ? 'grab' : t === 'select' ? 'default' : 'crosshair';
   if (!navLock && t !== 'select') rememberNav('tool');
   updateArmBar();
+  if (typeof syncGeom === 'function') syncGeom();
   if (leftTab === 'add') refreshLeft();
   draw();
 }
@@ -2690,6 +2693,57 @@ function rememberNav(kind) {
     history.pushState({ physim: kind }, '');
   } catch { /* 非安全上下文 */ }
 }
+function syncGeom() {
+  const geom = window.__geom || {};
+  document.querySelectorAll('#geombar [data-geom]').forEach(b => {
+    const g = b.dataset.geom;
+    const on = g === 'select' ? tool === 'select' : (geom[g] || []).some(([id]) => id === tool);
+    b.classList.toggle('on', on);
+  });
+}
+function openToolPop(group, anchor) {
+  const pop = $('#toolPop'); if (!pop) return;
+  const geom = window.__geom || {};
+  pop.innerHTML = '';
+  (geom[group] || []).forEach(([id, name]) => {
+    const b = el('button', { type: 'button', 'data-tool': id }, name);
+    if (tool === id) b.classList.add('on');
+    b.onclick = () => { setTool(id); pop.hidden = true; syncGeom(); document.body.dataset.list = 'open'; };
+    pop.appendChild(b);
+  });
+  pop.hidden = false;
+  const r = anchor && anchor.getBoundingClientRect ? anchor.getBoundingClientRect() : { left: 8, bottom: 80 };
+  pop.style.left = Math.max(8, Math.min(r.left, innerWidth - 240)) + 'px';
+  pop.style.top = Math.max(8, r.bottom + 6) + 'px';
+}
+function openStyle(o, anchor) {
+  const pop = $('#stylePop'); if (!pop || !o) return;
+  pop.innerHTML = '';
+  ['#c8553d', '#d97757', '#c9a227', '#3d8f86', '#4a78b0', '#4d6470', '#141413'].forEach(c => {
+    const b = el('button', { type: 'button', class: 'swatch-btn', title: c, style: `--c:${c}` });
+    b.onclick = () => { pushUndo('改颜色'); o.color = c; refreshLeft(); buildPanel(); requestDraw(); markDirty(); pop.hidden = true; };
+    pop.appendChild(b);
+  });
+  const hide = el('button', { type: 'button' }, o.hidden ? '显示' : '隐藏');
+  hide.onclick = () => { setHidden([o], !o.hidden); pop.hidden = true; };
+  pop.appendChild(hide);
+  pop.hidden = false;
+  if (anchor && anchor.getBoundingClientRect) {
+    const r = anchor.getBoundingClientRect();
+    pop.style.left = Math.max(8, Math.min(r.left, innerWidth - 220)) + 'px';
+    pop.style.top = Math.min(innerHeight - 80, r.bottom + 6) + 'px';
+  }
+}
+function updateContextBar() {
+  const bar = $('#ctxBar'); if (!bar) return;
+  const o = selSet.size === 1 ? selected() : null;
+  const multi = selSet.size > 1;
+  bar.hidden = tool !== 'select' || !(o || multi);
+  const name = $('#ctxName');
+  if (name) name.textContent = o ? o.name : (multi ? `${selSet.size} 个对象` : '');
+  const hide = $('#ctxHide');
+  if (hide) hide.textContent = o && o.hidden ? '显示' : '隐藏';
+}
 function updateArmBar() {
   const bar = $('#armBar'); if (!bar) return;
   const on = !!(pickMode || pending || (tool && tool !== 'select'));
@@ -2719,10 +2773,14 @@ function bootHistory() {
     if (navLock) return;
     navLock = true;
     try {
+      const pop = id => { const n = document.getElementById(id); if (n && !n.hidden) { n.hidden = true; return true; } return false; };
+      if (pop('stylePop') || pop('toolPop') || pop('overflowMenu')) return;
+      if (document.body.dataset.more === 'open') { delete document.body.dataset.more; return; }
       if (pickMode || pending || tool !== 'select') cancelArm();
-      else if (sheet !== 'canvas') { $('#home')?.classList.remove('show'); setSheet('canvas'); }
+      else if (sheet === 'lab' || sheet === 'analysis') { $('#home')?.classList.remove('show'); setSheet('canvas'); }
+      else if (document.body.dataset.list === 'closed') document.body.dataset.list = 'open';
       else if (selSet.size) setSelection([]);
-    } finally { navLock = false; updateArmBar(); }
+    } finally { navLock = false; updateArmBar(); updateContextBar(); }
   });
 }
 function applyKeyboardInset(px) {
@@ -2811,9 +2869,8 @@ function commitTouchTap(s) {
     return;
   }
   if (POINT_TOOLS.includes(tool)) {
-    const kind = tool;
-    placePointAt(kind, sp);
-    releaseToolHistory();
+    placePointAt(tool, sp);
+    updateArmBar();
     return;
   }
   if (tool === 'wall' || tool === 'efield' || tool === 'bfield_in' || tool === 'bfield_out') {
@@ -2821,8 +2878,8 @@ function commitTouchTap(s) {
       ? { type: 'line', x1: sp[0], y1: sp[1], x2: sp[0], y2: sp[1], sx, sy }
       : { type: 'rect', x1: sp[0], y1: sp[1], x2: sp[0], y2: sp[1], sx, sy };
     drag = { type: 'create' };
-    finishDrag({ shiftKey: false, pointerId: s.id });
-    releaseToolHistory();
+    finishDrag({ shiftKey: false, keepArm: true, pointerId: s.id });
+    updateArmBar();
     return;
   }
   if (LINK_KINDS.includes(tool)) {
@@ -2847,7 +2904,7 @@ function commitTouchTap(s) {
     else if (tool === 'rod') link = mkRod(ends.a, ends.b, ends);
     else link = mkSpring(ends.a, ends.b, ends);
     scene.objects.push(link); pending = null; afterStructure(); select(link.id);
-    releaseToolHistory();
+    updateArmBar();
     return;
   }
   const hb = hitBody(sx, sy);
@@ -2875,7 +2932,7 @@ function promoteTouch(s) {
   const sx = s.sx, sy = s.sy;
   const wp = [s.wx, s.wy];
   const sp = snapPt(wp);
-  if (pickMode || LINK_KINDS.includes(tool) || POINT_TOOLS.includes(tool)) {
+  if (pickMode || LINK_KINDS.includes(tool) || (POINT_TOOLS.includes(tool) && s.hitId == null && !s.handle)) {
     drag = { type: 'pan', sx, sy, cx: scene.view.cx, cy: scene.view.cy, click: false };
     s.mode = 'pan';
     return;
@@ -3241,7 +3298,7 @@ function finishDrag(e) {
       const o = tiny ? mkWall(p.x1, p.y1, p.x1, p.y1 + 2) : mkWall(p.x1, p.y1, p.x2, p.y2);
       scene.objects.push(o); afterStructure(); select(o.id);
     }
-    if (!(e && e.shiftKey)) setTool('select');
+    if (!(e && (e.shiftKey || e.keepArm))) setTool('select');
     return;
   }
   if ((d.type === 'body' || d.type === 'moveObj' || d.type === 'v0' || d.type === 'v' || d.type === 'F' || d.type === 'fieldCorner' || d.type === 'wallEnd') && !d.moved) cancelLastUndo();
@@ -3943,6 +4000,58 @@ function buildPanel() {
   buildEnvPane();
   document.body.classList.toggle('has-sel', !!(docOpen && selSet.size));
   syncCommands();
+  buildQuick();
+  updateContextBar();
+}
+
+/** 列表下方的紧凑参数：不打开完整检查器也能改 m、q、位置和初速度。 */
+function openMore() {
+  if (!selSet.size) return;
+  document.body.dataset.more = 'open';
+  document.body.dataset.list = 'open';
+}
+function buildQuick() {
+  const host = $('#quick');
+  if (!host) return;
+  const list = selection();
+  host.innerHTML = '';
+  if (!docOpen || !list.length) { host.hidden = true; return; }
+  host.hidden = false;
+  const head = el('div', { class: 'quick-head' });
+  if (list.length === 1) {
+    const o = list[0];
+    const nm = el('input', { type: 'text', value: o.name, 'aria-label': '名称', spellcheck: 'false' });
+    let pushed = false;
+    nm.addEventListener('focus', () => { pushed = false; });
+    nm.addEventListener('input', () => {
+      if (!pushed) { pushUndo('重命名'); pushed = true; }
+      o.name = nm.value; refreshLeft(); draw(); markDirty();
+      const ctx = $('#ctxName'); if (ctx) ctx.textContent = o.name;
+    });
+    nm.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === 'Escape') { e.preventDefault(); nm.blur(); } });
+    nm.addEventListener('blur', () => {
+      const v = nm.value.trim();
+      if (!v) { o.name = uniqueName(KIND_NAME[o.kind] || '对象'); nm.value = o.name; refreshLeft(); draw(); markDirty(); }
+    });
+    head.appendChild(nm);
+  } else head.appendChild(el('span', { class: 'quick-count' }, `${list.length} 个对象`));
+  head.appendChild(el('button', { type: 'button', onclick: openMore }, '更多'));
+  host.appendChild(head);
+  if (list.length !== 1) return;
+  const o = list[0];
+  const grid = el('div', { class: 'quick-grid' });
+  if (isBody(o)) {
+    for (const d of schemaOf(o).filter(d => d.key === 'm' || d.key === 'q')) propRow(grid, o, d);
+    numRow(grid, '位置 x₀', () => o.x0, v => o.x0 = v, 'm', { init: true, slot: [o, 'x0'] });
+    numRow(grid, '位置 y₀', () => o.y0, v => o.y0 = v, 'm', { init: true, slot: [o, 'y0'] });
+    const vmag = () => Math.hypot(o.vx0 || 0, o.vy0 || 0);
+    const vang = () => (o.vx0 || o.vy0) ? Math.atan2(o.vy0, o.vx0) / DEG : (o._lastAng || 0);
+    numRow(grid, '速率 v₀', vmag, v => { const a = vang() * DEG; o.vx0 = clean(v * Math.cos(a)); o.vy0 = clean(v * Math.sin(a * DEG)); }, 'm/s', { init: true, min: 0, slot: [o, 'v0'] });
+    numRow(grid, '方向 θ', vang, a => { o._lastAng = a; const v = vmag(); o.vx0 = clean(v * Math.cos(a * DEG)); o.vy0 = clean(v * Math.sin(a * DEG)); }, '°', { init: true, slot: [o, 'v0ang'] });
+  } else {
+    for (const d of schemaOf(o).filter(d => d.type !== 'bool' && (!d.when || d.when(o))).slice(0, 4)) propRow(grid, o, d);
+  }
+  host.appendChild(grid);
 }
 
 function buildSinglePanel(P, o) {
@@ -4822,8 +4931,9 @@ function renderLayers(host) {
     r.onclick = ev => {
       const additive = ev.shiftKey || ev.ctrlKey || ev.metaKey;
       select(o.id, { toggle: additive, forcePanel: true });
-      if (!additive && window.matchMedia('(max-width: 799px)').matches) setSheet('canvas');
     };
+    const sw = r.querySelector('.lsw');
+    if (sw) sw.onclick = ev => { ev.stopPropagation(); select(o.id, { forcePanel: true }); openStyle(o, sw); };
     m.ondblclick = ev => { ev.stopPropagation(); inlineRename(m, o.name, v => { pushUndo('重命名'); o.name = v; buildPanel(); requestDraw(); markDirty(); }); };
     r.oncontextmenu = ev => { ev.preventDefault(); if (!selSet.has(o.id)) select(o.id); openContextMenu(ev.clientX, ev.clientY, o, 'list'); };
     if (!isChildLink(o)) makeDraggable(r, { id: o.id });
@@ -5205,34 +5315,30 @@ function syncViewQuick() {
 const LEFT_TABS = { objects: '图层', vars: '变量', display: '显示', add: '添加' };
 function setSheet(name) {
   const next = name || 'canvas';
-  if (next !== 'canvas' && next !== sheet && (tool !== 'select' || pending || pickMode)) {
+  if ((next === 'lab' || next === 'analysis') && next !== sheet && (tool !== 'select' || pending || pickMode)) {
     const prevLock = navLock;
     navLock = true;
     cancelArm();
     navLock = prevLock;
   }
-  sheet = next;
+  if (next === 'objects' || next === 'add') {
+    document.body.dataset.list = 'open';
+    if (next === 'objects') {
+      if (leftTab === 'add') setLeftMode('objects');
+      refreshLeft();
+    }
+    sheet = 'canvas';
+  } else sheet = next;
   document.body.dataset.sheet = sheet;
-  document.querySelectorAll('#tabbar [data-tab]').forEach(b => {
-    const on = b.dataset.tab === sheet;
-    b.classList.toggle('active', on);
-    b.setAttribute('aria-selected', on ? 'true' : 'false');
-  });
-  if (sheet === 'add') {
-    leftTab = 'add';
-    const host = $('#addBody');
-    const q = ($('#qAdd') && $('#qAdd').value) || '';
-    if (host) { host.innerHTML = ''; renderAddInto(host, q); }
-  } else if (sheet === 'objects') {
-    if (leftTab === 'add') setLeftMode('objects');
-    refreshLeft();
-  } else if (sheet === 'analysis') {
-    analysisSig = '';
-    buildAnalysisPane();
-  }
-  if (!navLock && sheet !== 'canvas') rememberNav('sheet');
+  const ov = $('#overlay');
+  if (ov) ov.hidden = !(sheet === 'lab' || sheet === 'analysis');
+  const title = $('#ovTitle');
+  if (title) title.textContent = sheet === 'analysis' ? '分析' : '实验库';
+  if (sheet === 'analysis') { analysisSig = ''; buildAnalysisPane(); }
+  if (!navLock && (sheet === 'lab' || sheet === 'analysis')) rememberNav('sheet');
   syncDesmosKeypadForAnalysis(sheet === 'analysis');
   updateArmBar();
+  updateContextBar();
   requestAnimationFrame(() => { resize(); requestDraw(); if (sheet === 'analysis') { updateEnergyReadout(true); drawChart(); } });
 }
 function setLeftTab(mode) {
@@ -6292,18 +6398,52 @@ function initToolbar() {
   $('#bHelpClose')?.addEventListener('click', () => $('#help').classList.remove('show'));
   $('#help')?.addEventListener('click', e => { if (e.target.id === 'help') e.target.classList.remove('show'); });
 
-  document.querySelectorAll('#tabbar [data-tab]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const tab = btn.dataset.tab;
-      if (tab === 'lab') showHome(homeView || 'home');
-      else {
-        $('#home')?.classList.remove('show');
-        setSheet(tab);
-      }
+  const GEOM = {
+    body: [['ball', '小球'], ['particle', '带电粒子'], ['box', '滑块']],
+    surface: [['ground', '地面'], ['wall', '挡板'], ['incline', '斜面']],
+    field: [['efield', '匀强电场'], ['bfield_in', '磁场向里'], ['bfield_out', '磁场向外'], ['pointCharge', '点电荷']],
+    link: [['spring', '弹簧'], ['rope', '轻绳'], ['rod', '轻杆']],
+  };
+  window.__geom = GEOM;
+  document.querySelectorAll('#geombar [data-geom]').forEach(b => {
+    b.addEventListener('click', () => {
+      const g = b.dataset.geom;
+      $('#overflowMenu') && ($('#overflowMenu').hidden = true);
+      if (g === 'select') { setTool('select'); const p = $('#toolPop'); if (p) p.hidden = true; syncGeom(); return; }
+      const armed = (GEOM[g] || []).some(([id]) => id === tool);
+      if (armed) { setTool('select'); const p = $('#toolPop'); if (p) p.hidden = true; syncGeom(); return; }
+      openToolPop(g, b);
     });
   });
+  $('#bAdd')?.addEventListener('click', () => openToolPop('body', $('#bAdd')));
+  $('#bKey')?.addEventListener('click', () => {
+    const on = document.body.classList.toggle('key-on');
+    syncDesmosKeypadForAnalysis(on || sheet === 'analysis');
+    if (on) setDesmosKeypadVisible(true); else setDesmosKeypadVisible(false);
+  });
+  $('#bCollapse')?.addEventListener('click', () => { document.body.dataset.list = 'closed'; resize(); });
+  $('#bListExpand')?.addEventListener('click', () => { document.body.dataset.list = 'open'; resize(); });
+  $('#bOverflow')?.addEventListener('click', () => { const m = $('#overflowMenu'); if (m) m.hidden = !m.hidden; });
+  $('#bHome')?.addEventListener('click', () => { $('#overflowMenu') && ($('#overflowMenu').hidden = true); showHome('home'); });
+  $('#bOpenAnalysis')?.addEventListener('click', () => { $('#overflowMenu') && ($('#overflowMenu').hidden = true); setSheet('analysis'); });
+  $('#bGraphSettings')?.addEventListener('click', () => { $('#overflowMenu') && ($('#overflowMenu').hidden = true); showHome('home'); requestAnimationFrame(() => $('#envBody')?.scrollIntoView({ block: 'start' })); });
+  $('#bHelpMenu')?.addEventListener('click', () => { $('#overflowMenu') && ($('#overflowMenu').hidden = true); $('#help')?.classList.add('show'); });
+  $('#bOverlayClose')?.addEventListener('click', () => { $('#home')?.classList.remove('show'); setSheet('canvas'); });
+  $('#ctxDelete')?.addEventListener('click', () => deleteSelection());
+  $('#ctxHide')?.addEventListener('click', () => { const o = selected(); if (o) setHidden([o], !o.hidden); });
+  $('#ctxMore')?.addEventListener('click', () => openMore());
+  $('#bMoreClose')?.addEventListener('click', () => { delete document.body.dataset.more; });
+  $('#ctxColor')?.addEventListener('click', (e) => { const o = selected(); if (o) openStyle(o, e.currentTarget); });
   $('#panelScrim')?.addEventListener('click', () => closeMobilePanels());
   $('#armCancel')?.addEventListener('click', () => requestCancel());
+  document.addEventListener('pointerdown', (e) => {
+    for (const id of ['overflowMenu', 'toolPop', 'stylePop']) {
+      const n = document.getElementById(id);
+      if (!n || n.hidden) continue;
+      if (n.contains(e.target) || e.target.closest?.('#bOverflow, #geombar, #bAdd, #ctxColor, .lsw')) continue;
+      n.hidden = true;
+    }
+  }, true);
 
   document.addEventListener('keydown', e => { if (e.key === ' ' && e.target === document.body) e.preventDefault(); });
   document.addEventListener('gesturestart', e => e.preventDefault());

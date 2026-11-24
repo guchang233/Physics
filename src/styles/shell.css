@@ -1,21 +1,17 @@
-/* 物理实验室 · 手机壳
- * 全幅画布 + 顶栏 + 底栏五入口。功能页与属性页盖在画布上，不另做菜单栏。
- */
+/* 画布优先：细顶栏 + 粘性工具条 + 可收起对象列表。实验库与分析是覆盖层。 */
 
 html, body {
   height: 100%;
   overflow: hidden;
   overscroll-behavior: none;
   text-size-adjust: 100%;
-  -webkit-text-size-adjust: 100%;
 }
-html { touch-action: manipulation; }
-body { touch-action: manipulation; }
+html, body { touch-action: manipulation; }
 #cv, #stage { touch-action: none; }
 
 #app {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto minmax(0, 1fr);
   height: 100dvh;
   height: 100svh;
   background: var(--bg);
@@ -26,389 +22,295 @@ body { touch-action: manipulation; }
   display: flex;
   align-items: center;
   gap: 8px;
-  min-height: 52px;
+  min-height: 48px;
   padding: 4px 8px 4px 12px;
   background: var(--panel);
   border-bottom: 1px solid var(--border);
   z-index: 30;
 }
-.tb-doc {
-  min-width: 0;
-  flex: 1 1 auto;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 0;
-  overflow: hidden;
-}
-#topbar #bUndo,
-#topbar #bRedo {
-  display: inline-flex !important;
-}
+.tb-doc { min-width: 0; flex: 1; display: flex; flex-direction: column; overflow: hidden; }
 #docTitle {
   max-width: 100%;
-  padding: 0 2px;
   min-height: 24px;
+  padding: 0 2px;
   font-family: var(--serif);
   font-size: 16px;
   font-weight: 560;
-  letter-spacing: -0.01em;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-#docState {
-  font-size: 11px;
-  line-height: 1.2;
-  color: var(--faint);
-  min-height: 13px;
-  padding-left: 2px;
-}
+#docState { font-size: 11px; color: var(--faint); min-height: 13px; }
 #docState.dirty { color: var(--accent-ink); }
 #tbadge, .tb-time {
   position: static;
-  flex: none;
   margin: 0;
-  padding: 0 4px;
+  padding: 0;
   background: transparent;
   border: none;
   box-shadow: none;
   font-family: var(--mono);
   font-size: 12px;
   color: var(--muted);
-  white-space: nowrap;
   pointer-events: none;
+  white-space: nowrap;
 }
-.tb-actions { display: flex; align-items: center; gap: 4px; flex: none; }
-#topbar .tb-actions button {
-  min-width: 44px;
-  min-height: 44px;
+.tb-actions { display: flex; gap: 4px; flex: none; }
+#topbar .tb-actions button { min-width: 44px; min-height: 44px; }
+#bOverflow { font-size: 22px; line-height: 1; }
+
+#geombar {
+  display: flex;
+  gap: 4px;
+  padding: 4px 8px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  z-index: 25;
+}
+#geombar button {
+  min-height: 40px;
+  min-width: 56px;
   padding: 0 10px;
   border-radius: 10px;
+  color: var(--muted);
 }
-#topbar .tb-actions button.icon-only { width: 44px; padding: 0; }
-#topbar .ic { width: 18px; height: 18px; }
-#bPlay { min-width: 44px; }
+#geombar button.on { background: var(--accent-soft); color: var(--accent-ink); font-weight: 650; }
 
-#workspace { position: relative; min-height: 0; min-width: 0; }
-#main {
-  position: absolute;
-  inset: 0;
-  display: block;
-  min-width: 0;
-  min-height: 0;
-}
+#workspace { min-height: 0; display: flex; flex-direction: column; }
+#main { position: relative; flex: 1; min-height: 140px; }
 #stage { position: absolute; inset: 0; }
-#cv { width: 100%; height: 100%; display: block; touch-action: none; }
+#cv { width: 100%; height: 100%; display: block; }
 
-#sheet, #propSheet {
-  position: absolute;
+#listDock {
+  flex: 0 0 46%;
+  height: 46%;
+  max-height: 46%;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
   z-index: 6;
+}
+body[data-list="closed"] #listDock { display: none !important; }
+#bListExpand {
+  display: none;
+  position: absolute;
+  right: 12px;
+  bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+  z-index: 8;
+  min-width: 64px;
+  min-height: 44px;
+  border-radius: 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-pop);
+}
+body[data-list="closed"] #bListExpand { display: inline-flex; }
+
+.list-tools {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+  flex: none;
+}
+.list-tools button, #listDock #bUndo, #listDock #bRedo { min-width: 44px; min-height: 44px; display: inline-flex !important; }
+#bAdd { font-size: 22px; }
+#bCollapse { margin-left: auto; }
+
+#left, #app #left {
+  display: flex !important;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  position: static !important;
+  width: auto !important;
+  height: auto !important;
+  inset: auto !important;
+  border: none !important;
+  background: transparent;
+  transform: none !important;
+}
+#leftBody, .sheet-scroll { flex: 1; min-height: 0; overflow: auto; touch-action: pan-y; }
+.sheet-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 8px 10px; }
+.sheet-head h2 { margin: 0; font-family: var(--serif); font-size: 16px; font-weight: 560; }
+.seg { display: flex; gap: 4px; padding: 2px; background: var(--panel-2); border-radius: 10px; }
+.seg button { min-height: 36px; border-radius: 8px; color: var(--muted); }
+.seg button.active { background: var(--panel); color: var(--text); }
+#viewQuick { display: none; padding: 4px 10px; }
+body[data-left="display"] #viewQuick { display: flex; flex-direction: column; }
+#viewQuick .chk { min-height: 44px; }
+
+#quick[hidden] { display: none !important; }
+#quick {
+  flex: none;
+  max-height: 168px;
+  overflow: auto;
+  border-top: 1px solid var(--border);
+  padding: 6px 8px 8px;
+  background: var(--panel-2);
+  touch-action: pan-y;
+}
+.quick-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.quick-head input[type="text"] { flex: 1; min-width: 0; min-height: 36px; font-size: 15px; }
+.quick-head button, #bMoreClose { min-height: 36px; min-width: 52px; }
+.quick-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 8px; }
+#quick .row { margin: 2px 0; min-height: 36px; flex-wrap: nowrap; }
+#quick .row .lab { font-size: 12px; min-width: 0; }
+#quick .row input { min-height: 36px; }
+
+#propSheet {
+  display: none;
+  flex: none;
+  max-height: 42%;
+  overflow: auto;
+  border-top: 1px solid var(--border);
+  touch-action: pan-y;
+}
+body[data-more="open"] #propSheet { display: block; }
+.more-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding: 4px 8px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+#propSheet #right, #app #right {
+  display: block !important;
+  position: static !important;
+  width: auto !important;
+  height: auto !important;
+  inset: auto !important;
+  border: none !important;
+  transform: none !important;
+}
+#props { overflow: visible; }
+
+#overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
   display: none;
   flex-direction: column;
   background: var(--panel);
-  color: var(--text);
-  min-height: 0;
-  overflow: hidden;
+  padding-top: env(safe-area-inset-top, 0px);
 }
-#sheet { z-index: 6; }
-#propSheet { z-index: 7; }
-
-body[data-sheet="add"] #sheet,
-body[data-sheet="objects"] #sheet,
-body[data-sheet="analysis"] #sheet,
-body[data-sheet="lab"] #sheet { display: flex; }
-
-.sheet-page { display: none; flex: 1; min-height: 0; flex-direction: column; overflow: hidden; }
-body[data-sheet="add"] .sheet-page[data-page="add"],
-body[data-sheet="objects"] .sheet-page[data-page="objects"],
-body[data-sheet="analysis"] .sheet-page[data-page="analysis"],
-body[data-sheet="lab"] .sheet-page[data-page="lab"] { display: flex; }
-
-.sheet-head {
-  flex: none;
+body[data-sheet="lab"] #overlay,
+body[data-sheet="analysis"] #overlay { display: flex; }
+.ov-bar {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
-  padding: 10px 12px 8px;
-  border-bottom: 1px solid var(--border);
-}
-.sheet-head h2 {
-  margin: 0;
-  font-family: var(--serif);
-  font-size: 18px;
-  font-weight: 560;
-  letter-spacing: -0.01em;
-}
-.sheet-head input[type="search"] { flex: 1; min-width: 120px; min-height: 40px; }
-.sheet-tools { margin-left: auto; display: flex; align-items: center; gap: 8px; }
-.speed-lab { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
-.speed-lab select { min-height: 40px; }
-.sheet-scroll, #addBody, #leftBody, #analysisBody, #labScroll {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-  -webkit-overflow-scrolling: touch;
-  touch-action: pan-y;
-}
-
-#left, #right {
-  position: static;
-  width: auto;
-  border: none;
-  background: transparent;
-  min-height: 0;
-}
-#right { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
-#propSheet #props { flex: 1; min-height: 0; overflow: auto; touch-action: pan-y; }
-.prop-form .tab-panel { display: block; }
-#viewQuick { display: none; padding: 8px 12px 4px; gap: 2px; }
-body[data-sheet="objects"][data-left="display"] #viewQuick { display: flex; flex-direction: column; }
-#viewQuick .chk { min-height: 44px; }
-
-.seg { display: flex; gap: 4px; background: var(--panel-2); border-radius: 10px; padding: 3px; }
-.seg button { flex: 1; min-height: 36px; border-radius: 8px; color: var(--muted); }
-.seg button.active { background: var(--panel); color: var(--text); box-shadow: var(--shadow-card); }
-
-#tabbar {
-  display: grid;
-  grid-template-columns: repeat(5, 1fr);
-  gap: 2px;
-  padding: 4px 6px calc(4px + env(safe-area-inset-bottom, 0px));
-  background: var(--panel);
-  border-top: 1px solid var(--border);
-  z-index: 40;
-}
-#tabbar button {
-  flex-direction: column;
-  gap: 2px;
-  min-height: 52px;
-  padding: 4px 2px;
-  border-radius: 10px;
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 500;
-}
-#tabbar button.active { color: var(--accent-ink); background: var(--accent-soft); }
-.tab-ic { width: 22px; height: 22px; display: block; }
-
-/* 窄屏：底栏上方的底部面板 */
-@media (orientation: landscape) and (max-height: 520px) {
-  #sheet, #propSheet { max-height: calc(100% - 4px); }
-  #tabbar button { min-height: 44px; }
-  #topbar { min-height: 44px; }
-}
-@media (max-width: 799px) {
-  #sheet, #propSheet {
-    left: 0; right: 0; bottom: 0;
-    max-height: min(70vh, 640px);
-    border-top: 1px solid var(--border);
-    border-radius: 16px 16px 0 0;
-    box-shadow: var(--shadow-pop);
-  }
-  body.has-sel[data-sheet="canvas"] #propSheet { display: flex; }
-  body[data-sheet="canvas"] #sheet { display: none !important; }
-  body:not([data-sheet="canvas"]) #propSheet { display: none !important; }
-  #topbar .tb-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
-  body.has-sel[data-sheet="canvas"] #timeline { bottom: calc(min(70vh, 640px) + 10px); }
-  .add-grid { grid-template-columns: 1fr 1fr; }
-  .flat-grid { grid-template-columns: 1fr 1fr; }
-}
-
-/* 宽屏：同一套底栏，功能页靠左、属性靠右，画布仍铺满 */
-@media (min-width: 800px) {
-  #sheet {
-    top: 0; bottom: 0; left: 0;
-    width: min(440px, 38vw);
-    max-height: none;
-    border-right: 1px solid var(--border);
-    border-radius: 0;
-  }
-  #propSheet {
-    top: 0; bottom: 0; right: 0;
-    width: min(400px, 36vw);
-    max-height: none;
-    border-left: 1px solid var(--border);
-    border-radius: 0;
-  }
-  body.has-sel #propSheet { display: flex; }
-  .add-grid { grid-template-columns: 1fr 1fr; }
-  .flat-grid { grid-template-columns: 1fr 1fr; }
-  #topbar { padding-right: 12px; }
-  #topbar .tb-actions button { min-width: 44px; }
-}
-
-.flat-sec { padding: 12px 12px 4px; }
-.flat-sec h3 {
-  margin: 4px 4px 8px;
-  font-size: 12px;
-  font-weight: 650;
-  letter-spacing: 0.04em;
-  color: var(--faint);
-}
-.flat-grid { display: grid; gap: 8px; }
-.flat-grid button {
-  min-height: 44px;
-  justify-content: flex-start;
+  justify-content: space-between;
   padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  flex: none;
+}
+#ovTitle { font-family: var(--serif); font-size: 18px; }
+#bOverlayClose { min-height: 44px; min-width: 64px; }
+#pageLab, #pageAnalysis { display: none; flex: 1; min-height: 0; flex-direction: column; }
+body[data-sheet="lab"] #pageLab,
+body[data-sheet="analysis"] #pageAnalysis { display: flex; }
+#labScroll, #analysisBody { overflow: auto; flex: 1; min-height: 0; }
+
+#overflowMenu, #toolPop, #stylePop {
+  position: fixed;
+  z-index: 50;
+  background: var(--panel);
   border: 1px solid var(--border);
-  background: var(--raised);
-  border-radius: 10px;
-  text-align: left;
-  white-space: normal;
+  border-radius: 12px;
+  box-shadow: var(--shadow-pop);
+  padding: 6px;
 }
-.flat-grid button:disabled { opacity: 0.38; }
-.flat-grid button.active { border-color: var(--accent); background: var(--accent-soft); }
+#overflowMenu { top: calc(52px + env(safe-area-inset-top, 0px)); right: 8px; min-width: 180px; display: flex; flex-direction: column; }
+#overflowMenu[hidden], #toolPop[hidden], #stylePop[hidden] { display: none !important; }
+#overflowMenu button, #toolPop button { min-height: 44px; justify-content: flex-start; width: 100%; }
+#toolPop { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; min-width: 220px; }
+#stylePop { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px; max-width: 240px; }
+.swatch-btn { width: 36px; height: 36px; min-height: 36px; border-radius: 50%; background: var(--c); border: 2px solid var(--panel); box-shadow: inset 0 0 0 1px var(--border-strong); }
 
-.add-grid button { min-height: 72px; align-items: flex-start; text-align: left; }
-.lrow {
-  min-height: 48px;
-  grid-template-columns: 22px 44px 44px 16px minmax(0, 1fr) auto;
-}
-.lrow .eye, .lrow .lock { width: 44px; height: 44px; min-height: 44px; }
-.lrow .eye svg, .lrow .lock svg { width: 18px; height: 18px; }
-.layer-foot button, .btnrow button, .sec > button, .pick-btn, .expr-toggle {
-  min-height: 40px;
-}
-.dlg-foot button, .nd-list button, .tcard, .pcard { min-height: 44px; }
-.dcard .dc-del { opacity: 1; min-width: 36px; min-height: 36px; }
-
-#home {
-  position: static !important;
-  inset: auto !important;
-  z-index: auto !important;
-  display: block !important;
-  height: auto !important;
-  overflow: visible !important;
-  background: transparent !important;
-}
-#pageLab #home:not(.show) { display: none !important; }
-.home-wrap {
-  max-width: none;
-  margin: 0;
-  padding: 8px 12px 28px;
-  display: block;
-}
-.home-nav {
-  position: static;
-  flex-direction: row;
-  flex-wrap: wrap;
-  padding: 0 0 8px;
-}
-.home-main h1 { font-size: 26px; }
-.home-main .lead { margin-bottom: 16px; }
-.nd-grid { grid-template-columns: 1fr; }
-@media (min-width: 720px) {
-  .nd-grid { grid-template-columns: 220px minmax(0, 1fr); }
-}
-
-#armBar {
+#armBar, #ctxBar {
   position: absolute;
   z-index: 12;
-  left: 10px;
-  right: 10px;
-  top: 8px;
+  left: 8px;
+  right: 8px;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 8px 6px 12px;
+  gap: 6px;
+  padding: 6px 8px;
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 12px;
   box-shadow: var(--shadow-pop);
 }
-#armBar[hidden] { display: none !important; }
+#armBar { top: 8px; }
+#ctxBar { top: 8px; }
+#armBar[hidden], #ctxBar[hidden] { display: none !important; }
+#armLabel, #ctxName { flex: 1; min-width: 0; font-size: 13px; overflow: hidden; text-overflow: ellipsis; }
+#armCancel, #ctxBar button { min-height: 40px; }
 body:has(#armBar:not([hidden])) #toolhint { display: none !important; }
-body:has(#armBar:not([hidden])) #toast { top: 76px; }
-#armLabel { flex: 1; min-width: 0; font-size: 13px; }
-#armCancel { min-width: 64px; min-height: 44px; }
+body:has(#ctxBar:not([hidden])) #armBar { top: 60px; }
 
-body.kb-open #app #propSheet,
-body.kb-open #app #sheet {
-  bottom: var(--kb, 0px) !important;
-  max-height: calc(100dvh - var(--kb, 0px) - 60px) !important;
+#home {
+  position: static !important;
+  display: block !important;
+  height: auto !important;
+  overflow: visible !important;
+  background: transparent !important;
+  inset: auto !important;
 }
-body.kb-open #tabbar { transform: translateY(110%); }
-body.kb-open #timeline { bottom: calc(var(--kb, 0px) + 12px); }
+#pageLab #home:not(.show) { display: none !important; }
+.home-wrap { display: block; max-width: none; margin: 0; padding: 8px 12px 24px; }
+.home-nav { position: static; flex-direction: row; flex-wrap: wrap; }
+.home-main h1 { font-size: 26px; }
+
+.lrow { min-height: 48px; grid-template-columns: 22px 44px 44px 18px minmax(0, 1fr) auto; }
+.lrow .eye, .lrow .lock { width: 44px; height: 44px; min-height: 44px; }
+.lrow .lsw { width: 16px; height: 16px; min-height: 16px; border-radius: 50%; box-shadow: inset 0 0 0 8px var(--c, var(--muted)); cursor: pointer; }
+.layer-foot button, .btnrow button { min-height: 40px; }
 
 #toast { z-index: 80; }
-#toolhint {
-  display: block;
-  z-index: 8;
-  left: 10px;
-  right: 10px;
-  bottom: 12px;
-  top: auto;
-  max-width: none;
-}
-#toolhint:empty { display: none !important; }
 #timeline button { min-width: 44px; min-height: 44px; }
 #status { display: none !important; }
 
-#pageAnalysis.with-keypad #analysisBody { flex: 1; min-height: 0; overflow: auto; }
-.flat-sec-title { margin: 14px 16px 0; font-size: 12px; letter-spacing: 0.04em; color: var(--faint); font-weight: 650; }
+body.kb-open #topbar,
+body.kb-open #geombar,
+body.kb-open #main { display: none !important; }
+body.kb-open #listDock {
+  margin-bottom: var(--kb, 0px);
+  height: auto;
+  max-height: none;
+  flex: 1 1 auto;
+  overflow: auto;
+}
+body.kb-open #propSheet { max-height: none; }
+body.kb-open #overlay { bottom: var(--kb, 0px); }
 
-/* 盖过旧版侧栏的 display:none / position:fixed。功能页默认藏起，只显示当前入口。 */
-#app #sheet,
-#app #propSheet {
-  position: absolute !important;
-  inset: auto !important;
-  width: auto !important;
-  height: auto !important;
-  transform: none !important;
-}
-#app #left.sheet-page,
-#app #pageAdd,
-#app #pageAnalysis,
-#app #pageLab {
-  display: none !important;
-  position: static !important;
-  inset: auto !important;
-  width: auto !important;
-  height: auto !important;
-  transform: none !important;
-}
-#propSheet #right { display: flex !important; position: static !important; inset: auto !important; width: auto !important; height: auto !important; min-height: 0; flex: 1; transform: none !important; }
-body[data-sheet="objects"] #app #left.sheet-page,
-body[data-sheet="add"] #app #pageAdd,
-body[data-sheet="analysis"] #app #pageAnalysis,
-body[data-sheet="lab"] #app #pageLab { display: flex !important; }
-@media (max-width: 799px) {
-  #app #sheet,
-  #app #propSheet {
-    left: 0 !important; right: 0 !important; bottom: 0 !important; top: auto !important;
-    width: auto !important;
-    max-height: min(70vh, 640px) !important;
+@media (min-width: 900px) {
+  #workspace { flex-direction: row; }
+  #listDock {
+    order: -1;
+    height: auto;
+    max-height: none;
+    width: min(380px, 36vw);
+    flex: 0 0 min(380px, 36vw);
+    border-top: none;
+    border-right: 1px solid var(--border);
+    overflow: hidden;
   }
-  body.has-sel[data-sheet="canvas"] #app #propSheet { display: flex !important; }
-  body:not([data-sheet="canvas"]) #app #propSheet { display: none !important; }
-  body[data-sheet="canvas"] #app #sheet { display: none !important; }
+  body[data-more="open"] #propSheet { max-height: 58%; }
 }
-@media (min-width: 800px) {
-  body:not([data-sheet="canvas"]) #app #sheet {
-    display: flex !important;
-    top: 0 !important; bottom: 0 !important; left: 0 !important; right: auto !important;
-    width: min(440px, 38vw) !important;
-    max-height: none !important;
-  }
-  body.has-sel #app #propSheet {
-    display: flex !important;
-    top: 0 !important; bottom: 0 !important; right: 0 !important; left: auto !important;
-    width: min(400px, 36vw) !important;
-    max-height: none !important;
-  }
-  body:not(.has-sel) #app #propSheet { display: none !important; }
-  body[data-sheet="canvas"] #app #sheet { display: none !important; }
-}
-.desmos-keypad-dock { touch-action: manipulation; }
 
-.env-note { margin: 0; padding: 12px 16px 0; color: var(--muted); font-size: 13px; }
-
-/* 软键盘（或模拟垫高）盖住底栏时，把属性/功能页抬到键盘之上。写在最后，压过宽屏的 bottom:0。 */
-body.kb-open #app #propSheet,
-body.kb-open #app #sheet {
-  top: auto !important;
-  bottom: var(--kb, 0px) !important;
-  max-height: calc(100dvh - var(--kb, 0px) - 8px) !important;
+@media (orientation: landscape) and (max-height: 520px) {
+  #listDock { flex-basis: 62%; height: 62%; max-height: 62%; }
+  #propSheet { max-height: 34%; }
+  #main { min-height: 72px; }
+  #geombar button, #topbar .tb-actions button, .list-tools button { min-height: 40px; }
 }
-body.kb-open #tabbar { transform: translateY(110%); }

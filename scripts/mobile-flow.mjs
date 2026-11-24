@@ -57,10 +57,11 @@ async function flow(width, height, tag) {
   page.on('console', m => { if (m.type() === 'error') errs.push(m.text()); });
   await page.addInitScript(() => { try { localStorage.clear(); } catch { /* */ } });
   await page.goto(url, { waitUntil: 'networkidle' });
-  await page.waitForSelector('#tabbar');
+  await page.waitForSelector('#geombar');
   const pre = tag + ' ';
 
-  ok(pre + '底栏五个入口', (await page.locator('#tabbar button').allTextContents()).map(t => t.replace(/\s+/g, '')).join(',') === '画布,添加,对象,分析,实验');
+  ok(pre + '没有五入口底栏', await page.locator('#tabbar').count() === 0);
+  ok(pre + '工具条与对象列表常驻', await page.locator('#geombar').isVisible() && await page.locator('#listDock').isVisible());
   ok(pre + '没有旧菜单栏', await page.locator('#menus, #menubar, #toolstrip').count() === 0);
   ok(pre + '实验库空状态可见', await page.locator('#home.show').isVisible() && await page.locator('.tcard').count() > 10);
 
@@ -69,8 +70,8 @@ async function flow(width, height, tag) {
   let n0 = await page.evaluate(() => window.__physim.scene().objects.length);
   ok(pre + '载入平抛后工具未武装', await page.evaluate(() => window.__physim.interaction().tool === 'select' && !window.__physim.interaction().arm));
 
-  await page.locator('[data-tab="add"]').click();
-  await page.locator('#addBody [data-tool="ball"]').click();
+  await page.locator('#geombar [data-geom="body"]').click();
+  await page.locator('#toolPop [data-tool="ball"]').click();
   await page.waitForTimeout(150);
   ok(pre + '选中小球后出现取消条', await page.locator('#armBar').isVisible() && await page.evaluate(() => window.__physim.interaction().tool === 'ball'));
 
@@ -87,8 +88,8 @@ async function flow(width, height, tag) {
   await down(page, panX, panY); await up(page, panX, panY);
   ok(pre + '取消后点画布不会创建', await page.evaluate(n => window.__physim.scene().objects.length === n, n0));
 
-  await page.locator('[data-tab="add"]').click();
-  await page.locator('#addBody [data-tool="ball"]').click();
+  await page.locator('#geombar [data-geom="body"]').click();
+  await page.locator('#toolPop [data-tool="ball"]').click();
   await page.waitForTimeout(100);
   await page.evaluate(() => history.back());
   await page.waitForTimeout(120);
@@ -96,8 +97,8 @@ async function flow(width, height, tag) {
   await down(page, panX, panY + 30); await up(page, panX, panY + 30);
   ok(pre + '返回后点画布不会创建', await page.evaluate(n => window.__physim.scene().objects.length === n, n0));
 
-  await page.locator('[data-tab="add"]').click();
-  await page.locator('#addBody [data-tool="ball"]').click();
+  await page.locator('#geombar [data-geom="body"]').click();
+  await page.locator('#toolPop [data-tool="ball"]').click();
   await page.waitForTimeout(80);
   const place = { x: cv.x + cv.width * 0.42, y: cv.y + cv.height * 0.42 };
   await down(page, place.x, place.y);
@@ -107,8 +108,8 @@ async function flow(width, height, tag) {
     const P = window.__physim, balls = P.scene().objects.filter(o => o.kind === 'ball');
     return { n: P.scene().objects.length, balls: balls.length, tool: P.interaction().tool, sel: P.interaction().sel.length, sheet: document.body.dataset.sheet };
   });
-  ok(pre + '点按落点并选中、退出工具', placed.n === n0 + 1 && placed.tool === 'select' && placed.sel === 1 && placed.sheet === 'canvas', JSON.stringify(placed));
-  ok(pre + '属性面板与选中同步', await page.locator('#propSheet').isVisible() && await page.locator('#props input[aria-label="名称"]').inputValue() !== '');
+  ok(pre + '点按落点并保持工具武装', placed.n === n0 + 1 && placed.tool === 'ball' && placed.sel === 1 && placed.sheet === 'canvas', JSON.stringify(placed));
+  ok(pre + '紧凑参数与选中同步', await page.locator('#quick').isVisible() && await page.locator('#quick input[aria-label="名称"]').inputValue() !== '' && !(await page.locator('#propSheet').isVisible()));
 
   const ball = await worldPoint(page, 'ball', 1);
   const before = await page.evaluate(id => window.__physim.scene().objects.find(o => o.id === id).x0, ball.id);
@@ -140,9 +141,9 @@ async function flow(width, height, tag) {
 
   await page.evaluate(id => window.__physim.select(id), ball.id);
   await page.waitForTimeout(80);
-  const mass = page.locator('#props .row', { hasText: '质量' }).locator('input').first();
-  const charge = page.locator('#props .row', { hasText: '电荷量' }).locator('input').first();
-  const v0 = page.locator('#props .row', { hasText: '速率' }).locator('input').first();
+  const mass = page.locator('#quick .row', { hasText: '质量' }).locator('input').first();
+  const charge = page.locator('#quick .row', { hasText: '电荷量' }).locator('input').first();
+  const v0 = page.locator('#quick .row', { hasText: '速率' }).locator('input').first();
   await mass.fill('2.5'); await mass.blur();
   await charge.fill('0.003'); await charge.blur();
   await v0.fill('4'); await v0.blur();
@@ -171,7 +172,9 @@ async function flow(width, height, tag) {
   await page.waitForTimeout(80);
   ok(pre + '复位回到 t = 0', await page.evaluate(() => window.__physim.sim.t === 0 && !window.__physim.sim.running));
 
-  await page.locator('[data-tab="analysis"]').click();
+  await page.locator('#geombar [data-geom="select"]').click();
+  await page.locator('#bOverflow').click();
+  await page.locator('#bOpenAnalysis').click();
   await page.waitForTimeout(250);
   const anText = await page.locator('#analysisBody').innerText();
   ok(pre + '分析识别抛体', /抛体|运动分析/.test(anText), anText.slice(0, 40));
@@ -181,36 +184,40 @@ async function flow(width, height, tag) {
     await scratch.click();
     await page.waitForTimeout(200);
     ok(pre + '聚焦公式后打开数学键盘', await page.evaluate(() => { const d = document.getElementById('desmosKeypadDock'); return !!(d && !d.hidden); }));
-    await page.locator('[data-tab="canvas"]').click();
+    await page.locator('#bOverlayClose').click();
     await page.waitForTimeout(100);
     ok(pre + '离开分析后收起数学键盘', await page.evaluate(() => { const d = document.getElementById('desmosKeypadDock'); return !d || d.hidden; }));
   } else ok(pre + '聚焦公式后打开数学键盘', false, '没有演算草稿');
 
   await page.evaluate(() => window.__physim.select(null));
-  await page.locator('[data-tab="analysis"]').click();
+  await page.locator('#bOverflow').click();
+  await page.locator('#bOpenAnalysis').click();
   await page.waitForTimeout(150);
   ok(pre + '未选中时分析为空状态', /选中一个物体/.test(await page.locator('#analysisBody').innerText()));
 
-  await page.locator('[data-tab="canvas"]').click();
+  await page.locator('#bOverlayClose').click();
+  await page.locator('#geombar [data-geom="select"]').click();
   const a = await worldPoint(page, 'ball', 0);
-  const b = await worldPoint(page, 'ball', 1);
   await down(page, a.x, a.y); await up(page, a.x, a.y);
   await page.waitForTimeout(40);
-  await down(page, b.x, b.y);
+  // 选中后紧凑参数出现，画布高度可能变化，第二下要按新位置算
+  const b2 = await worldPoint(page, 'ball', 1);
+  await down(page, b2.x, b2.y);
   await page.waitForTimeout(520);
-  await up(page, b.x, b.y);
+  await up(page, b2.x, b2.y);
   await page.waitForTimeout(80);
   const multi = await page.evaluate(() => window.__physim.interaction().sel.length);
   ok(pre + '长按加入多选', multi >= 2, 'sel=' + multi);
   const nBeforeDel = await page.evaluate(() => window.__physim.scene().objects.length);
-  await page.locator('#props button[aria-label="删除"]').click();
+  if (multi >= 1) await page.locator('#ctxDelete').click();
   await page.waitForTimeout(80);
   ok(pre + '多选删除', await page.evaluate(n => window.__physim.scene().objects.length < n, nBeforeDel));
   await page.locator('#bUndo').click();
   await page.waitForTimeout(80);
   ok(pre + '撤销删除', await page.evaluate(n => window.__physim.scene().objects.length === n, nBeforeDel));
 
-  await page.locator('[data-tab="lab"]').click();
+  await page.locator('#bOverflow').click();
+  await page.locator('#bHome').click();
   await page.locator('[data-tpl="incline"]').click();
   await page.waitForTimeout(200);
   if (await page.locator('#modal.show').count()) {
@@ -223,7 +230,8 @@ async function flow(width, height, tag) {
   });
   ok(pre + '换实验后状态干净', switched.box && switched.tool === 'select' && !switched.arm && switched.sheet === 'canvas', JSON.stringify(switched));
 
-  await page.locator('[data-tab="lab"]').click();
+  await page.locator('#bOverflow').click();
+  await page.locator('#bHome').click();
   await page.locator('[data-cmd="file.save"]').click();
   await page.waitForTimeout(150);
   ok(pre + '保存打开对话框', await page.locator('#modal.show').isVisible());
@@ -232,6 +240,25 @@ async function flow(width, height, tag) {
   await page.locator('#modal [data-act="ok"]').click();
   await page.waitForTimeout(200);
   ok(pre + '文档已保存', (await page.locator('#docState').textContent()) === '已保存' && (await page.locator('#docTitle').textContent()) === name);
+  await page.locator('#bOverlayClose').click();
+  await page.locator('#bCollapse').click();
+  ok(pre + '列表可收起', (await page.evaluate(() => document.body.dataset.list)) === 'closed' && await page.locator('#bListExpand').isVisible());
+  await page.locator('#bListExpand').click();
+  ok(pre + '列表可展开', await page.locator('#listDock').isVisible());
+  await page.evaluate(() => window.__physim.addVariable('k', '1'));
+  await page.locator('#leftTabs [data-left-tab="vars"]').click();
+  await page.locator('.v-play').first().click();
+  ok(pre + '滑块行可播放', await page.locator('.v-play.on').count() > 0);
+  const colorBefore = await page.evaluate(() => window.__physim.scene().objects.find(o => o.kind === 'box').color);
+  await page.locator('#leftTabs [data-left-tab="objects"]').click();
+  await page.evaluate(() => {
+    const box = window.__physim.scene().objects.find(o => o.kind === 'box');
+    document.querySelector(`.lrow[data-id="${box.id}"] .lsw`).click();
+  });
+  ok(pre + '色点打开样式层', await page.locator('#stylePop').isVisible());
+  await page.locator('#stylePop .swatch-btn').nth(2).click();
+  const colorAfter = await page.evaluate(() => window.__physim.scene().objects.find(o => o.kind === 'box').color);
+  ok(pre + '样式层改颜色', colorAfter && colorAfter !== colorBefore, `${colorBefore} → ${colorAfter}`);
 
   ok(pre + '无页面报错', errs.length === 0, errs.join(' | '));
   await ctx.close();
