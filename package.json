@@ -16,6 +16,7 @@
     "test:physics": "node scripts/physics-check.mjs",
     "test:rigid": "node src/engine/rigid.selftest.js",
     "test:ui": "node scripts/ui-check.mjs && node scripts/display-check.mjs",
+    "test:mobile": "node scripts/mobile-flow.mjs",
     "test:display": "node scripts/display-check.mjs"
   },
   "devDependencies": {
