@@ -1249,11 +1249,52 @@ let W = 0, H = 0, DPR = 1;
 function css(v) { return getComputedStyle(document.body).getPropertyValue(v).trim(); }
 let C = {};
 function readColors() { ['--accent-soft', '--canvas', '--grid', '--grid2', '--axis', '--text', '--muted', '--efield', '--efield-line', '--bfield', '--bfield-line', '--surface', '--accent', '--panel', '--border'].forEach(k => C[k] = css(k)); }
+let userFramed = false;
+/** 只平移，不改缩放。拖动或捏合进行中不动。用户已经自己取过景时，只把选中物体挪回可见区。 */
+function revealInView() {
+  if (drag || pinch || touchSession) return;
+  if (!W || !H || (W >= 700 && H >= 520)) return;
+  const picked = selection().filter(o => isBody(o) && !o.hidden);
+  const targets = picked.length ? picked : (!userFramed ? scene.objects.filter(o => isBody(o) && !o.hidden) : []);
+  if (!targets.length) return;
+  const bar = $('#ctxBar');
+  const arm = $('#armBar');
+  const barH = (bar && !bar.hidden ? bar.offsetHeight : 0) + (arm && !arm.hidden ? arm.offsetHeight : 0);
+  const padT = Math.max(36, barH + 18), padB = 56, padX = 28;
+  const pts = targets.map(o => [o.st ? o.st.x : o.x0, o.st ? o.st.y : o.y0]);
+  let minSx = Infinity, maxSx = -Infinity, minSy = Infinity, maxSy = -Infinity;
+  for (const p of pts) {
+    const [sx, sy] = w2s(p[0], p[1]);
+    minSx = Math.min(minSx, sx); maxSx = Math.max(maxSx, sx);
+    minSy = Math.min(minSy, sy); maxSy = Math.max(maxSy, sy);
+  }
+  const left = padX, right = W - padX, top = padT, bot = H - padB;
+  let dx = 0, dy = 0;
+  if (maxSx - minSx <= right - left) {
+    if (minSx < left) dx = minSx - left;
+    else if (maxSx > right) dx = maxSx - right;
+  } else {
+    const [sx] = w2s(pts[0][0], pts[0][1]);
+    if (sx < left) dx = sx - left; else if (sx > right) dx = sx - right;
+  }
+  if (maxSy - minSy <= bot - top) {
+    if (minSy < top) dy = minSy - top;
+    else if (maxSy > bot) dy = maxSy - bot;
+  } else {
+    const [, sy] = w2s(pts[0][0], pts[0][1]);
+    if (sy < top) dy = sy - top; else if (sy > bot) dy = sy - bot;
+  }
+  if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
+  scene.view.cx += dx / scene.view.scale;
+  scene.view.cy -= dy / scene.view.scale;
+  draw();
+}
 function resize() {
   const r = cv.getBoundingClientRect(); DPR = window.devicePixelRatio || 1;
   W = r.width; H = r.height; cv.width = Math.round(W * DPR); cv.height = Math.round(H * DPR);
   markFieldsDirty();
   draw();
+  revealInView();
 }
 function w2s(x, y) { const v = scene.view; return [W / 2 + (x - v.cx) * v.scale, H / 2 - (y - v.cy) * v.scale]; }
 function s2w(sx, sy) { const v = scene.view; return [v.cx + (sx - W / 2) / v.scale, v.cy - (sy - H / 2) / v.scale]; }
@@ -2239,6 +2280,7 @@ function select(id, opts = {}) {
   if (!selSet.size) delete document.body.dataset.more;
   updateOptContext();
   syncListSelection();
+  if (!opts.deferPanel) revealInView();
   if (ovSelDependent()) requestDraw();
   if (prev !== id && !opts.deferPanel) buildPanel();
   else if (!opts.deferPanel && opts.forcePanel) buildPanel();
@@ -2273,6 +2315,7 @@ function setSelection(ids, primary, opts = {}) {
   if (!selSet.size) delete document.body.dataset.more;
   syncListSelection();
   if (!opts.deferPanel) buildPanel();
+  revealInView();
   requestDraw();
   updateOptContext();
 }
@@ -2667,6 +2710,7 @@ function startPinchFromTouches() {
 function updatePinch() {
   const pair = touchPair();
   if (!pair || !pinch) return;
+  userFramed = true;
   const [a, b] = pair;
   const dist = pinchDistance(a, b);
   if (dist < 1) return;
@@ -3175,6 +3219,7 @@ cv.addEventListener('pointermove', e => {
     requestDraw(); return;
   }
   if (drag.type === 'pan') {
+    userFramed = true;
     const v = scene.view; v.cx = drag.cx - (sx - drag.sx) / v.scale; v.cy = drag.cy + (sy - drag.sy) / v.scale;
     if (Math.hypot(sx - drag.sx, sy - drag.sy) > 3) drag.click = false;
     draw(); return;
@@ -3758,6 +3803,7 @@ function fitView(only) {
   const w = Math.max(x1 - x0, 1), h = Math.max(y1 - y0, 1);
   scene.view.scale = Math.min(W / (w * 1.35), H / (h * 1.45));
   scene.view.cx = (x0 + x1) / 2; scene.view.cy = (y0 + y1) / 2; draw(); markDirty();
+  revealInView();
 }
 
 /* =====================================================================
@@ -6315,6 +6361,7 @@ function normalizeObject(raw) {
 normalizeObject.fixed = [];
 function loadScene(data, keepView) {
   if (!data || !Array.isArray(data.objects)) throw new Error('无效的场景文件');
+  if (!keepView) userFramed = false;
   normalizeObject.fixed = [];
   const oldView = scene.view;
   scene = {

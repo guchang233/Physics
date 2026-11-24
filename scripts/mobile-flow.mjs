@@ -30,6 +30,84 @@ const down = (page, x, y, id) => ptr(page, 'pointerdown', x, y, id);
 const move = (page, x, y, id) => ptr(page, 'pointermove', x, y, id);
 const up = (page, x, y, id) => ptr(page, 'pointerup', x, y, id);
 
+async function layoutAudit(page, label) {
+  const problems = await page.evaluate(() => {
+    const vw = document.documentElement.clientWidth;
+    const vh = document.documentElement.clientHeight;
+    const shown = el => {
+      if (!el || el.hidden) return null;
+      const s = getComputedStyle(el);
+      if (s.display === 'none' || s.visibility === 'hidden') return null;
+      const b = el.getBoundingClientRect();
+      if (b.width < 1 || b.height < 1) return null;
+      return b;
+    };
+    const inside = b => b && b.left >= -1 && b.top >= -1 && b.right <= vw + 1 && b.bottom <= vh + 1;
+    const problems = [];
+    if (document.documentElement.scrollWidth > vw + 1) problems.push('页面横向滚动 ' + document.documentElement.scrollWidth);
+    const wide = [];
+    for (const el of document.querySelectorAll('#topbar, #topbar *, #geombar, #geombar *, #ctxBar, #ctxBar *, #quick, #quick *, #listDock, .sheet-head, .sheet-head *')) {
+      const b = el.getBoundingClientRect();
+      if (b.width > 2 && b.height > 2 && (b.right > vw + 2 || b.left < -2)) {
+        wide.push((el.id ? '#' + el.id : el.tagName) + '@' + Math.round(b.right));
+      }
+    }
+    if (wide.length) problems.push('横向超出 ' + [...new Set(wide)].slice(0, 5).join(','));
+    for (const id of ['bPlay', 'bReset', 'bOverflow']) {
+      const b = shown(document.getElementById(id));
+      if (document.body.dataset.sheet === 'canvas' && !document.body.classList.contains('kb-open') && !inside(b)) problems.push(id + ' 不在屏内');
+    }
+    for (const b of document.querySelectorAll('#geombar button')) {
+      if (document.body.classList.contains('kb-open')) break;
+      if (!inside(shown(b))) problems.push('工具「' + b.textContent.trim() + '」不在屏内');
+    }
+    const cv = shown(document.getElementById('cv'));
+    const dock = shown(document.getElementById('listDock'));
+    const geom = shown(document.getElementById('geombar'));
+    if (dock && cv && cv.bottom > dock.top + 1) problems.push('列表盖住画布');
+    if (cv && !document.body.classList.contains('kb-open') && cv.height < 96) problems.push('画布过矮 ' + Math.round(cv.height));
+    if (document.body.dataset.list !== 'closed' && document.body.dataset.sheet === 'canvas') {
+      const host = document.getElementById('leftBody');
+      const hb = host && host.getBoundingClientRect();
+      const row = document.querySelector('.lrow');
+      const rb = row && row.getBoundingClientRect();
+      if (!hb || hb.height < 36) problems.push('列表可视高度不足');
+      else if (!rb || rb.bottom < hb.top + 8 || rb.top > hb.bottom - 8) problems.push('列表行不在可见区');
+    }
+    const ctx = document.getElementById('ctxBar');
+    if (ctx && !ctx.hidden && shown(ctx)) {
+      if (geom && ctx.getBoundingClientRect().top < geom.bottom - 1) problems.push('上下文条盖住工具条');
+      for (const id of ['ctxColor', 'ctxHide', 'ctxDelete', 'ctxMore']) {
+        if (!inside(shown(document.getElementById(id)))) problems.push(id + ' 不在屏内');
+      }
+    }
+    const quick = document.getElementById('quick');
+    if (quick && !quick.hidden && shown(quick)) {
+      const qb = quick.getBoundingClientRect();
+      if (cv && qb.top < cv.bottom - 1) problems.push('参数条盖住画布');
+      for (const inp of quick.querySelectorAll('input')) {
+        const b = inp.getBoundingClientRect();
+        if (b.width < 2) continue;
+        if (b.left < -1 || b.right > vw + 1) problems.push('参数横向超出');
+      }
+    }
+    if (cv && document.body.dataset.sheet === 'canvas' && !document.body.classList.contains('kb-open')) {
+      const P = window.__physim;
+      const ids = P.interaction().sel;
+      const list = P.scene().objects.filter(o => o.kind === 'ball' && (ids.includes(o.id) || !ids.length));
+      const o = list[0];
+      if (o) {
+        const v = P.scene().view;
+        const x = cv.left + cv.width / 2 + ((o.st ? o.st.x : o.x0) - v.cx) * v.scale;
+        const y = cv.top + cv.height / 2 - ((o.st ? o.st.y : o.y0) - v.cy) * v.scale;
+        if (x < cv.left + 8 || x > cv.right - 8 || y < cv.top + 8 || y > cv.bottom - 8) problems.push('物体不在画布可见区');
+      }
+    }
+    return problems;
+  });
+  ok(label, problems.length === 0, problems.join('；'));
+}
+
 async function worldPoint(page, kind, which = 0) {
   return page.evaluate(({ kind, which }) => {
     const P = window.__physim;
@@ -69,6 +147,7 @@ async function flow(width, height, tag) {
   await page.waitForTimeout(250);
   let n0 = await page.evaluate(() => window.__physim.scene().objects.length);
   ok(pre + '载入平抛后工具未武装', await page.evaluate(() => window.__physim.interaction().tool === 'select' && !window.__physim.interaction().arm));
+  await layoutAudit(page, pre + '载入后控件在屏内且物体可见');
 
   await page.locator('#geombar [data-geom="body"]').click();
   await page.locator('#toolPop [data-tool="ball"]').click();
@@ -110,6 +189,7 @@ async function flow(width, height, tag) {
   });
   ok(pre + '点按落点并保持工具武装', placed.n === n0 + 1 && placed.tool === 'ball' && placed.sel === 1 && placed.sheet === 'canvas', JSON.stringify(placed));
   ok(pre + '紧凑参数与选中同步', await page.locator('#quick').isVisible() && await page.locator('#quick input[aria-label="名称"]').inputValue() !== '' && !(await page.locator('#propSheet').isVisible()));
+  await layoutAudit(page, pre + '选中后无横向溢出且操作可见');
 
   const ball = await worldPoint(page, 'ball', 1);
   const before = await page.evaluate(id => window.__physim.scene().objects.find(o => o.id === id).x0, ball.id);
@@ -158,8 +238,8 @@ async function flow(width, height, tag) {
   await page.evaluate(() => window.__physim.setKeyboardInset(280));
   await page.waitForTimeout(80);
   const ib = await mass.boundingBox();
-  const kb = await page.evaluate(() => ({ h: window.innerHeight, kb: parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--kb')) || 0, open: document.body.classList.contains('kb-open') }));
-  ok(pre + '模拟键盘垫高后输入框仍在可视区', kb.open && ib && ib.y + ib.height <= kb.h - kb.kb + 8, JSON.stringify({ top: ib && ib.y, bottom: ib && ib.y + ib.height, ...kb }));
+  const kb = await page.evaluate(() => ({ h: window.innerHeight, w: document.documentElement.clientWidth, kb: parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--kb')) || 0, open: document.body.classList.contains('kb-open') }));
+  ok(pre + '模拟键盘垫高后输入框仍在可视区', kb.open && ib && ib.y >= -1 && ib.y + ib.height <= kb.h - kb.kb + 8 && ib.x >= -1 && ib.x + ib.width <= kb.w + 1, JSON.stringify({ top: ib && ib.y, bottom: ib && Math.round(ib.y + ib.height), left: ib && ib.x, right: ib && Math.round(ib.x + ib.width), ...kb }));
   await page.evaluate(() => window.__physim.setKeyboardInset(0));
   await mass.blur();
 
@@ -199,7 +279,8 @@ async function flow(width, height, tag) {
   await page.locator('#geombar [data-geom="select"]').click();
   const a = await worldPoint(page, 'ball', 0);
   await down(page, a.x, a.y); await up(page, a.x, a.y);
-  await page.waitForTimeout(40);
+  await page.waitForTimeout(80);
+  await layoutAudit(page, pre + '选择工具下上下文条完整可见');
   // 选中后紧凑参数出现，画布高度可能变化，第二下要按新位置算
   const b2 = await worldPoint(page, 'ball', 1);
   await down(page, b2.x, b2.y);
