@@ -22,8 +22,7 @@ const S = () => p.evaluate(() => { const P = window.__physim, sc = P.scene(); re
 const cv = await p.locator('#cv').boundingBox();
 const w2s = (x, y) => p.evaluate(([x, y]) => { const v = window.__physim.scene().view, c = document.getElementById('cv').getBoundingClientRect(); return [c.left + c.width / 2 + (x - v.cx) * v.scale, c.top + c.height / 2 - (y - v.cy) * v.scale]; }, [x, y]);
 ok('首次打开显示开始页', await p.locator('#home.show').isVisible());
-ok('无文档时“保存”不可用', await p.evaluate(() => { document.querySelectorAll('#menus > button')[0].click(); const it = [...document.querySelectorAll('.dmenu .mi')].find(x => x.textContent.includes('保存') && !x.textContent.includes('另存')); return it && it.disabled; }));
-await p.keyboard.press('Escape');
+ok('无文档时“保存”不可用', await p.locator('[data-cmd="file.save"]').isDisabled());
 // 新建对话框
 await p.keyboard.press('Control+n'); await p.waitForTimeout(150);
 ok('Ctrl+N 打开新建对话框', await p.locator('#modal.show .dlg').isVisible());
@@ -53,7 +52,7 @@ ok('单击编组成员选中整组', (await S()).sel === 3);
 await p.mouse.dblclick(q1[0], q1[1]); await p.waitForTimeout(80);
 ok('双击进入编组只选一个', (await S()).sel === 1);
 // 移动整组
-await p.mouse.click(cv.x + cv.width - 60, cv.y + cv.height - 120); // 画布内空白处取消
+await p.mouse.click(cv.x + cv.width / 2, cv.y + 28); // 画布上方空白处取消选择
 await p.mouse.click(q1[0], q1[1]);
 const before = await p.evaluate(() => window.__physim.scene().objects.filter(o => o.kind === 'ball').map(o => o.x0));
 await p.mouse.move(q1[0], q1[1]); await p.mouse.down(); await p.mouse.move(q1[0] + 120, q1[1], { steps: 5 }); await p.mouse.up();
@@ -68,7 +67,7 @@ await massRow.fill('2'); await massRow.press('Enter');
 ok('多选编辑共同属性', await p.evaluate(() => window.__physim.scene().objects.filter(o => o.kind === 'ball').every(o => o.m === 2)));
 // 对齐
 await p.evaluate(() => { const bs = window.__physim.scene().objects.filter(o => o.kind === 'ball'); bs[1].y0 = 3; });
-await p.locator('#menus > button', { hasText: '对象' }).click(); await p.locator('.dmenu .mi', { hasText: '对齐' }).hover(); await p.locator('.dmenu .mi', { hasText: '底对齐' }).click();
+await p.locator('#props button[aria-label="底对齐"]').click();
 const ys = await p.evaluate(() => window.__physim.scene().objects.filter(o => o.kind === 'ball').map(o => o.y0));
 ok('菜单 对象→对齐→底对齐', ys.every(y => Math.abs(y - ys[0]) < 1e-9), ys.join(','));
 // 复制粘贴（带编组）
@@ -83,6 +82,7 @@ const lockedSel = await p.evaluate(() => [...document.querySelectorAll('.lrow.se
 ok('锁定后画布上点不中', !lockedSel.some(t => t.includes('小球1')), lockedSel.join('|'));
 await p.keyboard.press('Control+Alt+2');
 ok('全部解锁', await p.evaluate(() => !window.__physim.scene().objects.some(o => o.locked)));
+await p.locator('[data-tab="objects"]').click(); await p.waitForTimeout(120);
 // 图层：隐藏眼睛
 const eye = p.locator('.lrow[data-id]').filter({ hasText: '地面' }).locator('.eye');
 await eye.click();
@@ -105,9 +105,12 @@ await p.locator('#bHome').click(); await p.waitForTimeout(150);
 ok('开始页出现最近文档（含缩略图）', await p.locator('.dcard img').count() === 1 && (await p.locator('.dcard .pc-name').first().textContent()) === '碰撞研究');
 // 从模板新建 → 修改 → 关闭时询问
 await p.locator('[data-v="templates"]').first().click(); await p.locator('.tcard', { hasText: '多米诺骨牌' }).click(); await p.waitForTimeout(300);
+await p.locator('[data-tab="analysis"]').click(); await p.waitForTimeout(200);
 ok('从模板新建', (await p.locator('#docTitle').textContent()) === '多米诺骨牌' && await p.locator('.lesson').isVisible());
+await p.locator('[data-tab="canvas"]').click(); await p.waitForTimeout(100);
 await p.keyboard.press('1'); await p.mouse.click(cv.x + 300, cv.y + 200);
-await p.locator('#menus > button', { hasText: '文件' }).click(); await p.locator('.dmenu .mi', { hasText: '关闭文档' }).click(); await p.waitForTimeout(100);
+await p.locator('[data-tab="lab"]').click(); await p.waitForTimeout(100);
+await p.locator('[data-cmd="file.close"]').click(); await p.waitForTimeout(100);
 ok('关闭未保存文档时询问', await p.locator('#modal.show', { hasText: '保存对' }).isVisible());
 await p.locator('[data-act="discard"]').click(); await p.waitForTimeout(150);
 ok('不保存 → 回到开始页', await p.locator('#home.show').isVisible());
@@ -115,11 +118,11 @@ ok('不保存 → 回到开始页', await p.locator('#home.show').isVisible());
 await p.locator('.dcard .pcard').first().click(); await p.waitForTimeout(250);
 s = await S(); ok('打开已保存文档', s.n === 4 && s.groups === 1, JSON.stringify(s));
 // 导出
-const dl = async (sub) => { const pr = p.waitForEvent('download', { timeout: 5000 }); await p.locator('#menus > button', { hasText: '文件' }).click(); await p.locator('.dmenu .mi', { hasText: '导出' }).hover(); await p.locator('.dmenu .mi', { hasText: sub }).click(); const d = await pr; return fs.readFileSync(await d.path()); };
-{ const buf = await dl('PNG 图片（2 倍分辨率）'); ok('导出 PNG（文件头正确、2 倍尺寸）', buf.slice(1, 4).toString() === 'PNG' && buf.readUInt32BE(16) >= 2 * cv.width, `${buf.readUInt32BE(16)}×${buf.readUInt32BE(20)}`); }
-{ const buf = await dl('场景文件'); let j = null; try { j = JSON.parse(buf.toString()); } catch {} ok('导出场景文件（可解析、含编组与标题）', j && j.objects.length === 4 && j.groups.length === 1 && j.title === '碰撞研究'); }
+const dl = async (cmd) => { const pr = p.waitForEvent('download', { timeout: 8000 }); await p.locator('[data-tab="lab"]').click(); await p.locator(`[data-cmd="${cmd}"]`).click(); const d = await pr; return fs.readFileSync(await d.path()); };
+{ const buf = await dl('file.exportPNG2'); ok('导出 PNG（文件头正确、2 倍尺寸）', buf.slice(1, 4).toString() === 'PNG' && buf.readUInt32BE(16) >= 2 * cv.width, `${buf.readUInt32BE(16)}×${buf.readUInt32BE(20)}`); }
+{ const buf = await dl('file.exportJSON'); let j = null; try { j = JSON.parse(buf.toString()); } catch {} ok('导出场景文件（可解析、含编组与标题）', j && j.objects.length === 4 && j.groups.length === 1 && j.title === '碰撞研究'); }
 await p.keyboard.press('Space'); await p.waitForTimeout(600); await p.keyboard.press('Space');
-{ const buf = await dl('运动数据'); const t = buf.toString(); ok('导出 CSV（含表头与数据行）', t.includes('物体,t (s),x (m)') && t.split('\n').length > 20, `${t.split('\n').length} 行`); }
+{ const buf = await dl('file.exportCSV'); const t = buf.toString(); ok('导出 CSV（含表头与数据行）', t.includes('物体,t (s),x (m)') && t.split('\n').length > 20, `${t.split('\n').length} 行`); }
 // 刷新后恢复
 await p.keyboard.press('3'); await p.mouse.click(cv.x + 700, cv.y + 300);
 await p.waitForTimeout(500);

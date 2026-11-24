@@ -187,6 +187,7 @@ let leftQuery = '';
 let leftChip = 'all';
 let propsTab = 'init';
 let mobileDock = 'stage';
+let sheet = 'lab';
 const fieldSys = new FieldSystem2({ law: 'coulomb3d', k: K_COULOMB, softening: 0.02 });
 let contactWorld = new StubContactWorld();
 let fieldsDirty = true;
@@ -2446,7 +2447,7 @@ function setLocked(list, v) {
   for (const o of list) { if (v) o.locked = true; else delete o.locked; }
   if (v) setSelection([]); else { refreshLeft(); buildPanel(); }
   markDirty(); requestDraw();
-  toast(v ? `已锁定 ${list.length} 个对象（在图层面板中解锁）` : `已解锁 ${list.length} 个对象`, { action: UNDO_ACTION });
+  toast(v ? `已锁定 ${list.length} 个对象（在「对象」里解锁）` : `已解锁 ${list.length} 个对象`, { action: UNDO_ACTION });
 }
 function setHidden(list, v) {
   if (!list.length) return;
@@ -2514,6 +2515,7 @@ function startPick(opts) {
   if (tool !== 'select') setTool('select');
   pickMode = Object.assign({ accept: o => isBody(o) }, opts);
   document.body.classList.add('picking');
+  setSheet('canvas');
   const hint = $('#toolhint');
   if (hint) hint.innerHTML = `${escapeHtml(opts.prompt || '在画布上点选一个对象')} <span class="th-k">${opts.allowPoint ? '点空白处取坐标 · ' : ''}Esc 取消</span>`;
   cv.style.cursor = 'crosshair';
@@ -3227,6 +3229,7 @@ function syncHistoryButtons() {
   const u = $('#bUndo'), r = $('#bRedo');
   if (u) { u.disabled = !undoStack.length; u.title = undoStack.length ? `撤销${undoStack.at(-1).label ? '：' + undoStack.at(-1).label : ''} (Ctrl+Z)` : '没有可撤销的操作'; }
   if (r) { r.disabled = !redoStack.length; r.title = redoStack.length ? `重做${redoStack.at(-1).label ? '：' + redoStack.at(-1).label : ''} (Ctrl+Shift+Z)` : '没有可重做的操作'; }
+  syncCommands();
 }
 
 /* ---------------- 复制/删除 ---------------- */
@@ -3344,7 +3347,13 @@ function insertClonesFrom(pool, dx, dy) {
 }
 
 /* ---------------- 播放控制 ---------------- */
-function updatePlayBtn() { const b = $('#bPlay'); if (b) b.innerHTML = `<svg class="ic"><use href="#i-${sim.running ? 'pause' : 'play'}"/></svg>${sim.running ? '暂停' : '播放'}`; }
+function updatePlayBtn() {
+  const b = $('#bPlay'); if (!b) return;
+  const label = sim.running ? '暂停' : '播放';
+  b.innerHTML = `<svg class="ic"><use href="#i-${sim.running ? 'pause' : 'play'}"/></svg><span class="tb-label">${label}</span>`;
+  b.setAttribute('aria-label', label);
+  b.classList.toggle('primary', !sim.running);
+}
 function togglePlay() { ensureStates(); sim.running = !sim.running; updatePlayBtn(); lastTs = 0; draw(); updateReadouts(); }
 function stepOnce() {
   sim.running = false; updatePlayBtn();
@@ -3379,7 +3388,11 @@ function afterFrame() { requestDraw(); updateReadouts(); }
 function updateBadge() {
   updateTimeline();
   const zp = $('#zoomPct'); if (zp) { const t = `${fmt(scene.view.scale, 3)} px/m`; if (zp.textContent !== t) zp.textContent = t; }
-  $('#tbadge').innerHTML = `t = <b>${fmt(sim.t, 3)}</b> s &nbsp;<span class="${sim.running ? 'run' : 'pause'}">${sim.running ? '● 运行中' : sim.t === 0 ? '○ 初始' : '‖ 暂停'}</span>${scene.settings.speed !== 1 ? ` &nbsp;${scene.settings.speed}×` : ''}`;
+  const el = $('#tbadge'); if (!el) return;
+  const state = sim.running ? '运行' : sim.t === 0 ? '初始' : '暂停';
+  const speed = scene.settings.speed !== 1 ? ` ${scene.settings.speed}×` : '';
+  const t = `${fmt(sim.t, 2)} s · ${state}${speed}`;
+  if (el.textContent !== t) el.textContent = t;
 }
 function fitView(only) {
   const pts = [];
@@ -3631,12 +3644,23 @@ function panelBox(id, active) {
 function buildPanel() {
   binds = [];
   derivedLive = [];
-  const P = $('#props'); P.innerHTML = '';
-  P.classList.remove('is-locked');
-  const o = selected();
-  if (!o) return buildScenePanel(P);
-  if (selSet.size > 1) return buildMultiPanel(P);
+  const P = $('#props');
+  if (P) {
+    P.innerHTML = '';
+    P.classList.remove('is-locked');
+    const o = selected();
+    if (!docOpen || !o) {
+      P.appendChild(el('div', { class: 'empty-hint' }, !docOpen ? '新建或打开实验后，点选物体即可编辑参数。' : '未选中物体。在画布上点选，或打开「对象」。'));
+    } else if (selSet.size > 1) buildMultiPanel(P);
+    else buildSinglePanel(P, o);
+  }
+  buildAnalysisPane();
+  buildEnvPane();
+  document.body.classList.toggle('has-sel', !!(docOpen && selSet.size));
+  syncCommands();
+}
 
+function buildSinglePanel(P, o) {
   const head = el('div', { class: 'insp-head' });
   const nm = el('input', { type: 'text', value: o.name, 'aria-label': '名称', title: '点击重命名', spellcheck: 'false' });
   let nmPushed = false;
@@ -3765,12 +3789,15 @@ function propRow(parent, o, d) {
     after: () => { if (d.after) d.after(o); if (FIELD_SOURCE_KINDS.includes(o.kind)) markFieldsDirty(); updateDerived(true); },
   });
 }
-function schemaSections(P, o, extras = {}) {
-  const defs = schemaOf(o).filter(d => !d.when || d.when(o));
+function schemaSections(P, o, extras = {}, skipKeys = []) {
+  const skip = new Set(skipKeys);
+  const defs = schemaOf(o).filter(d => !skip.has(d.key) && (!d.when || d.when(o)));
   const groups = [...new Set(defs.map(d => d.group))];
   for (const g of groups) {
+    const items = defs.filter(x => x.group === g);
+    if (!items.length && !extras[g]) continue;
     const sec = section(P, g);
-    for (const d of defs.filter(x => x.group === g)) propRow(sec, o, d);
+    for (const d of items) propRow(sec, o, d);
     if (extras[g]) extras[g](sec);
   }
 }
@@ -4050,21 +4077,12 @@ function buildAppliedForcePanel(P, b) {
 
 let chartMode = 'v';
 function buildBodyPanel(P, b) {
-  const tabs = [
-    ['init', '初态'],
-    ['props', '属性'],
-    ['force', '受力'],
-    ['live', '实时'],
-    ['analysis', '分析'],
-    ['chart', '图像'],
-  ];
-  if (!tabs.some(([id]) => id === propsTab)) propsTab = 'init';
-  P.appendChild(makeTabs(tabs, propsTab, id => { propsTab = id; buildPanel(); }, { className: 'tabs tabs-scroll' }));
-  const panels = el('div', { class: 'tab-panels' });
+  const form = el('div', { class: 'prop-form' });
 
-  const pInit = panelBox('init', propsTab);
+  const pInit = panelBox('init', 'init');
   {
-    const s = section(pInit, '初始条件 t = 0', 'hl');
+    const s = section(pInit, '关键参数', 'hl');
+    for (const d of schemaOf(b).filter(d => d.key === 'm' || d.key === 'q')) propRow(s, b, d);
     numRow(s, '位置 x₀', () => b.x0, v => b.x0 = v, 'm', { init: true, slot: [b, 'x0'] });
     numRow(s, '位置 y₀', () => b.y0, v => b.y0 = v, 'm', { init: true, slot: [b, 'y0'] });
     const vmag = () => Math.hypot(b.vx0, b.vy0);
@@ -4087,7 +4105,7 @@ function buildBodyPanel(P, b) {
     dsec.appendChild(dr);
   }
 
-  const pProps = panelBox('props', propsTab);
+  const pProps = panelBox('props', 'props');
   {
     schemaSections(pProps, b, {
       '行为': sec => {
@@ -4095,16 +4113,16 @@ function buildBodyPanel(P, b) {
         btn(tb, '清除轨迹', () => { resetTrail(b); draw(); });
         sec.appendChild(tb);
       },
-    });
+    }, ['m', 'q']);
     derivedSection(pProps, b);
     const m = section(pProps, '物理模型'); m.appendChild(el('div', { class: 'hint' }, MODEL_NOTE[b.kind] || ''));
   }
 
-  const pForce = panelBox('force', propsTab);
+  const pForce = panelBox('force', 'force');
   pForce.classList.add('force-tab');
   buildAppliedForcePanel(pForce, b);
 
-  const pLive = panelBox('live', propsTab);
+  const pLive = panelBox('live', 'live');
   {
     const r = section(pLive, '瞬时状态');
     readRow(r, [['位置', 'r_pos'], ['速度', 'r_vel'], ['速率', 'r_v'], ['方向', 'r_ang'], ['加速度', 'r_a'], ['动能', 'r_ek'], ['角速度', 'r_w'], ['动量', 'r_p'], ['重力势能', 'r_ep'], ['机械能', 'r_e']]);
@@ -4135,26 +4153,22 @@ function buildBodyPanel(P, b) {
     }
   }
 
-  const pAn = panelBox('analysis', propsTab);
+  const pArrange = panelBox('arrange', 'arrange');
   {
-    const th = section(pAn, '运动分析');
-    th.appendChild(el('div', { id: 'r_theory', class: 'analysis-panel' }));
+    const ar = section(pArrange, '排列');
+    const b1 = el('div', { class: 'btnrow' });
+    btn(b1, '置于顶层', () => arrangeSelection('front'));
+    btn(b1, '上移一层', () => arrangeSelection('forward'));
+    btn(b1, '下移一层', () => arrangeSelection('backward'));
+    btn(b1, '置于底层', () => arrangeSelection('back'));
+    btn(b1, '锁定', () => setLocked([b], true));
+    btn(b1, '隐藏', () => setHidden([b], true));
+    ar.appendChild(b1);
   }
 
-  const pCh = panelBox('chart', propsTab);
-  {
-    const sel = el('select', { id: 'chartSel' });
-    [['v', 'v–t 速率'], ['vx', 'vx–t'], ['vy', 'vy–t'], ['a', 'a–t 加速度'], ['x', 'x–t'], ['y', 'y–t'], ['ek', 'Ek–t 动能'], ['xy', 'y–x 轨迹'], ['px', 'vx–x 相图'], ['py', 'vy–y 相图']].forEach(([v, t]) => sel.appendChild(el('option', { value: v }, t)));
-    sel.value = chartMode;
-    sel.addEventListener('change', () => { chartMode = sel.value; drawChart(); });
-    const g = section(pCh, '图像', '', sel);
-    g.appendChild(el('canvas', { id: 'chart' }));
-  }
-
-  [pInit, pProps, pForce, pLive, pAn, pCh].forEach(x => panels.appendChild(x));
-  P.appendChild(panels);
-  ensureDesmosKeypadDock(document.getElementById('right'));
-  syncDesmosKeypadForAnalysis(propsTab === 'analysis');
+  [pInit, pProps, pForce, pLive, pArrange].forEach(x => form.appendChild(x));
+  P.appendChild(form);
+  syncDesmosKeypadForAnalysis(document.body.dataset.sheet === 'analysis');
   updateReadouts();
 }
 
@@ -4267,31 +4281,56 @@ function drawEnergyChart() {
   g.setLineDash([]);
 }
 
-function buildScenePanel(P) {
-  const S = scene.settings;
-  if (!['overview', 'physics', 'display'].includes(propsTab)) propsTab = 'overview';
-  const tabs = [['overview', '概览'], ['physics', '物理'], ['display', '显示']];
-  const head = el('div', { class: 'insp-head' });
-  head.appendChild(el('div', { class: 'insp-title' }, '场景'));
-  P.appendChild(head);
-  P.appendChild(el('div', { class: 'insp-meta' }, `${bodies().length} 个物体 · ${scene.objects.length - bodies().length} 个场 / 表面 / 约束`));
-  P.appendChild(makeTabs(tabs, propsTab, id => { propsTab = id; buildPanel(); }));
-  const panels = el('div', { class: 'tab-panels' });
-
-  const pOv = panelBox('overview', propsTab);
-  {
-    if (!lessonCard(pOv)) {
-      const s = section(pOv, '开始');
-      s.appendChild(el('div', { class: 'hint' }, `从左侧「实验」载入一个经典模型，或在「添加」里自己搭建。选中物体可设置初态、外力，并查看运动分析。`));
-      const br = el('div', { class: 'btnrow' });
-      btn(br, '从模板新建', () => showHome('templates'));
-      btn(br, '使用说明', () => $('#help').classList.add('show'));
-      s.appendChild(br);
-    }
-    buildEnergySection(pOv);
+let analysisSig = '';
+function chartBlock(parent) {
+  const sel = el('select', { id: 'chartSel' });
+  [['v', 'v–t 速率'], ['vx', 'vx–t'], ['vy', 'vy–t'], ['a', 'a–t 加速度'], ['x', 'x–t'], ['y', 'y–t'], ['ek', 'Ek–t 动能'], ['xy', 'y–x 轨迹'], ['px', 'vx–x 相图'], ['py', 'vy–y 相图']].forEach(([v, t]) => sel.appendChild(el('option', { value: v }, t)));
+  sel.value = chartMode;
+  sel.addEventListener('change', () => { chartMode = sel.value; drawChart(); });
+  const g = section(parent, '图像', '', sel);
+  g.appendChild(el('canvas', { id: 'chart' }));
+}
+function buildAnalysisPane() {
+  const host = $('#analysisBody'); if (!host) return;
+  const b = selected();
+  const sig = [docOpen ? 1 : 0, selId ?? '', selSet.size, (scene.info && scene.info.key) || '', overlays().filter(o => o.on).length, (scene.info && scene.info.recommend || []).length].join(':');
+  if (sig === analysisSig && host.childElementCount) return;
+  analysisSig = sig;
+  host.innerHTML = '';
+  if (isBody(b) && selSet.size === 1) {
+    const th = section(host, '运动分析');
+    th.appendChild(el('div', { id: 'r_theory', class: 'analysis-panel' }));
+    chartBlock(host);
+  } else {
+    const s = section(host, '运动分析');
+    s.appendChild(el('div', { class: 'hint' }, selSet.size > 1 ? '多选时请只保留一个物体，再查看它的参数方程与图像。' : '选中一个物体后，这里给出运动类型、参数方程，以及 v–t、相图等图像。'));
   }
-
-  const pPhy = panelBox('physics', propsTab);
+  if (!lessonCard(host)) {
+    const s = section(host, '实验原理');
+    s.appendChild(el('div', { class: 'hint' }, '从「实验」载入模板后，这里显示原理、公式和可以尝试的改动。'));
+    const br = el('div', { class: 'btnrow' });
+    btn(br, '打开实验库', () => showHome('templates'));
+    btn(br, '使用说明', () => $('#help').classList.add('show'));
+    s.appendChild(br);
+  }
+  buildEnergySection(host);
+  requestAnimationFrame(() => {
+    updateEnergyReadout(true);
+    const cur = selected();
+    if (isBody(cur) && selSet.size === 1) renderMotionAnalysis(cur, true);
+    drawChart();
+  });
+}
+function buildEnvPane() {
+  const P = $('#envBody'); if (!P) return;
+  P.innerHTML = '';
+  if (!docOpen) {
+    P.appendChild(el('p', { class: 'env-note' }, '新建或打开文档后，可以在这里改重力、引力、库仑力和积分步长。'));
+    return;
+  }
+  const S = scene.settings;
+  const pPhy = el('div', { class: 'env-form' });
+  pPhy.appendChild(el('h3', { class: 'flat-sec-title' }, '物理环境'));
   {
     const s = section(pPhy, '重力与阻力');
     chkRow(s, '均匀重力场', () => S.gOn, v => { S.gOn = v; syncToolbar(); });
@@ -4330,20 +4369,19 @@ function buildScenePanel(P) {
     ns.appendChild(el('div', { class: 'hint' }, '每帧拆成若干子步，用 Boris 蛙跳格式推进（二阶、辛），磁场中能量严格守恒；碰撞与摩擦用冲量法。步长越小越准，但更耗时。'));
   }
 
-  const pDisp = panelBox('display', propsTab);
   {
-    const dv = section(pDisp, '显示项');
+    const dv = section(pPhy, '显示项');
     const n = overlays().length;
-    dv.appendChild(el('div', { class: 'hint' }, n ? `当前文档有 ${n} 条显示项（${overlays().filter(o => o.on).length} 条开启）。` : '画布上默认什么都不显示。速度、加速度、受力、轨迹、预测、频闪、数值标签都在「显示」面板里逐项添加。'));
+    dv.appendChild(el('div', { class: 'hint' }, n ? `当前文档有 ${n} 条显示项（${overlays().filter(o => o.on).length} 条开启）。` : '画布上默认什么都不显示。速度、加速度、受力、轨迹、预测、频闪、数值标签都在「对象 → 显示」里逐项添加。'));
     const br = el('div', { class: 'btnrow' });
-    btn(br, '打开「显示」面板', () => setLeftTab('display'), 'primary');
+    btn(br, '打开显示项', () => setLeftTab('display'), 'primary');
     if (scene.info && scene.info.recommend && scene.info.recommend.length) btn(br, '启用推荐显示', applyRecommended);
     dv.appendChild(br);
-    const d = section(pDisp, '编辑手柄比例');
+    const d = section(pPhy, '编辑手柄比例');
     d.appendChild(el('div', { class: 'hint' }, '没有对应显示项时，拖初速度 / 外力用的箭头比例；有显示项时与显示项一致。'));
     numRow(d, '初速度', () => S.vPx, v => S.vPx = v, 'px/(m/s)', { min: 0.0001, slot: [S, 'vPx'] });
     numRow(d, '外力', () => S.FPx || 12, v => S.FPx = v, 'px/N', { min: 0.0001, slot: [S, 'FPx'] });
-    const g = section(pDisp, '画布');
+    const g = section(pPhy, '画布');
     chkRow(g, '网格', () => S.showGrid, v => S.showGrid = v);
     chkRow(g, '吸附网格', () => S.snap, v => S.snap = v);
     numRow(g, '吸附步长', () => S.snapStep, v => S.snapStep = v, 'm', { min: 1e-6, slot: [S, 'snapStep'] });
@@ -4353,11 +4391,7 @@ function buildScenePanel(P) {
     btn(view, '清除所有轨迹', () => { bodies().forEach(resetTrail); draw(); });
     g.appendChild(view);
   }
-
-  [pOv, pPhy, pDisp].forEach(x => panels.appendChild(x));
-  P.appendChild(panels);
-  syncDesmosKeypadForAnalysis(false);
-  requestAnimationFrame(() => updateEnergyReadout(true));
+  P.appendChild(pPhy);
 }
 
 const ADD_CATALOG = [
@@ -4487,7 +4521,7 @@ function renderLayers(host) {
   const tree = buildLayerTree(q);
   const cnt = $('#layerCount'); if (cnt) cnt.textContent = scene.objects.length ? `${scene.objects.length} 个对象${(scene.groups || []).length ? ` · ${scene.groups.length} 个编组` : ''}` : '';
   if (!tree.length) {
-    wrap.appendChild(el('div', { class: 'empty-hint' }, scene.objects.length ? '没有匹配的图层。' : '文档是空的。用左侧工具条（或「插入」菜单）添加物体、表面、场与约束。'));
+    wrap.appendChild(el('div', { class: 'empty-hint' }, scene.objects.length ? '没有匹配的图层。' : '文档是空的。到「添加」里放置物体、表面、场与约束。'));
     host.appendChild(wrap); renderLayerFoot(); return;
   }
   const addObj = (n, ind) => {
@@ -4500,7 +4534,11 @@ function renderLayers(host) {
     tw.onclick = ev => { ev.stopPropagation(); open ? layerOpen.delete(o.id) : layerOpen.add(o.id); refreshLeft(); };
     eye.onclick = ev => { ev.stopPropagation(); setHidden([o], !o.hidden); };
     lk.onclick = ev => { ev.stopPropagation(); setLocked([o], !o.locked); };
-    r.onclick = ev => { select(o.id, { toggle: ev.shiftKey || ev.ctrlKey || ev.metaKey, forcePanel: true }); closeMobilePanels(); };
+    r.onclick = ev => {
+      const additive = ev.shiftKey || ev.ctrlKey || ev.metaKey;
+      select(o.id, { toggle: additive, forcePanel: true });
+      if (!additive && window.matchMedia('(max-width: 799px)').matches) setSheet('canvas');
+    };
     m.ondblclick = ev => { ev.stopPropagation(); inlineRename(m, o.name, v => { pushUndo('重命名'); o.name = v; buildPanel(); requestDraw(); markDirty(); }); };
     r.oncontextmenu = ev => { ev.preventDefault(); if (!selSet.has(o.id)) select(o.id); openContextMenu(ev.clientX, ev.clientY, o, 'list'); };
     if (!isChildLink(o)) makeDraggable(r, { id: o.id });
@@ -4880,11 +4918,34 @@ function syncViewQuick() {
 
 /* ---------------- 左栏：图层 · 变量 · 显示 ---------------- */
 const LEFT_TABS = { objects: '图层', vars: '变量', display: '显示', add: '添加' };
+function setSheet(name) {
+  sheet = name || 'canvas';
+  document.body.dataset.sheet = sheet;
+  document.querySelectorAll('#tabbar [data-tab]').forEach(b => {
+    const on = b.dataset.tab === sheet;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-selected', on ? 'true' : 'false');
+  });
+  if (sheet === 'add') {
+    leftTab = 'add';
+    const host = $('#addBody');
+    const q = ($('#qAdd') && $('#qAdd').value) || '';
+    if (host) { host.innerHTML = ''; renderAddInto(host, q); }
+  } else if (sheet === 'objects') {
+    if (leftTab === 'add') setLeftMode('objects');
+    refreshLeft();
+  } else if (sheet === 'analysis') {
+    analysisSig = '';
+    buildAnalysisPane();
+  }
+  syncDesmosKeypadForAnalysis(sheet === 'analysis');
+  requestAnimationFrame(() => { resize(); requestDraw(); if (sheet === 'analysis') { updateEnergyReadout(true); drawChart(); } });
+}
 function setLeftTab(mode) {
+  if (mode === 'add') { setSheet('add'); return; }
   setLeftMode(mode);
-  const main = $('#main');
-  if (main && main.classList.contains('noleft') && mode !== 'add') { main.classList.remove('noleft'); syncPanelToggleButtons(); resize(); }
-  refreshLeft();
+  if (sheet !== 'objects') setSheet('objects');
+  else refreshLeft();
 }
 function flashLeftTab(mode) {
   const b = document.querySelector(`#leftTabs [data-left-tab="${mode}"]`);
@@ -4893,37 +4954,38 @@ function flashLeftTab(mode) {
   b.classList.remove('flash'); void b.offsetWidth; b.classList.add('flash');
 }
 
+function renderAddInto(host, q) {
+  const grid = el('div', { class: 'add-grid' });
+  for (const block of ADD_CATALOG) {
+    const visibleItems = block.items.filter(it => matchQuery(it.name + it.desc + block.cat, q));
+    if (!visibleItems.length) continue;
+    grid.appendChild(el('div', { class: 'add-cat' }, block.cat));
+    for (const it of visibleItems) {
+      const key = Object.keys(TOOL_KEYS).find(k => TOOL_KEYS[k] === it.tool);
+      const b = el('button', { type: 'button', title: it.desc + (key ? `（快捷键 ${key}）` : '') }, `<div><b>${it.name}</b><div class="hint" style="margin:0">${it.desc}</div></div>${key ? `<kbd>${key}</kbd>` : ''}`);
+      b.dataset.tool = it.tool;
+      b.onclick = () => { setTool(it.tool); setSheet('canvas'); toast('在画布上点击或拖拽以放置'); };
+      if (tool === it.tool) b.classList.add('active');
+      grid.appendChild(b);
+    }
+  }
+  if (!grid.childNodes.length) grid.appendChild(el('div', { class: 'empty-hint' }, '无匹配的对象。'));
+  host.appendChild(grid);
+}
 function refreshLeft() {
+  updateDisplayCount();
+  if (sheet === 'add') {
+    const add = $('#addBody');
+    if (add) { add.innerHTML = ''; renderAddInto(add, ($('#qAdd') && $('#qAdd').value) || leftQuery); }
+    return;
+  }
   const host = $('#leftBody');
   if (!host) return;
   host.innerHTML = '';
   const q = leftQuery;
-
-  updateDisplayCount();
-  if (leftTab === 'objects') { renderLayers(host); return; }
   if (leftTab === 'vars') { renderVars(host); return; }
   if (leftTab === 'display') { renderDisplay(host); return; }
-
-  if (leftTab === 'add') {
-    const grid = el('div', { class: 'add-grid' });
-    for (const block of ADD_CATALOG) {
-      const visibleItems = block.items.filter(it => matchQuery(it.name + it.desc + block.cat, q));
-      if (!visibleItems.length) continue;
-      grid.appendChild(el('div', { class: 'add-cat' }, block.cat));
-      for (const it of visibleItems) {
-        const key = Object.keys(TOOL_KEYS).find(k => TOOL_KEYS[k] === it.tool);
-        const b = el('button', { type: 'button', title: it.desc + (key ? `（快捷键 ${key}）` : '') }, `<div><b>${it.name}</b><div class="hint" style="margin:0">${it.desc}</div></div>${key ? `<kbd>${key}</kbd>` : ''}`);
-        b.onclick = () => { setTool(it.tool); closeMobilePanels(false); toast('在画布上点击或拖拽以放置'); };
-        if (tool === it.tool) b.classList.add('active');
-        grid.appendChild(b);
-      }
-    }
-    if (!grid.childNodes.length) grid.appendChild(el('div', { class: 'empty-hint' }, '无匹配的工具。'));
-    host.appendChild(grid);
-    return;
-  }
-
-  return;
+  renderLayers(host);
 }
 
 function buildList() { refreshLeft(); }
@@ -4940,59 +5002,50 @@ function setDockActive(dock) {
   document.querySelectorAll('#mobile-dock button').forEach(b => b.classList.toggle('active', b.dataset.dock === dock));
 }
 function closeMobilePanels(resetDock = true) {
-  if (leftTab === 'add') { setLeftMode('objects'); refreshLeft(); }
-  $('#left')?.classList.remove('open');
-  $('#right')?.classList.remove('open');
   $('#viewFlags')?.classList.remove('show');
   $('#panelScrim')?.classList.remove('show', 'view');
-  if (resetDock) setDockActive('stage');
+  // 窄屏上 Escape 收起盖住画布的功能页；宽屏底栏是主导航，不因此跳回画布。
+  if (resetDock && sheet !== 'canvas' && window.matchMedia('(max-width: 799px)').matches) setSheet('canvas');
 }
-function openMobileView() {
-  closeMobilePanels(false);
-  $('#viewFlags')?.classList.add('show');
-  $('#panelScrim')?.classList.add('show', 'view');
-  setDockActive('view');
-}
+function openMobileView() { setLeftTab('display'); }
 
 function setLeftMode(mode) {
   leftTab = mode;
-  const t = $('#leftTitle'); if (t) t.textContent = LEFT_TABS[mode] || '图层';
+  document.body.dataset.left = mode;
+  const t = $('#leftTitle'); if (t) t.textContent = mode === 'objects' ? '对象' : (LEFT_TABS[mode] || '对象');
   const f = $('#layerFoot'); if (f) f.style.display = mode === 'objects' ? '' : 'none';
-  const sw = document.querySelector('#left .search-wrap'); if (sw) sw.style.display = mode === 'objects' ? '' : 'none';
+  const sw = document.querySelector('#left .search-wrap'); if (sw) sw.style.display = mode === 'objects' || mode === 'vars' ? '' : 'none';
   document.querySelectorAll('#leftTabs button').forEach(b => b.classList.toggle('active', b.dataset.leftTab === mode));
-  const cnt = $('#layerCount'); if (cnt) cnt.textContent = '';
+  const cnt = $('#layerCount'); if (cnt && mode !== 'objects') cnt.textContent = '';
 }
 function openMobile(which) {
-  const left = $('#left'), right = $('#right'), scrim = $('#panelScrim');
-  closeMobilePanels(false);
-  if (which === 'objects' || which === 'add' || which === 'presets' || which === 'display' || which === 'vars') {
-    setLeftMode(which === 'add' ? 'add' : which === 'display' || which === 'vars' ? which : 'objects');
-    leftChip = 'all';
-    document.querySelectorAll('#leftTabs button').forEach(b => b.classList.toggle('active', b.dataset.leftTab === leftTab));
-    refreshLeft();
-    left.classList.add('open');
-    scrim?.classList.add('show');
-  } else if (which === 'inspect') {
-    right.classList.add('open');
-    scrim?.classList.add('show');
-  }
+  if (which === 'add') setSheet('add');
+  else if (which === 'display') setLeftTab('display');
+  else if (which === 'vars') setLeftTab('vars');
+  else if (which === 'objects') setSheet('objects');
+  else if (which === 'presets') showHome('templates');
+  else if (which === 'inspect' || which === 'stage') setSheet('canvas');
 }
 
 /* ---------------- 实时读数 ---------------- */
 function setTxt(id, t) { const e = document.getElementById(id); if (e) e.innerHTML = t; }
 function updateReadouts() {
   updateStatus();
-  if (!selected() && propsTab === 'overview') updateEnergyReadout(!sim.running);
+  if (document.getElementById('en_tot')) updateEnergyReadout(!sim.running);
   updateDerived(!sim.running);
-  const b = selected(); if (!isBody(b) || !b.st) return;
+  const b = selected();
+  if (document.body.dataset.sheet === 'analysis') {
+    if (isBody(b) && b.st && document.getElementById('r_theory')) renderMotionAnalysis(b, !sim.running);
+    if (document.getElementById('chart') && (!sim.running || (performance.now() / 200 | 0) % 2 === 0)) drawChart();
+  }
+  if (!isBody(b) || !b.st) return;
   const st = b.st, S = scene.settings, v = Math.hypot(st.vx, st.vy), Ek = 0.5 * b.m * v * v, Ep = S.gOn ? b.m * S.g * st.y : 0;
   setTxt('r_pos', `(${fmt(st.x)}, ${fmt(st.y)}) m`); setTxt('r_vel', `(${fmt(st.vx)}, ${fmt(st.vy)}) m/s`);
   setTxt('r_v', `${fmt(v)} m/s`); setTxt('r_ang', v > 1e-9 ? `${fmt(Math.atan2(st.vy, st.vx) / DEG, 2)}°` : '—');
   setTxt('r_a', sim.t > 0 ? `${fmt(Math.hypot(st.ax, st.ay))} m/s²` : '—');
   setTxt('r_ek', `${fmt(Ek + rotationalKE(b))} J${canRotate(b) && st.omega ? `（含转动 ${fmt(rotationalKE(b))} J）` : ''}`);
   setTxt('r_w', canRotate(b) ? `${fmt(st.omega || 0)} rad/s · θ = ${fmt((st.ang || 0) / DEG, 2)}°` : '—（不转动）'); setTxt('r_p', `${fmt(b.m * v)} kg·m/s`); setTxt('r_ep', S.gOn ? `${fmt(Ep)} J（以 y=0 为零势面）` : '—'); setTxt('r_e', `${fmt(Ek + Ep)} J`);
-  // Throttle MathQuill remount while running — force only when paused / tab switch
-  if (propsTab === 'force') {
+  if (document.getElementById('r_force_mag')) {
     const af = appliedForceOn(b);
     const mode = b.Fmode || 'const';
     setTxt('r_force_mag', `${fmt(af.F, 3)} N`);
@@ -5000,8 +5053,6 @@ function updateReadouts() {
     setTxt('r_force_mode', mode === 'expr' ? '表达式' : mode === 'aim' ? '指向目标' : '恒定');
     setTxt('r_force_err', b._Ferr || '');
   }
-  if (propsTab === 'analysis') renderMotionAnalysis(b, !sim.running);
-  if (propsTab === 'chart' && (!sim.running || (performance.now() / 200 | 0) % 2 === 0)) drawChart();
 }
 
 let analysisRefMode = 'initial'; // 'initial' | 'current'
@@ -5231,7 +5282,7 @@ function renderMotionAnalysis(b, force = false) {
       <div class="hint">${escapeHtml(report.validity)}</div>
     </div>`;
   mountMathQuill(host);
-  syncDesmosKeypadForAnalysis(true);
+  syncDesmosKeypadForAnalysis(document.body.dataset.sheet === 'analysis');
   host.querySelectorAll('[data-ref]').forEach(btn => {
     btn.addEventListener('click', () => {
       analysisRefMode = btn.getAttribute('data-ref');
@@ -5302,7 +5353,8 @@ function updateStatus(force = false) {
       `<span><span class="k">p</span>${fmt(b.m * v)} kg·m/s</span>`);
   } else parts.push('<span class="sep"></span>', '<span class="k">未选中</span>');
   parts.push('<span class="sep"></span>', `<span id="mousepos"></span>`);
-  $('#status').innerHTML = parts.join(''); updateStatusMouse();
+  const status = $('#status'); if (status) status.innerHTML = parts.join('');
+  updateStatusMouse();
 }
 function updateStatusMouse() { const m = document.getElementById('mousepos'); if (m) m.innerHTML = `<span class="k">鼠标</span>(${fmt(mouseW[0], 2)}, ${fmt(mouseW[1], 2)}) m <span class="k" style="margin-left:8px">缩放</span>${fmt(scene.view.scale, 3)} px/m`; }
 
@@ -5924,77 +5976,42 @@ function initToolbar() {
   $('#tlBack')?.addEventListener('click', stepBack);
   $('#tlFwd')?.addEventListener('click', stepOnce);
   $('#bReset').onclick = () => { resetSim('已重置到 t=0'); draw(); updateReadouts(); };
-  $('#selSpeed').onchange = e => { scene.settings.speed = +e.target.value; markDirty(); draw(); };
-  $('#chkG').onchange = e => { scene.settings.gOn = e.target.checked; liveEdit(); };
-  $('#numG').oninput = e => { const v = parseFloat(e.target.value); if (isFinite(v)) { scene.settings.g = v; liveEdit(); } };
+  if ($('#selSpeed')) $('#selSpeed').onchange = e => { scene.settings.speed = +e.target.value; markDirty(); draw(); updateBadge(); };
+  if ($('#chkG')) $('#chkG').onchange = e => { scene.settings.gOn = e.target.checked; liveEdit(); };
+  if ($('#numG')) $('#numG').oninput = e => { const v = parseFloat(e.target.value); if (isFinite(v)) { scene.settings.g = v; liveEdit(); } };
   const flag = (id, k) => { const node = $(id); if (node) node.onchange = e => { scene.settings[k] = e.target.checked; markDirty(); draw(); }; };
   flag('#chkGrid', 'showGrid');
-  $('#bMoreDisplay')?.addEventListener('click', () => {
-    $('#viewFlags')?.classList.remove('show'); $('#bView')?.classList.remove('active');
-    if (window.matchMedia('(max-width: 820px)').matches) openMobile('display'); else setLeftTab('display');
-  });
   document.querySelectorAll('#leftTabs [data-left-tab]').forEach(b => b.addEventListener('click', () => setLeftTab(b.dataset.leftTab)));
 
   const q = $('#qLeft');
   if (q) q.addEventListener('input', () => { leftQuery = q.value; refreshLeft(); });
   q?.addEventListener('keydown', e => { if (e.key === 'Escape') { q.value = ''; leftQuery = ''; refreshLeft(); q.blur(); } });
-  const moreMenu = null;
+  const qAdd = $('#qAdd');
+  if (qAdd) qAdd.addEventListener('input', () => { if (sheet === 'add') setSheet('add'); });
 
-  // display popover
-  const viewBtn = $('#bView'), viewPop = $('#viewFlags');
-  viewBtn?.addEventListener('click', e => {
-    e.preventDefault(); e.stopPropagation();
-    const open = !viewPop.classList.contains('show');
-    viewPop.classList.toggle('show', open);
-    viewBtn.classList.toggle('active', open);
-  });
-  document.addEventListener('click', e => {
-    if (!viewPop?.classList.contains('show')) return;
-    if (viewPop.contains(e.target) || viewBtn?.contains(e.target) || e.target.closest?.('#mobile-dock')) return;
-    if (window.matchMedia('(max-width: 820px)').matches) return; // mobile sheet closes via scrim
-    viewPop.classList.remove('show'); viewBtn?.classList.remove('active');
-  });
-
-  // zoom controls
-  const zoomBy = f => {
-    const v = scene.view; v.scale = Math.min(1e6, Math.max(0.5, v.scale * f));
-    markFieldsDirty(); draw(); markDirty();
-  };
-  $('#bZoomIn')?.addEventListener('click', () => zoomBy(1.25));
-  $('#bZoomOut')?.addEventListener('click', () => zoomBy(0.8));
-  $('#bFit')?.addEventListener('click', () => fitView());
   $('#bUndo').onclick = undo;
   $('#bRedo') && ($('#bRedo').onclick = redo);
   syncHistoryButtons();
   $('#fileIn').onchange = e => { const f = e.target.files[0]; if (f) importFile(f); e.target.value = ''; };
-  $('#bHome')?.addEventListener('click', () => homeShown() && docOpen ? hideHome() : showHome('home'));
   $('#docTitle')?.addEventListener('click', renameDocument);
   $('#zoomPct')?.addEventListener('click', () => fitView());
   $('#bHelpClose')?.addEventListener('click', () => $('#help').classList.remove('show'));
-  $('#help').addEventListener('click', e => { if (e.target.id === 'help') e.target.classList.remove('show'); });
+  $('#help')?.addEventListener('click', e => { if (e.target.id === 'help') e.target.classList.remove('show'); });
 
-  $('#bLeft')?.addEventListener('click', () => togglePanel('left'));
-  $('#bRight')?.addEventListener('click', () => togglePanel('right'));
-
-  // mobile dock
-  document.querySelectorAll('#mobile-dock [data-dock]').forEach(btn => {
+  document.querySelectorAll('#tabbar [data-tab]').forEach(btn => {
     btn.addEventListener('click', () => {
-      const dock = btn.dataset.dock;
-      if (dock === 'view') {
-        if (mobileDock === 'view' && $('#viewFlags')?.classList.contains('show')) closeMobilePanels();
-        else openMobileView();
-        return;
+      const tab = btn.dataset.tab;
+      if (tab === 'lab') showHome(homeView || 'home');
+      else {
+        $('#home')?.classList.remove('show');
+        setSheet(tab);
       }
-      setDockActive(dock);
-      if (dock === 'stage') closeMobilePanels();
-      else if (dock === 'objects') openMobile('objects');
-      else if (dock === 'add') openMobile('add');
-      else if (dock === 'inspect') openMobile('inspect');
     });
   });
   $('#panelScrim')?.addEventListener('click', () => closeMobilePanels());
 
   document.addEventListener('keydown', e => { if (e.key === ' ' && e.target === document.body) e.preventDefault(); });
+  document.addEventListener('gesturestart', e => e.preventDefault());
   refreshLeft();
 }
 
@@ -6057,11 +6074,9 @@ function openContextMenu(clientX, clientY, target, where = 'canvas') {
 
   if (target) {
     menu.appendChild(ctxItem(`选中「${target.name}」`, () => select(target.id)));
-    menu.appendChild(ctxItem('在检视栏打开', () => {
+    menu.appendChild(ctxItem('编辑属性', () => {
       select(target.id);
-      $('#right')?.classList.add('open');
-      $('#main')?.classList.remove('noright');
-      syncPanelToggleButtons?.();
+      setSheet('canvas');
     }));
     menu.appendChild(ctxSep());
     if (!isLink(target)) {
@@ -6083,8 +6098,7 @@ function openContextMenu(clientX, clientY, target, where = 'canvas') {
       }));
       menu.appendChild(ctxItem('转到分析页', () => {
         select(target.id);
-        propsTab = 'analysis';
-        buildPanel();
+        setSheet('analysis');
       }));
     }
     if (isLink(target)) {
@@ -6162,9 +6176,10 @@ function syncDocTitle() {
   if (t && !t.dataset.editing) t.textContent = doc.title;
   if (st) {
     st.classList.toggle('dirty', isDirty());
-    st.textContent = !docOpen ? '' : isDirty() ? '● 未保存' : doc.id ? '已保存' : '尚未保存';
+    st.textContent = !docOpen ? '' : isDirty() ? '未保存' : doc.id ? '已保存' : '尚未保存';
   }
-  document.title = docOpen ? `${doc.title}${isDirty() ? ' ●' : ''} — 物理实验室` : '物理实验室';
+  document.title = docOpen ? `${doc.title}${isDirty() ? '（未保存）' : ''} — 物理实验室` : '物理实验室';
+  syncCommands();
   try { localStorage.setItem(CUR_KEY, JSON.stringify({ open: docOpen, id: doc.id, title: doc.title, dirty: isDirty() })); } catch { }
 }
 function fmtTime(ts) {
@@ -6223,7 +6238,7 @@ function saveAs() {
 function saveOrPrompt() {
   if (!docOpen) return;
   if (doc.id) saveDocument();
-  else promptDialog({ title: '保存文档', label: '文档名称', value: doc.title, ok: '保存', hint: '保存到本浏览器的本地文档库。若要换电脑使用，请用「文件 → 导出 → 场景文件」。' }, v => saveDocument(false, v));
+  else promptDialog({ title: '保存文档', label: '文档名称', value: doc.title, ok: '保存', hint: '保存到本浏览器的本地文档库。若要换电脑使用，请在「实验」里导出场景文件。' }, v => saveDocument(false, v));
 }
 function openDocById(id) {
   const meta = readIndex().find(d => d.id === id);
@@ -6302,7 +6317,7 @@ function sceneFromPreset(p, over = {}) {
 function createFromPreset(p, over = {}, title) {
   guardUnsaved(() => {
     openAsDocument(sceneFromPreset(p, over), { title: title || newUntitledTitle() });
-    toast(`已新建「${doc.title}」· 用左侧工具添加物体`);
+    toast(`已新建「${doc.title}」· 用「添加」放置物体`);
   });
 }
 function createFromTemplate(key) {
@@ -6407,9 +6422,19 @@ function confirmDialog(o, done) {
 
 /* ---------------- 开始页 ---------------- */
 let homeView = 'home', homeCat = 'all';
-function showHome(view) { if (view) homeView = view; renderHome(); $('#home').classList.add('show'); updateOptContext(); }
-function hideHome() { $('#home').classList.remove('show'); }
-function homeShown() { return $('#home').classList.contains('show'); }
+function showHome(view) {
+  if (view) homeView = view;
+  renderHome();
+  $('#home')?.classList.add('show');
+  if (sheet !== 'lab') setSheet('lab');
+  else updateOptContext();
+}
+function hideHome() {
+  $('#home')?.classList.remove('show');
+  if (docOpen && sheet !== 'canvas') setSheet('canvas');
+  updateOptContext();
+}
+function homeShown() { return !!$('#home')?.classList.contains('show'); }
 function renderHome() {
   const h = $('#home'); if (!h) return;
   const docs = readIndex();
@@ -6428,7 +6453,7 @@ function renderHome() {
       <div class="dcard"><button type="button" class="pcard" data-doc="${d.id}" style="width:100%"><div class="pc-art">${d.thumb ? `<img alt="" src="${d.thumb}">` : ''}</div>
       <div class="pc-name">${escapeHtml(d.title)}</div><div class="pc-sub">${fmtTime(d.modified)} · ${d.objects ?? '?'} 个对象</div></button>
       <button type="button" class="dc-del" data-del="${d.id}" title="删除" aria-label="删除">×</button></div>`).join('')}</div>`
-    : '<div class="empty-box">还没有保存过的文档。新建后按 Ctrl+S 保存到本地文档库。</div>';
+    : '<div class="empty-box">还没有保存过的文档。新建后按 Ctrl+S，或点上方「保存」。</div>';
   const tplCards = cat => {
     const keys = Object.keys(PRESETS).filter(k => cat === 'all' || (PRESET_META[k] || {}).cat === cat);
     return `<div class="tpl-grid">${keys.map(k => { const P = PRESETS[k], M = PRESET_META[k] || {}; return `
@@ -6439,7 +6464,7 @@ function renderHome() {
     main = `<h1>模板</h1><p class="lead">每个模板都是一个可编辑的完整文档，附原理说明、关键公式和可以尝试的改动。</p>
       <div class="tpl-chips">${['all', ...PRESET_CATS].map(c => `<button type="button" class="chip ${homeCat === c ? 'active' : ''}" data-cat="${c}">${c === 'all' ? '全部' : c}</button>`).join('')}</div>${tplCards(homeCat)}`;
   } else if (homeView === 'docs') {
-    main = `<h1>我的文档</h1><p class="lead">保存在本浏览器的本地文档库中。换设备时请用「文件 → 导出 → 场景文件」。</p>${docCards(docs)}`;
+    main = `<h1>我的文档</h1><p class="lead">保存在本浏览器的本地文档库中。换设备时用上方「场景文件」导出。</p>${docCards(docs)}`;
   } else {
     main = `<h1>${docs.length ? '欢迎回来' : '欢迎使用物理实验室'}</h1>
       <p class="lead">新建一个空白文档自己搭建，或者从经典模板开始。</p>
@@ -6500,7 +6525,7 @@ function exportCSV() {
 function exportJSON() {
   const data = JSON.parse(serialize()); data.title = doc.title;
   downloadBlob(new Blob([JSON.stringify(data, null, 1)], { type: 'application/json' }), `${safeName(doc.title)}.physim.json`);
-  toast('已导出场景文件，可在任何设备上用「文件 → 打开」载入');
+  toast('已导出场景文件，可在「实验」里从文件打开');
 }
 let recording = null;
 function exportVideo() {
@@ -6545,7 +6570,7 @@ function importFile(f) {
 const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
 const CMD = {};
 function cmd(id, label, run, o = {}) { CMD[id] = Object.assign({ id, label, run }, o); }
-const needDoc = () => docOpen && !homeShown();
+const needDoc = () => docOpen;
 const hasSel = () => needDoc() && selSet.size > 0;
 const S_ = () => scene.settings;
 function toggleSetting(k, after) { return () => { S_()[k] = !S_()[k]; syncToolbar(); if (after) after(); markDirty(); requestDraw(); if (!selected()) buildPanel(); }; }
@@ -6643,8 +6668,8 @@ cmd('view.vars', '变量面板…', () => setLeftTab('vars'), { enabled: needDoc
 cmd('view.recommend', '启用模板推荐显示', applyRecommended, { enabled: () => needDoc() && !!(scene.info && scene.info.recommend && scene.info.recommend.length) });
 cmd('view.clearDisplay', '关闭全部显示', () => { if (!overlays().some(o => o.on)) return; pushUndo('关闭全部显示'); overlays().forEach(o => { o.on = false; }); onOverlaysChanged(true); syncViewQuick(); toast('已关闭全部显示项（配置保留）', { action: UNDO_ACTION }); }, { enabled: () => needDoc() && overlays().some(o => o.on) });
 cmd('view.snap', '吸附网格', toggleSetting('snap'), { checked: () => !!S_().snap, enabled: needDoc });
-cmd('view.layers', '图层面板', () => togglePanel('left'), { checked: () => !$('#main').classList.contains('noleft') });
-cmd('view.props', '属性面板', () => togglePanel('right'), { checked: () => !$('#main').classList.contains('noright') });
+cmd('view.layers', '对象列表', () => setSheet('objects'), { checked: () => sheet === 'objects' });
+cmd('view.props', '回到画布', () => setSheet('canvas'), { checked: () => sheet === 'canvas' });
 cmd('view.dark', '深色模式', () => setTheme(!document.body.classList.contains('dark')), { checked: () => document.body.classList.contains('dark') });
 // 模拟
 cmd('sim.play', '播放 / 暂停', togglePlay, { kbd: 'Space', enabled: needDoc, label2: () => sim.running ? '暂停' : '播放' });
@@ -6652,8 +6677,8 @@ cmd('sim.step', '前进一帧', stepOnce, { kbd: '.', enabled: needDoc });
 cmd('sim.back', '后退一帧', stepBack, { kbd: ',', enabled: () => needDoc() && sim.frameIdx > 0 });
 cmd('sim.reset', '重置到 t = 0', () => { resetSim('已重置到 t = 0'); draw(); updateReadouts(); }, { kbd: 'R', enabled: needDoc });
 for (const v of [0.1, 0.25, 0.5, 1, 2, 5, 10]) cmd('sim.speed.' + v, `${v}×`, () => setSpeed(v), { checked: () => S_().speed === v, enabled: needDoc });
-cmd('sim.settings', '物理设置…', () => { setSelection([]); propsTab = 'physics'; buildPanel(); if ($('#main').classList.contains('noright')) togglePanel('right'); if (window.matchMedia('(max-width: 820px)').matches) openMobile('inspect'); }, { enabled: needDoc });
-cmd('sim.energy', '能量与动量…', () => { setSelection([]); propsTab = 'overview'; buildPanel(); if (window.matchMedia('(max-width: 820px)').matches) openMobile('inspect'); }, { enabled: needDoc });
+cmd('sim.settings', '物理设置…', () => { showHome(homeView || 'home'); requestAnimationFrame(() => $('#envBody')?.scrollIntoView({ block: 'start' })); }, { enabled: needDoc });
+cmd('sim.energy', '能量与动量…', () => setSheet('analysis'), { enabled: needDoc });
 // 帮助
 cmd('help.guide', '使用说明', () => $('#help').classList.add('show'), { kbd: 'Shift+/' });
 cmd('help.about', '关于物理实验室', () => openModal(`<div class="dlg sm"><div class="dlg-head"><h3>物理实验室</h3><p>浏览器里的二维力学与电磁学模拟器。刚体与接触（含转动）、场与约束、辛积分器、轨迹预测与解析解对照。所有数据只保存在本机浏览器中。</p></div><div class="dlg-foot"><button type="button" class="primary" data-act="ok">好</button></div></div>`, { ok: closeModal }));
@@ -6680,7 +6705,8 @@ function kbdLabel(k) {
 }
 let openMenuIdx = -1;
 function closeMenus() {
-  $('#menuLayer').innerHTML = ''; openMenuIdx = -1;
+  const layer = $('#menuLayer'); if (layer) layer.innerHTML = '';
+  openMenuIdx = -1;
   document.querySelectorAll('#menus > button').forEach(b => b.classList.remove('open'));
 }
 function menuItemsEl(items, depth = 0) {
@@ -6724,14 +6750,14 @@ function openSub(btn, items, depth) {
 }
 function openMenu(i) {
   closeMenus(); openMenuIdx = i;
-  const btn = document.querySelectorAll('#menus > button')[i]; btn.classList.add('open');
+  const btn = document.querySelectorAll('#menus > button')[i]; if (!btn) return; btn.classList.add('open');
   const m = menuItemsEl(MENUS[i][1], 0);
   $('#menuLayer').appendChild(m);
   const r = btn.getBoundingClientRect();
   m.style.left = Math.max(6, Math.min(r.left, innerWidth - m.offsetWidth - 6)) + 'px'; m.style.top = (r.bottom + 4) + 'px';
 }
 function buildMenubar() {
-  const nav = $('#menus'); nav.innerHTML = '';
+  const nav = $('#menus'); if (!nav) return; nav.innerHTML = '';
   MENUS.forEach(([label], i) => {
     const b = el('button', { type: 'button', role: 'menuitem', 'aria-haspopup': 'true' }, label);
     b.addEventListener('click', e => { e.stopPropagation(); openMenuIdx === i ? closeMenus() : openMenu(i); });
@@ -6745,7 +6771,7 @@ function buildMenubar() {
 
 /* ---------------- 工具条与提示 ---------------- */
 function buildToolstrip() {
-  const ts = $('#toolstrip'); ts.innerHTML = '';
+  const ts = $('#toolstrip'); if (!ts) return; ts.innerHTML = '';
   for (const t of TOOL_DEFS) {
     if (t === '-') { ts.appendChild(el('div', { class: 'ts-sep' })); continue; }
     const [id, name, k, svg] = t;
@@ -6817,6 +6843,49 @@ function handleShortcut(e) {
   return true;
 }
 
+function syncCommands() {
+  document.querySelectorAll('[data-cmd]').forEach(b => {
+    const c = CMD[b.dataset.cmd];
+    if (!c) return;
+    b.disabled = !!(c.enabled && !c.enabled());
+    if (c.checked) b.classList.toggle('active', !!c.checked());
+    const label = (c.label2 && c.label2()) || c.label;
+    if (label && b.textContent !== label) b.textContent = label;
+  });
+}
+function renderLabActions() {
+  const host = $('#labActions'); if (!host) return;
+  host.innerHTML = '';
+  for (const [label, items] of MENUS) {
+    if (label === '插入') continue;
+    const ids = [];
+    const walk = (arr) => {
+      for (const it of (typeof arr === 'function' ? arr() : arr)) {
+        if (it === '-' || (it && it.head)) continue;
+        if (typeof it === 'string') ids.push(it);
+        else if (it && it.sub) walk(typeof it.sub === 'function' ? it.sub() : it.sub);
+      }
+    };
+    walk(items);
+    if (!ids.length) continue;
+    const sec = el('section', { class: 'flat-sec' });
+    sec.appendChild(el('h3', {}, label === '文件' ? '文档' : label === '模拟' ? '播放与环境' : label));
+    const grid = el('div', { class: 'flat-grid' });
+    for (const id of ids) {
+      const c = CMD[id]; if (!c) continue;
+      const b = el('button', { type: 'button', 'data-cmd': id }, (c.label2 && c.label2()) || c.label);
+      b.addEventListener('click', () => {
+        if (c.enabled && !c.enabled()) return;
+        c.run();
+        syncCommands();
+      });
+      grid.appendChild(b);
+    }
+    sec.appendChild(grid);
+    host.appendChild(sec);
+  }
+  syncCommands();
+}
 function syncThemeMeta() {
   const m = document.querySelector('meta[name="theme-color"]');
   if (m) m.setAttribute('content', document.body.classList.contains('dark') ? '#252422' : '#faf9f5');
@@ -6827,7 +6896,10 @@ function bootOnce() {
     if (th === 'dark' || (!th && window.matchMedia?.('(prefers-color-scheme: dark)').matches)) document.body.classList.add('dark');
   } catch (e) { }
   syncThemeMeta();
-  readColors(); buildMenubar(); buildToolstrip(); buildKeymap(); initToolbar();
+  readColors();
+  if ($('#menus')) buildMenubar();
+  if ($('#toolstrip')) buildToolstrip();
+  buildKeymap(); initToolbar(); renderLabActions();
   new ResizeObserver(resize).observe($('#stage'));
   resize();
   // 恢复上次打开的文档（包括未保存的修改）；没有则显示开始页
@@ -6842,7 +6914,7 @@ function bootOnce() {
   } catch (e) { restored = false; }
   setTool('select');
   syncPanelToggleButtons();
-  ensureDesmosKeypadDock(document.getElementById('right'));
+  ensureDesmosKeypadDock(document.getElementById('pageAnalysis') || document.getElementById('right'));
   syncDesmosKeypadForAnalysis(false);
   if (restored) toast(isDirty() ? `已恢复「${doc.title}」（含未保存的修改）` : `已打开「${doc.title}」`);
   else showHome('home');

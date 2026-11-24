@@ -372,10 +372,14 @@ function renderDock() {
   body.appendChild(wrap);
 }
 
+function keypadRoot(): HTMLElement | null {
+  return document.getElementById('pageAnalysis') || document.getElementById('right');
+}
+
 function syncShowButton() {
   if (!showBtnEl) return;
-  const right = document.getElementById('right');
-  const analysis = right?.classList.contains('analysis-keypad');
+  const host = dockEl?.parentElement;
+  const analysis = !!host?.classList.contains('analysis-keypad');
   showBtnEl.hidden = !(analysis && !visible);
   showBtnEl.classList.toggle('open', analysis && !visible);
 }
@@ -431,11 +435,11 @@ export function ensureDesmosKeypadDock(rightEl: HTMLElement = document.getElemen
 
 export function setDesmosKeypadVisible(show: boolean) {
   visible = show;
-  if (!dockEl) ensureDesmosKeypadDock();
+  if (!dockEl) ensureDesmosKeypadDock(keypadRoot() ?? undefined);
   if (!dockEl) return;
   dockEl.classList.toggle('open', show);
   dockEl.hidden = !show;
-  document.getElementById('right')?.classList.toggle('with-keypad', show);
+  dockEl.parentElement?.classList.toggle('with-keypad', show);
   if (show) {
     functionsOpen = false;
     renderDock();
@@ -445,7 +449,7 @@ export function setDesmosKeypadVisible(show: boolean) {
 
 /** Show fixed keypad only on Analysis tab; respect user hide. */
 export function syncDesmosKeypadForAnalysis(onAnalysisTab: boolean) {
-  const right = document.getElementById('right');
+  const right = keypadRoot();
   if (!right) return;
   ensureDesmosKeypadDock(right);
   right.classList.toggle('analysis-keypad', onAnalysisTab);

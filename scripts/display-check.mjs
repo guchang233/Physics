@@ -25,6 +25,7 @@ const w2s = (x, y) => E(([x, y]) => { const v = window.__physim.scene().view, c 
 // ---------- 1. 默认不显示；模板给出推荐显示 ----------
 await E(() => window.__physim.loadPreset('incline')); await p.waitForTimeout(150);
 ok('模板载入后没有任何显示项', await E(() => window.__physim.overlays().length === 0));
+await p.locator('[data-tab="analysis"]').click(); await p.waitForTimeout(150);
 ok('教学卡片提供“启用推荐显示”', await p.locator('.lesson .l-actions button.primary').isVisible());
 await p.locator('.lesson .l-actions button.primary').click(); await p.waitForTimeout(100);
 { const t = await E(() => window.__physim.overlays().map(o => o.type).join(',')); ok('一键启用推荐显示', t.includes('trail') && t.includes('v') && t.includes('forces'), t); }
@@ -81,6 +82,7 @@ await p.waitForTimeout(80);
 await E(() => window.__physim.resetSim());
 
 // ---------- 4. 显示面板：添加、配置、自定义公式 ----------
+await p.locator('[data-tab="objects"]').click(); await p.waitForTimeout(80);
 await p.locator('#leftTabs [data-left-tab="display"]').click(); await p.waitForTimeout(80);
 ok('显示面板空状态提示', await p.locator('.ovpanel .empty-hint').isVisible());
 await p.locator('#bAddOverlay').click(); await p.waitForTimeout(60);
@@ -103,8 +105,7 @@ ok('视图弹出框：一键给全部物体显示加速度', await E(() => windo
 await p.keyboard.press('Escape');
 
 // ---------- 5. Desmos 式“创建变量” ----------
-await E(() => window.__physim.select(3)); await p.waitForTimeout(60);
-await p.locator('#right .tabs button[data-tab="init"]').click(); await p.waitForTimeout(60);
+await E(() => window.__physim.select(3)); await p.waitForTimeout(80);
 const vxRow = p.locator('#right .row', { hasText: '分量 vx₀' });
 await vxRow.locator('.expr-toggle').click(); await p.waitForTimeout(60);
 const inp = p.locator('#right .row', { hasText: '分量 vx₀' }).locator('input.expr-input');
@@ -121,6 +122,7 @@ await p.locator('#right .expr-assist .mk-var', { hasText: 'θ' }).click(); await
   ok('提示随之消失', (await p.locator('#right .expr-assist .mk-var').count()) === 0);
 }
 // 变量面板滑块驱动
+await p.locator('[data-tab="objects"]').click(); await p.waitForTimeout(80);
 await p.locator('#leftTabs [data-left-tab="vars"]').click(); await p.waitForTimeout(80);
 ok('变量面板列出变量与滑块', (await p.locator('.vrow').count()) === 2 && (await p.locator('.vrow .v-slider').count()) === 2);
 await p.locator('.vrow').first().locator('.v-expr').fill('5'); await p.locator('.vrow').first().locator('.v-expr').press('Enter'); await p.waitForTimeout(80);
@@ -131,8 +133,8 @@ await p.locator('.vrow').first().locator('.v-name').fill('u'); await p.locator('
 
 // ---------- 6. 画布拾取：外力指向某个物体 ----------
 await E(() => window.__physim.select(3)); await p.waitForTimeout(60);
-await p.locator('#right .tabs button[data-tab="force"]').click(); await p.waitForTimeout(60);
 await p.locator('#right .force-chip[data-mode="aim"]').click(); await p.waitForTimeout(60);
+await p.locator('[data-tab="canvas"]').click(); await p.waitForTimeout(60);
 await p.locator('#right .force-aim-select .pick-btn').click(); await p.waitForTimeout(60);
 ok('进入拾取模式', await E(() => document.body.classList.contains('picking')));
 {

@@ -2,173 +2,163 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
   <meta name="theme-color" content="#faf9f5" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="物理实验室" />
+  <meta name="description" content="手机上的二维力学与电磁学实验室。放置物体、播放模拟、查看运动分析。" />
   <title>物理实验室</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <link rel="apple-touch-icon" href="/icons/icon-192.png" />
+  <link rel="manifest" href="/manifest.webmanifest" />
 </head>
-<body>
+<body data-sheet="lab">
   <svg width="0" height="0" style="position:absolute" aria-hidden="true">
     <defs>
-      <symbol id="i-play" viewBox="0 0 16 16"><path d="M4 2.8v10.4c0 .6.7 1 1.2.6l8-5.2c.5-.3.5-1 0-1.3l-8-5.2C4.7 1.8 4 2.2 4 2.8z" fill="currentColor"/></symbol>
-      <symbol id="i-pause" viewBox="0 0 16 16"><rect x="3.5" y="2.5" width="3.2" height="11" rx="1" fill="currentColor"/><rect x="9.3" y="2.5" width="3.2" height="11" rx="1" fill="currentColor"/></symbol>
-      <symbol id="i-undo" viewBox="0 0 16 16"><path d="M5.5 4.5 2.5 7.5l3 3M3 7.5h6.5a4 4 0 0 1 0 8H8" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round" transform="translate(0 -1.5)"/></symbol>
-      <symbol id="i-redo" viewBox="0 0 16 16"><path d="M10.5 4.5l3 3-3 3M13 7.5H6.5a4 4 0 0 0 0 8H8" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round" transform="translate(0 -1.5)"/></symbol>
+      <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5.5v13l11-6.5-11-6.5z" fill="currentColor"/></symbol>
+      <symbol id="i-pause" viewBox="0 0 24 24"><path d="M7 5h3.2v14H7zM13.8 5H17v14h-3.2z" fill="currentColor"/></symbol>
+      <symbol id="i-undo" viewBox="0 0 24 24"><path d="M8 8 4 12l4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 12h9.5a5 5 0 1 1 0 10H12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+      <symbol id="i-redo" viewBox="0 0 24 24"><path d="M16 8l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M20 12H10.5a5 5 0 1 0 0 10H12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+      <symbol id="i-reset" viewBox="0 0 24 24"><path d="M19 12a7 7 0 1 1-2.1-5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M17 3.5V8h-4.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
       <symbol id="i-copy" viewBox="0 0 16 16"><rect x="5" y="5" width="8.5" height="8.5" rx="1.6" stroke="currentColor" stroke-width="1.4" fill="none"/><path d="M3 10.5V3.6C3 3 3.5 2.5 4.1 2.5H10.5" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round"/></symbol>
       <symbol id="i-trash" viewBox="0 0 16 16"><path d="M2.8 4.2h10.4M6.3 4.2V2.8h3.4v1.4M4.2 4.2l.6 9h6.4l.6-9" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></symbol>
-      <symbol id="i-objects" viewBox="0 0 20 20"><path d="M4 5.5h12M4 10h12M4 14.5h8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"/></symbol>
-      <symbol id="i-add" viewBox="0 0 20 20"><path d="M10 4v12M4 10h12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"/></symbol>
-      <symbol id="i-stage" viewBox="0 0 20 20"><rect x="3" y="4" width="14" height="12" rx="2" stroke="currentColor" stroke-width="1.5" fill="none"/><circle cx="8" cy="11" r="2" fill="currentColor"/><path d="M10.5 9.5l3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></symbol>
-      <symbol id="i-view" viewBox="0 0 20 20"><path d="M2.5 10s2.8-5 7.5-5 7.5 5 7.5 5-2.8 5-7.5 5-7.5-5-7.5-5z" stroke="currentColor" stroke-width="1.5" fill="none"/><circle cx="10" cy="10" r="2.2" stroke="currentColor" stroke-width="1.5" fill="none"/></symbol>
-      <symbol id="i-inspect" viewBox="0 0 20 20"><path d="M4 6h7M4 10h12M4 14h9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"/><circle cx="14" cy="6" r="1.8" stroke="currentColor" stroke-width="1.5" fill="none"/></symbol>
+      <symbol id="i-canvas" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="9" cy="14" r="1.6" fill="currentColor"/><path d="M12 11l4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+      <symbol id="i-add" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+      <symbol id="i-objects" viewBox="0 0 24 24"><path d="M5 7h14M5 12h14M5 17h9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+      <symbol id="i-analysis" viewBox="0 0 24 24"><path d="M4 16l5-5 3 3 8-8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M14 6h6v6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-lab" viewBox="0 0 24 24"><path d="M9 3h6M10 3v6L5.5 19a2 2 0 0 0 1.8 3h9.4a2 2 0 0 0 1.8-3L14 9V3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
     </defs>
   </svg>
 
   <div id="app">
-    <header id="menubar">
-      <div class="brand" title="物理实验室">
-        <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true">
-          <circle cx="12" cy="12" r="2.6" fill="currentColor"/>
-          <ellipse cx="12" cy="12" rx="10" ry="4.2" fill="none" stroke="currentColor" stroke-width="1.4"/>
-          <ellipse cx="12" cy="12" rx="10" ry="4.2" fill="none" stroke="currentColor" stroke-width="1.4" transform="rotate(60 12 12)"/>
-          <ellipse cx="12" cy="12" rx="10" ry="4.2" fill="none" stroke="currentColor" stroke-width="1.4" transform="rotate(120 12 12)"/>
-        </svg>
-      </div>
-      <nav id="menus" role="menubar" aria-label="主菜单"></nav>
-      <div id="docTitleWrap">
-        <button type="button" id="docTitle" title="点击重命名">未命名-1</button>
+    <header id="topbar">
+      <div class="tb-doc">
+        <button type="button" id="docTitle" title="重命名文档">未命名-1</button>
         <span id="docState"></span>
       </div>
-      <div class="mb-right">
-        <button type="button" id="bHome" class="ghost" title="开始页">主页</button>
+      <div id="tbadge" class="tb-time">0.00 s · 初始</div>
+      <div class="tb-actions">
+        <button type="button" id="bPlay" class="primary" aria-label="播放"><svg class="ic"><use href="#i-play"/></svg><span class="tb-label">播放</span></button>
+        <button type="button" id="bReset" aria-label="重置"><svg class="ic"><use href="#i-reset"/></svg><span class="tb-label">重置</span></button>
+        <button type="button" id="bUndo" class="icon-only" aria-label="撤销" disabled><svg class="ic"><use href="#i-undo"/></svg></button>
+        <button type="button" id="bRedo" class="icon-only" aria-label="重做" disabled><svg class="ic"><use href="#i-redo"/></svg></button>
       </div>
     </header>
 
-    <div id="optbar">
-      <div class="ob-group transport">
-        <button type="button" id="bPlay" class="primary" title="播放/暂停 (空格)"><svg class="ic"><use href="#i-play"/></svg>播放</button>
-        <button type="button" id="bStep" class="ghost" title="单步 (.)">单步</button>
-        <button type="button" id="bReset" class="ghost" title="重置到 t = 0 (R)">重置</button>
-        <select id="selSpeed" title="速度倍率" aria-label="速度倍率">
-          <option value="0.05">0.05×</option>
-          <option value="0.1">0.1×</option>
-          <option value="0.25">0.25×</option>
-          <option value="0.5">0.5×</option>
-          <option value="1" selected>1×</option>
-          <option value="2">2×</option>
-          <option value="5">5×</option>
-          <option value="10">10×</option>
-        </select>
-      </div>
-      <div class="ob-group" id="obContext"></div>
-      <div class="ob-spacer"></div>
-      <div class="ob-group">
-        <button type="button" id="bUndo" class="ghost icon-only" title="撤销 (Ctrl+Z)" aria-label="撤销"><svg class="ic"><use href="#i-undo"/></svg></button>
-        <button type="button" id="bRedo" class="ghost icon-only" title="重做 (Ctrl+Shift+Z)" aria-label="重做"><svg class="ic"><use href="#i-redo"/></svg></button>
-      </div>
-      <div class="ob-group">
-        <div class="menu-wrap">
-          <button type="button" id="bView" class="ghost" title="显示选项" aria-haspopup="true">显示</button>
-          <div id="viewFlags" role="menu">
-            <div class="pop-title">全局</div>
-            <label class="chk" title="重力"><input type="checkbox" id="chkG" checked>重力</label>
-            <div class="pop-row"><span>g (m/s²)</span><input type="number" id="numG" value="9.8" step="0.1" aria-label="重力加速度"></div>
-            <div class="pop-sep"></div>
-            <div class="pop-title">画布</div>
-            <label class="chk"><input type="checkbox" id="chkGrid" checked>网格</label>
-            <div class="pop-sep"></div>
-            <div class="pop-title">显示（全部物体）</div>
-            <div id="viewQuick"></div>
-            <button type="button" class="pop-more" id="bMoreDisplay">更多显示项与设置…</button>
+    <div id="workspace">
+      <div id="main">
+        <div id="stage">
+          <canvas id="cv"></canvas>
+          <div id="toast"></div>
+          <div id="toolhint"></div>
+          <div id="timeline" aria-label="时间轴">
+            <button type="button" id="tlBack" aria-label="后退一帧">‹</button>
+            <input type="range" id="tlRange" min="0" max="0" step="1" value="0" aria-label="回看时刻">
+            <button type="button" id="tlFwd" aria-label="前进一帧">›</button>
+            <span id="tlTime"></span>
           </div>
-        </div>
-        <div class="zoom-ctl desktop-only">
-          <button type="button" id="bZoomOut" class="ghost icon-only" title="缩小 (Ctrl+−)">−</button>
-          <button type="button" id="zoomPct" class="ghost" title="适配视图 (Ctrl+0)">100 px/m</button>
-          <button type="button" id="bZoomIn" class="ghost icon-only" title="放大 (Ctrl+=)">+</button>
-        </div>
-      </div>
-      <div class="ob-group desktop-only">
-        <button type="button" id="bLeft" class="ghost" title="图层面板">图层</button>
-        <button type="button" id="bRight" class="ghost" title="属性面板">属性</button>
-      </div>
-      <input type="file" id="fileIn" accept=".json,.physim,application/json" hidden>
-    </div>
-
-    <div id="main">
-      <nav id="toolstrip" aria-label="工具"></nav>
-      <aside id="left">
-        <div class="side-head">
-          <div class="left-tabs" id="leftTabs" role="tablist">
-            <button type="button" data-left-tab="objects" class="active" role="tab">图层</button>
-            <button type="button" data-left-tab="vars" role="tab">变量<span class="lt-n"></span></button>
-            <button type="button" data-left-tab="display" role="tab">显示<span class="lt-n"></span></button>
-          </div>
-          <div class="side-title"><span id="leftTitle">图层</span><span class="side-count" id="layerCount"></span></div>
-          <div class="search-wrap">
-            <input type="search" id="qLeft" placeholder="搜索图层…  /" autocomplete="off">
-          </div>
-        </div>
-        <div id="leftBody" class="side-body"></div>
-        <div class="layer-foot" id="layerFoot"></div>
-      </aside>
-
-      <div id="stage">
-        <canvas id="cv"></canvas>
-        <div id="toast"></div>
-        <div id="toolhint"></div>
-        <div id="tbadge"></div>
-        <div id="timeline" aria-label="时间轴">
-          <button type="button" id="tlBack" title="后退一帧 (,)">‹</button>
-          <input type="range" id="tlRange" min="0" max="0" step="1" value="0" aria-label="回看时刻">
-          <button type="button" id="tlFwd" title="前进一帧 (.)">›</button>
-          <span id="tlTime"></span>
         </div>
       </div>
 
-      <aside id="right">
-        <div id="props"></div>
+      <section id="sheet" aria-label="功能">
+        <div class="sheet-page" data-page="add" id="pageAdd">
+          <div class="sheet-head">
+            <h2>添加</h2>
+            <input type="search" id="qAdd" placeholder="搜索物体、场、约束" autocomplete="off" aria-label="搜索可添加的对象">
+          </div>
+          <div id="addBody" class="sheet-scroll"></div>
+        </div>
+
+        <div class="sheet-page" data-page="objects" id="left">
+          <div class="sheet-head">
+            <h2 id="leftTitle">对象</h2>
+            <span class="side-count" id="layerCount"></span>
+            <div class="seg" id="leftTabs" role="tablist">
+              <button type="button" data-left-tab="objects" class="active" role="tab">图层</button>
+              <button type="button" data-left-tab="vars" role="tab">变量<span class="lt-n"></span></button>
+              <button type="button" data-left-tab="display" id="bView" role="tab">显示<span class="lt-n"></span></button>
+            </div>
+            <div class="search-wrap">
+              <input type="search" id="qLeft" placeholder="搜索图层" autocomplete="off" aria-label="搜索图层">
+            </div>
+          </div>
+          <div id="viewQuick" class="view-quick"></div>
+          <div id="leftBody" class="sheet-scroll"></div>
+          <div class="layer-foot" id="layerFoot"></div>
+        </div>
+
+        <div class="sheet-page" data-page="analysis" id="pageAnalysis">
+          <div class="sheet-head">
+            <h2>分析</h2>
+            <div class="sheet-tools">
+              <label class="speed-lab">速度
+                <select id="selSpeed" aria-label="速度倍率">
+                  <option value="0.05">0.05×</option>
+                  <option value="0.1">0.1×</option>
+                  <option value="0.25">0.25×</option>
+                  <option value="0.5">0.5×</option>
+                  <option value="1" selected>1×</option>
+                  <option value="2">2×</option>
+                  <option value="5">5×</option>
+                  <option value="10">10×</option>
+                </select>
+              </label>
+              <button type="button" id="bStep">单步</button>
+            </div>
+          </div>
+          <div id="analysisBody" class="sheet-scroll"></div>
+        </div>
+
+        <div class="sheet-page" data-page="lab" id="pageLab">
+          <div id="labScroll" class="sheet-scroll">
+            <div id="home" class="show" aria-label="实验库"></div>
+            <div id="envBody"></div>
+            <div id="labActions"></div>
+          </div>
+        </div>
+      </section>
+
+      <aside id="propSheet" aria-label="属性">
+        <div id="right">
+          <div id="props"></div>
+        </div>
       </aside>
     </div>
 
-    <div id="status"></div>
-
-    <nav id="mobile-dock" class="mobile-only" aria-label="移动导航">
-      <button type="button" data-dock="objects"><svg class="dock-ic"><use href="#i-objects"/></svg>图层</button>
-      <button type="button" data-dock="add"><svg class="dock-ic"><use href="#i-add"/></svg>添加</button>
-      <button type="button" data-dock="stage" class="active"><svg class="dock-ic"><use href="#i-stage"/></svg>画布</button>
-      <button type="button" data-dock="view"><svg class="dock-ic"><use href="#i-view"/></svg>显示</button>
-      <button type="button" data-dock="inspect"><svg class="dock-ic"><use href="#i-inspect"/></svg>属性</button>
+    <nav id="tabbar" aria-label="主导航">
+      <button type="button" data-tab="canvas" aria-label="画布"><svg class="tab-ic"><use href="#i-canvas"/></svg><span>画布</span></button>
+      <button type="button" data-tab="add" aria-label="添加"><svg class="tab-ic"><use href="#i-add"/></svg><span>添加</span></button>
+      <button type="button" data-tab="objects" aria-label="对象"><svg class="tab-ic"><use href="#i-objects"/></svg><span>对象</span></button>
+      <button type="button" data-tab="analysis" aria-label="分析"><svg class="tab-ic"><use href="#i-analysis"/></svg><span>分析</span></button>
+      <button type="button" data-tab="lab" id="bHome" class="active" aria-label="实验"><svg class="tab-ic"><use href="#i-lab"/></svg><span>实验</span></button>
     </nav>
   </div>
 
-  <div id="home" aria-label="开始页"></div>
+  <div id="status" hidden></div>
+  <input type="file" id="fileIn" accept=".json,.physim,application/json" hidden>
   <div id="modal"></div>
-  <div id="menuLayer"></div>
-
-  <div id="panelScrim" class="panel-scrim"></div>
 
   <div id="help"><div class="box">
     <div class="h-kicker">使用说明</div>
-    <h3>在浏览器里搭一个物理实验</h3>
-    <p class="h-lead">放置物体、场与约束，设定初始条件后按下播放。模拟器用辛积分器推进运动，并在右侧给出受力、能量与解析参数方程，便于和课本结论对照。</p>
+    <h3>在手机上搭一个物理实验</h3>
+    <p class="h-lead">底部五个入口即可到达全部功能。画布上放置物体、设定初态，然后播放。模拟器用辛积分器推进，分析页给出受力、能量与参数方程。</p>
     <div class="h-grid">
-      <div class="h-card"><b>文档</b><p>「文件 → 新建」创建空白文档或从 37 个经典模板开始；Ctrl+S 保存到本地文档库，开始页列出最近的文档。可导出图片、视频、数据表格与场景文件。</p></div>
-      <div class="h-card"><b>工具与图层</b><p>左侧竖条是工具（数字键 1–9 切换）；图层面板按「编组 → 对象 → 连接件 / 矢量」分层列出，可显示/隐藏、锁定、拖动排序、双击重命名。</p></div>
-      <div class="h-card"><b>选择</b><p>点选、Shift 加选、在空白处拖出选框；编组后点击选中整组，双击进入组内。对象菜单提供编组、锁定、排列、对齐与分布。</p></div>
-      <div class="h-card"><b>初态与外力</b><p>选中物体后拖动绿色箭头设初速度；「受力」页可设恒力、随时间变化的表达式或指向目标的力。</p></div>
-      <div class="h-card"><b>公式联动</b><p>任何数值旁的 <i>ƒ</i> 都能改写成公式，例如 <code>sin(t)</code> 或 <code>小球2.vx</code>，参数之间可以互相引用。</p></div>
-      <div class="h-card"><b>分析</b><p>「分析」页识别运动类型并给出参数方程；「图像」页绘制 v–t、相图、能量曲线等。</p></div>
-      <div class="h-card"><b>轨迹</b><p>实线是已走过的轨迹，虚线是从当前状态出发的数值预测（与实际运行用同一个积分器，逐步一致），点线是解析解。轨迹上的点按固定时间间隔打出（频闪）。鼠标移到曲线上可读出任意时刻的位置与速度，点击即可钉住。</p></div>
-      <div class="h-card"><b>时间轴</b><p>暂停后拖动画布底部的时间轴即可回看任意时刻；从回看处继续播放会覆盖之后的记录。运行中可以直接抓住物体甩出去。</p></div>
-      <div class="h-card"><b>能量守恒</b><p>不选中任何物体时，检视栏显示系统的动能、各类势能与总能量，可以直观看到守恒或耗散。</p></div>
+      <div class="h-card"><b>画布</b><p>点选、拖动、双指平移与捏合缩放。选中物体后，底部出现属性。运行中可以抓住物体甩出。暂停后用时间轴回看。</p></div>
+      <div class="h-card"><b>添加</b><p>小球、带电粒子、滑块、地面、挡板、斜面、电场、磁场、点电荷、弹簧、轻绳、轻杆。点一下类型，再在画布上放置。</p></div>
+      <div class="h-card"><b>对象</b><p>图层、全局变量、显示项在同一页里切换。可隐藏、锁定、拖动排序、编组。显示项包括速度、受力、轨迹、预测、频闪和数值标签。</p></div>
+      <div class="h-card"><b>分析</b><p>运动类型与参数方程、v–t 和相图、系统能量账本。速度倍率与单步也在这里。</p></div>
+      <div class="h-card"><b>实验</b><p>模板库与本地文档：新建、打开、保存、导入。导出图片、视频、CSV 和场景文件，以及撤销、对齐、深色模式等操作都在同一张列表里。</p></div>
+      <div class="h-card"><b>公式</b><p>数值旁的 ƒ 可写成公式，例如 <code>sin(t)</code> 或 <code>小球2.vx</code>。不认识的名字可以一键创建为变量。</p></div>
     </div>
     <div class="h-keys">
       <span><kbd>空格</kbd> 播放 / 暂停</span><span><kbd>.</kbd> 单步</span><span><kbd>R</kbd> 重置</span>
-      <span><kbd>,</kbd> <kbd>.</kbd> 逐帧回看</span><span><kbd>Ctrl</kbd>+<kbd>0</kbd> 适配视图</span><span><kbd>Ctrl</kbd>+<kbd>G</kbd> 编组</span><span><kbd>Ctrl</kbd>+<kbd>A</kbd> 全选</span><span><kbd>Ctrl</kbd>+<kbd>N</kbd>/<kbd>O</kbd>/<kbd>S</kbd> 新建/打开/保存</span><span><kbd>1</kbd>–<kbd>9</kbd> 添加工具</span><span><kbd>←↑→↓</kbd> 微调位置</span><span><kbd>Alt</kbd> 拖动时不吸附</span><span><kbd>Ctrl</kbd>+<kbd>C</kbd>/<kbd>V</kbd> 复制粘贴</span><span><kbd>Delete</kbd> 删除</span><span><kbd>Ctrl</kbd>+<kbd>Z</kbd> 撤销 · <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> 重做</span><span><kbd>?</kbd> 本说明</span><span><kbd>/</kbd> 搜索</span>
+      <span><kbd>,</kbd> <kbd>.</kbd> 逐帧</span><span><kbd>Ctrl</kbd>+<kbd>0</kbd> 适配</span><span><kbd>Ctrl</kbd>+<kbd>G</kbd> 编组</span>
+      <span><kbd>1</kbd>–<kbd>9</kbd> 添加工具</span><span><kbd>Delete</kbd> 删除</span><span><kbd>Ctrl</kbd>+<kbd>Z</kbd> 撤销</span><span><kbd>?</kbd> 本说明</span>
     </div>
     <div class="h-foot">
-      <span class="hint">单位：m、kg、s、C、V/m、T；y 轴向上为正，角度从 +x 逆时针计。</span>
+      <span class="hint">单位：m、kg、s、C、V/m、T。y 轴向上为正。</span>
       <button type="button" class="primary" id="bHelpClose">开始使用</button>
     </div>
   </div></div>
